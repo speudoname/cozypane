@@ -1,0 +1,1371 @@
+:root {
+  --bg-primary: #1a1b2e;
+  --bg-secondary: #232438;
+  --bg-tertiary: #2a2b42;
+  --bg-hover: #333456;
+  --bg-active: #3d3e5c;
+  --text-primary: #e4e4f0;
+  --text-secondary: #9394a5;
+  --text-muted: #6b6c7e;
+  --accent: #7c6ef0;
+  --accent-hover: #9488f5;
+  --accent-dim: #4a3fb0;
+  --border: #333456;
+  --success: #5ce0a8;
+  --warning: #f0c95c;
+  --danger: #f06c7e;
+  --info: #5cb8f0;
+
+  --titlebar-height: 38px;
+  --radius: 8px;
+  --radius-sm: 4px;
+
+  --font-mono: 'SF Mono', 'Cascadia Code', 'JetBrains Mono', 'Fira Code', Menlo, Monaco, Consolas, monospace;
+  --font-ui: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html, body, #root {
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-family: var(--font-ui);
+  font-size: 13px;
+  -webkit-font-smoothing: antialiased;
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--bg-active);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-muted);
+}
+
+::selection {
+  background: var(--accent-dim);
+  color: var(--text-primary);
+}
+
+/* ============================================
+   App Layout — Terminal First
+   ============================================ */
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  width: 100vw;
+}
+
+/* Title Bar */
+.titlebar {
+  height: var(--titlebar-height);
+  -webkit-app-region: drag;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  user-select: none;
+  position: relative;
+}
+
+.titlebar-text {
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-weight: 500;
+  letter-spacing: 0.5px;
+}
+
+.titlebar-actions {
+  position: absolute;
+  right: 12px;
+  display: flex;
+  gap: 4px;
+  -webkit-app-region: no-drag;
+}
+
+.titlebar-btn {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 2px 8px;
+}
+
+/* Main Content — horizontal flex */
+.main-content {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+}
+
+/* ============================================
+   Terminal Pane — the hero, full height
+   ============================================ */
+.terminal-pane {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 300px;
+  overflow: hidden;
+  background: var(--bg-primary);
+}
+
+.terminal-full {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  overflow: hidden;
+}
+
+.terminal-output {
+  flex: 1;
+  padding: 8px 0 8px 8px;
+  overflow: hidden;
+  min-height: 0;
+}
+
+/* Make xterm scrollbar thinner and not overlay content */
+.terminal-output .xterm-viewport {
+  scrollbar-width: thin;
+}
+
+.terminal-output .xterm-viewport::-webkit-scrollbar {
+  width: 8px;
+}
+
+.terminal-output .xterm-viewport::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.terminal-output .xterm-viewport::-webkit-scrollbar-thumb {
+  background: var(--bg-active);
+  border-radius: 4px;
+}
+
+.terminal-output .xterm-viewport::-webkit-scrollbar-thumb:hover {
+  background: var(--text-muted);
+}
+
+.terminal-wrapper {
+  flex: 1;
+  padding: 8px;
+  overflow: hidden;
+}
+
+/* ============================================
+   Command Input Bar — the Warp-style input
+   ============================================ */
+.command-input-container {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 12px;
+  background: var(--bg-secondary);
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+  position: relative;
+  width: 100%;
+}
+
+.command-input-prompt {
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 24px;
+  flex-shrink: 0;
+  user-select: none;
+}
+
+.command-input {
+  flex: 1;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.5;
+  padding: 6px 12px;
+  resize: none;
+  outline: none;
+  overflow-y: auto;
+  max-height: 200px;
+  min-height: 24px;
+  transition: border-color 0.15s;
+}
+
+.command-input:focus {
+  border-color: var(--accent);
+}
+
+.command-input::placeholder {
+  color: var(--text-muted);
+}
+
+.command-input-wrapper {
+  flex: 1;
+  position: relative;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.command-input-hint {
+  position: absolute;
+  right: 16px;
+  bottom: 14px;
+  display: flex;
+  gap: 12px;
+  font-size: 10px;
+  color: var(--text-muted);
+  pointer-events: none;
+}
+
+/* Slash command suggestions */
+.slash-suggestions {
+  position: absolute;
+  bottom: 100%;
+  left: 0;
+  right: 0;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  margin-bottom: 4px;
+  max-height: 200px;
+  overflow-y: auto;
+  z-index: 100;
+  box-shadow: 0 -4px 16px rgba(0, 0, 0, 0.3);
+}
+
+.slash-suggestion {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  cursor: pointer;
+  transition: background 0.1s;
+}
+
+.slash-suggestion:hover,
+.slash-suggestion.active {
+  background: var(--bg-hover);
+}
+
+.slash-cmd {
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 500;
+  flex-shrink: 0;
+}
+
+.slash-desc {
+  color: var(--text-muted);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.terminal-mode-indicator {
+  padding: 4px 12px;
+  background: var(--bg-tertiary);
+  border-top: 1px solid var(--border);
+  font-size: 11px;
+  color: var(--text-muted);
+  text-align: center;
+  flex-shrink: 0;
+}
+
+.mode-hint {
+  opacity: 0.6;
+}
+
+/* Focus states */
+.terminal-output.terminal-focused {
+  outline: 1px solid var(--accent-dim);
+  outline-offset: -1px;
+}
+
+.command-input.dimmed {
+  opacity: 0.5;
+  border-color: var(--border);
+}
+
+.command-input.focused {
+  border-color: var(--accent);
+  opacity: 1;
+}
+
+.terminal-focus-indicator {
+  padding: 3px 12px;
+  background: var(--bg-secondary);
+  border-top: 1px solid var(--border);
+  font-size: 10px;
+  color: var(--text-muted);
+  text-align: center;
+  flex-shrink: 0;
+}
+
+.focus-hint {
+  opacity: 0.6;
+}
+
+.terminal-focus-indicator.raw-active {
+  background: var(--accent-dim);
+  color: var(--text-secondary);
+}
+
+/* ============================================
+   Right Panel(s)
+   ============================================ */
+.right-panel {
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-secondary);
+  border-left: 1px solid var(--border);
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.preview-panel {
+  border-left: 1px solid var(--border);
+}
+
+.panel-section {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-height: 0;
+}
+
+.preview-section {
+  background: var(--bg-primary);
+}
+
+/* ============================================
+   Resize Handles
+   ============================================ */
+.resize-handle {
+  width: 4px;
+  cursor: col-resize;
+  background: transparent;
+  transition: background 0.15s;
+  flex-shrink: 0;
+}
+
+.resize-handle:hover,
+.resize-handle.active {
+  background: var(--accent);
+}
+
+.resize-handle-h {
+  height: 4px;
+  cursor: row-resize;
+  background: transparent;
+  transition: background 0.15s;
+  flex-shrink: 0;
+}
+
+.resize-handle-h:hover,
+.resize-handle-h.active {
+  background: var(--accent);
+}
+
+/* ============================================
+   Sidebar (File Browser)
+   ============================================ */
+.sidebar {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--bg-secondary);
+}
+
+.sidebar.collapsed {
+  display: none;
+}
+
+.sidebar-header {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-shrink: 0;
+}
+
+.sidebar-title {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--text-secondary);
+}
+
+.sidebar-toggle {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  padding: 4px;
+  border-radius: var(--radius-sm);
+  font-size: 14px;
+  -webkit-app-region: no-drag;
+  transition: color 0.15s, background 0.15s;
+}
+
+.sidebar-toggle:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+
+.file-tree {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px 0;
+}
+
+.file-entry {
+  display: flex;
+  align-items: center;
+  padding: 5px 16px;
+  cursor: pointer;
+  color: var(--text-secondary);
+  font-size: 13px;
+  gap: 8px;
+  transition: background 0.1s, color 0.1s;
+  user-select: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.file-entry:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.file-entry.active {
+  background: var(--bg-active);
+  color: var(--text-primary);
+}
+
+.file-entry.directory {
+  font-weight: 500;
+}
+
+.file-icon {
+  flex-shrink: 0;
+  width: 16px;
+  text-align: center;
+  font-size: 12px;
+}
+
+.file-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ============================================
+   Editor / File Preview
+   ============================================ */
+.editor-tabs {
+  display: flex;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+  flex-shrink: 0;
+}
+
+.editor-tab {
+  padding: 8px 16px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  border-right: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
+  transition: background 0.1s, color 0.1s;
+  user-select: none;
+}
+
+.editor-tab:hover {
+  background: var(--bg-hover);
+}
+
+.editor-tab.active {
+  color: var(--text-primary);
+  background: var(--bg-primary);
+  border-bottom: 2px solid var(--accent);
+}
+
+.tab-close {
+  font-size: 14px;
+  line-height: 1;
+  opacity: 0.5;
+  transition: opacity 0.1s;
+  padding: 0 2px;
+}
+
+.tab-close:hover {
+  opacity: 1;
+}
+
+.file-preview {
+  flex: 1;
+  overflow: hidden;
+  padding: 0;
+  color: var(--text-primary);
+  background: var(--bg-primary);
+}
+
+.empty-state {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 12px;
+  color: var(--text-muted);
+}
+
+.empty-state-icon {
+  font-size: 48px;
+  opacity: 0.3;
+}
+
+.empty-state-text {
+  font-size: 13px;
+}
+
+/* ============================================
+   Status Bar
+   ============================================ */
+.status-bar {
+  height: 26px;
+  background: var(--bg-secondary);
+  border-top: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  padding: 0 12px;
+  font-size: 11px;
+  color: var(--text-muted);
+  gap: 16px;
+  flex-shrink: 0;
+}
+
+.status-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--success);
+}
+
+.status-dot.warning {
+  background: var(--warning);
+}
+
+.status-dot.error {
+  background: var(--danger);
+}
+
+.status-dot.info {
+  background: var(--info);
+}
+
+.status-dot.thinking {
+  background: var(--accent);
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+.status-btn {
+  font-size: 11px;
+  padding: 1px 8px;
+  color: var(--text-muted);
+}
+
+.status-btn:hover {
+  color: var(--text-primary);
+}
+
+/* ============================================
+   Buttons
+   ============================================ */
+.btn {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  transition: color 0.15s, background 0.15s;
+  -webkit-app-region: no-drag;
+}
+
+.btn:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+
+/* ============================================
+   Sidebar Change Indicators
+   ============================================ */
+.file-change-dot {
+  margin-left: auto;
+  font-size: 11px;
+  flex-shrink: 0;
+  font-weight: 700;
+}
+
+/* ============================================
+   Panel Tab Bar (Editor / Activity toggle)
+   ============================================ */
+.panel-tab-bar {
+  display: flex;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.panel-tab {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 6px 14px;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.3px;
+  border-bottom: 2px solid transparent;
+  transition: color 0.15s, border-color 0.15s;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.panel-tab:hover {
+  color: var(--text-secondary);
+}
+
+.panel-tab.active {
+  color: var(--text-primary);
+  border-bottom-color: var(--accent);
+}
+
+.panel-tab-badge {
+  background: var(--accent-dim);
+  color: var(--text-primary);
+  font-size: 10px;
+  padding: 0 5px;
+  border-radius: 8px;
+  min-width: 16px;
+  text-align: center;
+  line-height: 16px;
+}
+
+/* ============================================
+   Activity Feed
+   ============================================ */
+.activity-feed {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.activity-feed-header {
+  padding: 10px 14px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--text-secondary);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.activity-count {
+  background: var(--bg-hover);
+  color: var(--text-muted);
+  font-size: 10px;
+  padding: 0 6px;
+  border-radius: 8px;
+  line-height: 16px;
+}
+
+.activity-empty {
+  padding: 20px 14px;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.activity-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px 0;
+}
+
+.activity-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 8px 14px;
+  transition: background 0.1s;
+  border-bottom: 1px solid var(--border);
+}
+
+.activity-item:hover {
+  background: var(--bg-hover);
+}
+
+.activity-icon {
+  font-family: var(--font-mono);
+  font-size: 14px;
+  font-weight: 700;
+  flex-shrink: 0;
+  width: 16px;
+  text-align: center;
+  line-height: 1.4;
+}
+
+.activity-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.activity-file {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.activity-dir {
+  color: var(--text-muted);
+}
+
+.activity-meta {
+  display: flex;
+  gap: 8px;
+  font-size: 11px;
+}
+
+.activity-type {
+  font-weight: 500;
+}
+
+.activity-time {
+  color: var(--text-muted);
+}
+
+.activity-diff-label {
+  color: var(--info);
+  font-size: 10px;
+}
+
+.activity-summarize-btn {
+  font-size: 10px;
+  padding: 2px 8px;
+  color: var(--accent);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.activity-summarize-btn:hover {
+  background: var(--bg-hover);
+}
+
+.activity-summarize-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.activity-summary {
+  padding: 10px 14px;
+  background: var(--bg-tertiary);
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-primary);
+}
+
+/* ============================================
+   Diff Viewer
+   ============================================ */
+.diff-viewer {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.diff-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 14px;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border);
+  font-size: 11px;
+  flex-shrink: 0;
+}
+
+.diff-label {
+  color: var(--text-muted);
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.diff-filename {
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+/* ============================================
+   Conversation History
+   ============================================ */
+.conversation-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.conversation-header {
+  padding: 10px 14px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--text-secondary);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.conversation-empty {
+  padding: 20px 14px;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.conversation-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px 0;
+}
+
+.conversation-turn {
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.conversation-turn.user {
+  background: var(--bg-tertiary);
+}
+
+.conversation-role {
+  font-size: 11px;
+  font-weight: 600;
+  margin-bottom: 4px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.conversation-turn.user .conversation-role {
+  color: var(--accent);
+}
+
+.conversation-turn.assistant .conversation-role {
+  color: var(--success);
+}
+
+.conversation-time {
+  font-weight: 400;
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+.conversation-content {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-primary);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+/* ============================================
+   Settings Panel
+   ============================================ */
+.settings-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.settings-header {
+  padding: 10px 14px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--text-secondary);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.settings-loading {
+  padding: 20px 14px;
+  color: var(--text-muted);
+}
+
+.settings-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.settings-section {
+  margin-top: 4px;
+}
+
+.settings-section-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 4px;
+}
+
+.settings-description {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+
+.settings-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.settings-label {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.settings-key-badge {
+  font-size: 10px;
+  color: var(--success);
+  background: rgba(92, 224, 168, 0.1);
+  padding: 1px 6px;
+  border-radius: 8px;
+}
+
+.settings-select,
+.settings-input {
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-size: 12px;
+  padding: 6px 10px;
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.settings-select:focus,
+.settings-input:focus {
+  border-color: var(--accent);
+}
+
+.settings-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.settings-save-btn {
+  background: var(--accent);
+  color: white;
+  font-weight: 500;
+  padding: 6px 16px;
+  border-radius: var(--radius-sm);
+}
+
+.settings-save-btn:hover {
+  background: var(--accent-hover);
+  color: white;
+}
+
+.settings-save-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.settings-clear-btn {
+  font-size: 11px;
+  color: var(--danger);
+  padding: 2px 0;
+  align-self: flex-start;
+}
+
+.settings-message {
+  font-size: 12px;
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+}
+
+.settings-message.success {
+  color: var(--success);
+  background: rgba(92, 224, 168, 0.1);
+}
+
+.settings-message.error {
+  color: var(--danger);
+  background: rgba(240, 108, 126, 0.1);
+}
+
+/* ============================================
+   Status Bar — cost info
+   ============================================ */
+.status-cost {
+  color: var(--accent);
+  font-family: var(--font-mono);
+  gap: 8px;
+}
+
+.status-branch {
+  color: var(--accent);
+  font-family: var(--font-mono);
+}
+
+/* ============================================
+   Git Panel
+   ============================================ */
+.git-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.git-header {
+  padding: 10px 14px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--text-secondary);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-shrink: 0;
+}
+
+.git-title {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+.git-refresh-btn {
+  font-size: 10px;
+  padding: 2px 8px;
+}
+
+.git-empty {
+  padding: 20px 14px;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.git-empty code {
+  background: var(--bg-tertiary);
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.git-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0;
+}
+
+.git-branch-row {
+  padding: 8px 14px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.git-branch-label {
+  color: var(--text-muted);
+}
+
+.git-branch-name {
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-weight: 500;
+}
+
+.git-section {
+  border-bottom: 1px solid var(--border);
+}
+
+.git-section-header {
+  padding: 8px 14px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: var(--bg-tertiary);
+}
+
+.git-section-btn {
+  font-size: 10px;
+  padding: 1px 6px;
+  color: var(--text-muted);
+}
+
+.git-file-item {
+  display: flex;
+  align-items: center;
+  padding: 4px 14px;
+  gap: 8px;
+  font-size: 12px;
+  transition: background 0.1s;
+}
+
+.git-file-item:hover {
+  background: var(--bg-hover);
+}
+
+.git-file-icon {
+  font-family: var(--font-mono);
+  font-weight: 700;
+  font-size: 12px;
+  width: 14px;
+  text-align: center;
+  flex-shrink: 0;
+}
+
+.git-file-name {
+  flex: 1;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.git-file-name:hover {
+  text-decoration: underline;
+}
+
+.git-file-actions {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.git-file-btn {
+  font-size: 10px;
+  padding: 1px 6px;
+  color: var(--text-muted);
+}
+
+.git-undo-btn {
+  color: var(--danger);
+}
+
+.git-commit-area {
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.git-commit-input {
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-size: 12px;
+  padding: 6px 10px;
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.git-commit-input:focus {
+  border-color: var(--accent);
+}
+
+.git-commit-input::placeholder {
+  color: var(--text-muted);
+}
+
+.git-commit-btn {
+  background: var(--accent);
+  color: white;
+  font-weight: 500;
+  padding: 6px 16px;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+}
+
+.git-commit-btn:hover {
+  background: var(--accent-hover);
+  color: white;
+}
+
+.git-commit-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+  background: var(--accent-dim);
+}
+
+.git-commits-list {
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.git-commit-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 14px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.git-commit-hash {
+  font-family: var(--font-mono);
+  color: var(--accent);
+  font-size: 11px;
+  flex-shrink: 0;
+}
+
+.git-commit-msg {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.git-commit-time {
+  font-size: 10px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.git-revert-section {
+  padding: 12px 14px;
+}
+
+.git-revert-btn {
+  width: 100%;
+  background: rgba(240, 108, 126, 0.1);
+  color: var(--danger);
+  border: 1px solid var(--danger);
+  padding: 8px 16px;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.git-revert-btn:hover {
+  background: rgba(240, 108, 126, 0.2);
+}
+
+.git-revert-confirm {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-primary);
+}
+
+.git-revert-yes {
+  color: var(--danger);
+  font-weight: 600;
+}
+
+.git-revert-cancel {
+  color: var(--text-muted);
+}
