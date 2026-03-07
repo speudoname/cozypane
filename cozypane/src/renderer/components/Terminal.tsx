@@ -46,6 +46,9 @@ export default function Terminal({ cwd, onCwdChange, onActionChange, onCostChang
     } catch { return []; }
   });
   const [claudeRunning, setClaudeRunning] = useState(false);
+  const [dynamicSlashCommands, setDynamicSlashCommands] = useState<{ cmd: string; desc: string }[]>([]);
+  const helpBufferRef = useRef('');
+  const capturingHelpRef = useRef(false);
 
   const switchFocus = useCallback((to: 'input' | 'terminal', manual = false) => {
     focusRef.current = to;
@@ -101,6 +104,12 @@ export default function Terminal({ cwd, onCwdChange, onActionChange, onCostChang
     if (trimmed.startsWith('claude') || trimmed.startsWith('npx claude')) {
       activeProcessRef.current = 'claude';
       setClaudeRunning(true);
+    }
+
+    // Detect /help command to capture output
+    if (activeProcessRef.current === 'claude' && command.trim() === '/help') {
+      capturingHelpRef.current = true;
+      helpBufferRef.current = '';
     }
 
     // Track conversation while Claude is running
@@ -186,6 +195,27 @@ export default function Terminal({ cwd, onCwdChange, onActionChange, onCostChang
       if (TUI_ENTER.test(data)) { tuiModeRef.current = true; setTuiMode(true); }
       if (TUI_EXIT.test(data)) { tuiModeRef.current = false; setTuiMode(false); }
 
+      // Capture /help output for dynamic slash commands
+      if (capturingHelpRef.current) {
+        helpBufferRef.current += stripAnsi(data);
+        // Stop capturing when we see the prompt return (❯ or similar)
+        if (helpBufferRef.current.length > 100 && /[❯>]\s*$/.test(helpBufferRef.current)) {
+          capturingHelpRef.current = false;
+          const parsed: { cmd: string; desc: string }[] = [];
+          // Parse lines like: /command  Description text
+          for (const line of helpBufferRef.current.split('\n')) {
+            const match = line.match(/^\s*(\/\w[\w-]*)\s{2,}(.+)/);
+            if (match) {
+              parsed.push({ cmd: match[1], desc: match[2].trim() });
+            }
+          }
+          if (parsed.length > 0) {
+            setDynamicSlashCommands(parsed);
+          }
+          helpBufferRef.current = '';
+        }
+      }
+
       // Accumulate assistant output for conversation tracking
       if (activeProcessRef.current === 'claude') {
         assistantBufferRef.current += stripAnsi(data);
@@ -232,6 +262,20 @@ export default function Terminal({ cwd, onCwdChange, onActionChange, onCostChang
       }, 400);
     });
 
+    // React to theme changes
+    const handleThemeChange = () => {
+      if (!termRef.current) return;
+      const style = getComputedStyle(document.documentElement);
+      termRef.current.options.theme = {
+        background: style.getPropertyValue('--terminal-bg').trim() || '#1a1b2e',
+        foreground: style.getPropertyValue('--terminal-fg').trim() || '#e4e4f0',
+        cursor: style.getPropertyValue('--terminal-cursor').trim() || '#7c6ef0',
+        cursorAccent: style.getPropertyValue('--terminal-bg').trim() || '#1a1b2e',
+        selectionBackground: style.getPropertyValue('--accent-dim').trim() + '50',
+      };
+    };
+    window.addEventListener('cozyPane:themeChange', handleThemeChange);
+
     const removeExitListener = window.cozyPane.terminal.onExit(code => {
       term.writeln(`\r\n[Process exited with code ${code}]`);
       activeProcessRef.current = '';
@@ -259,6 +303,7 @@ export default function Terminal({ cwd, onCwdChange, onActionChange, onCostChang
       removeDataListener();
       removeExitListener();
       resizeObserver.disconnect();
+      window.removeEventListener('cozyPane:themeChange', handleThemeChange);
       if (idleTimerRef.current) clearTimeout(idleTimerRef.current);
       term.dispose();
       termRef.current = null;
@@ -290,6 +335,7 @@ export default function Terminal({ cwd, onCwdChange, onActionChange, onCostChang
           onFocus={() => switchFocus('input', true)}
           isFocused={focus === 'input'}
           showSlashCommands={claudeRunning}
+          dynamicSlashCommands={dynamicSlashCommands}
         />
       )}
       {!tuiMode && (

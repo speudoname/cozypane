@@ -1,5 +1,10 @@
 import React, { useRef, useEffect, useState, useCallback } from 'react';
 
+interface SlashCommand {
+  cmd: string;
+  desc: string;
+}
+
 interface Props {
   onSubmit: (command: string) => void;
   visible: boolean;
@@ -7,10 +12,11 @@ interface Props {
   onFocus?: () => void;
   isFocused?: boolean;
   showSlashCommands?: boolean;
+  dynamicSlashCommands?: SlashCommand[];
 }
 
-// Known Claude Code slash commands
-const SLASH_COMMANDS = [
+// Fallback slash commands
+const DEFAULT_SLASH_COMMANDS: SlashCommand[] = [
   { cmd: '/help', desc: 'Show help and available commands' },
   { cmd: '/clear', desc: 'Clear conversation history' },
   { cmd: '/compact', desc: 'Compact conversation to save context' },
@@ -29,13 +35,15 @@ const SLASH_COMMANDS = [
   { cmd: '/vim', desc: 'Enter vim mode for editing' },
 ];
 
-export default function CommandInput({ onSubmit, visible, history, onFocus, isFocused, showSlashCommands }: Props) {
+export default function CommandInput({ onSubmit, visible, history, onFocus, isFocused, showSlashCommands, dynamicSlashCommands }: Props) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [value, setValue] = useState('');
   const [historyIndex, setHistoryIndex] = useState(-1);
   const [savedDraft, setSavedDraft] = useState('');
-  const [suggestions, setSuggestions] = useState<typeof SLASH_COMMANDS>([]);
+  const SLASH_COMMANDS = dynamicSlashCommands && dynamicSlashCommands.length > 0 ? dynamicSlashCommands : DEFAULT_SLASH_COMMANDS;
+  const [suggestions, setSuggestions] = useState<SlashCommand[]>([]);
   const [selectedSuggestion, setSelectedSuggestion] = useState(0);
+  const [dragOver, setDragOver] = useState(false);
 
   useEffect(() => {
     if (visible && isFocused && textareaRef.current) {
@@ -191,7 +199,18 @@ export default function CommandInput({ onSubmit, visible, history, onFocus, isFo
         )}
         <textarea
           ref={textareaRef}
-          className={`command-input ${isFocused ? 'focused' : 'dimmed'}`}
+          className={`command-input ${isFocused ? 'focused' : 'dimmed'} ${dragOver ? 'drag-over' : ''}`}
+          onDragOver={e => { e.preventDefault(); setDragOver(true); }}
+          onDragLeave={() => setDragOver(false)}
+          onDrop={e => {
+            e.preventDefault();
+            setDragOver(false);
+            const path = e.dataTransfer.getData('text/plain');
+            if (path) {
+              setValue(prev => prev ? prev + ' ' + path : path);
+              textareaRef.current?.focus();
+            }
+          }}
           value={value}
           onChange={e => {
             setValue(e.target.value);

@@ -43,7 +43,14 @@ export default function GitPanel({ cwd, onDiffClick, onBranchChange, activityEve
         onBranchChange('');
         return;
       }
+    } catch (err) {
+      console.error('[GitPanel] isRepo check failed:', err);
+      setIsRepo(false);
+      setLoading(false);
+      return;
+    }
 
+    try {
       const [statusRes, branchRes, logRes] = await Promise.all([
         window.cozyPane.git.status(cwd),
         window.cozyPane.git.branch(cwd),
@@ -55,8 +62,8 @@ export default function GitPanel({ cwd, onDiffClick, onBranchChange, activityEve
       setDetached(branchRes.detached || false);
       setCommits(logRes.commits || []);
       onBranchChange(branchRes.branch || '');
-    } catch {
-      setIsRepo(false);
+    } catch (err) {
+      console.error('[GitPanel] refresh error:', err);
     }
     setLoading(false);
   }, [cwd, onBranchChange]);
@@ -80,6 +87,13 @@ export default function GitPanel({ cwd, onDiffClick, onBranchChange, activityEve
       if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current);
     };
   }, [activityEvents.length, refresh]);
+
+  // Poll git status every 3s while panel is mounted (catches CLI git commands)
+  useEffect(() => {
+    if (!isRepo) return;
+    const interval = setInterval(refresh, 3000);
+    return () => clearInterval(interval);
+  }, [isRepo, refresh]);
 
   const handleStage = async (filePath: string) => {
     await window.cozyPane.git.stage(cwd, filePath);

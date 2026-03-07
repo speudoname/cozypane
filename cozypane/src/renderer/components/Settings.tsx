@@ -12,6 +12,13 @@ interface SettingsData {
   providers: Record<string, ProviderInfo>;
 }
 
+const THEMES = [
+  { id: 'cozy-dark', name: 'Cozy Dark', bg: '#1a1b2e', fg: '#e4e4f0' },
+  { id: 'ocean', name: 'Ocean', bg: '#0d1b2a', fg: '#e0e8f0' },
+  { id: 'forest', name: 'Forest', bg: '#1a2318', fg: '#e0edd8' },
+  { id: 'cozy-light', name: 'Light', bg: '#f5f3f0', fg: '#2c2a28' },
+];
+
 export default function Settings() {
   const [settings, setSettings] = useState<SettingsData | null>(null);
   const [provider, setProvider] = useState('anthropic');
@@ -19,6 +26,17 @@ export default function Settings() {
   const [apiKey, setApiKey] = useState('');
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [theme, setTheme] = useState(() => {
+    try { return localStorage.getItem('cozyPane:theme') || 'cozy-dark'; } catch { return 'cozy-dark'; }
+  });
+
+  const handleThemeChange = (themeId: string) => {
+    setTheme(themeId);
+    document.documentElement.setAttribute('data-theme', themeId);
+    try { localStorage.setItem('cozyPane:theme', themeId); } catch {}
+    // Dispatch event so Terminal can update xterm theme
+    window.dispatchEvent(new CustomEvent('cozyPane:themeChange', { detail: themeId }));
+  };
 
   useEffect(() => {
     window.cozyPane.settings.get().then((data: SettingsData) => {
@@ -70,6 +88,23 @@ export default function Settings() {
     <div className="settings-panel">
       <div className="settings-header">Settings</div>
       <div className="settings-body">
+        <div className="settings-section">
+          <div className="settings-section-title">Theme</div>
+          <div className="theme-picker">
+            {THEMES.map(t => (
+              <div
+                key={t.id}
+                className={`theme-swatch ${theme === t.id ? 'active' : ''}`}
+                style={{ background: t.bg, color: t.fg }}
+                onClick={() => handleThemeChange(t.id)}
+                title={t.name}
+              >
+                {t.name}
+              </div>
+            ))}
+          </div>
+        </div>
+
         <div className="settings-section">
           <div className="settings-section-title">AI Summaries</div>
           <p className="settings-description">

@@ -3,9 +3,13 @@ import { exec } from 'child_process';
 import fs from 'fs/promises';
 import path from 'path';
 
+const GIT = '/usr/bin/git';
+
 function gitExec(cmd: string, cwd: string): Promise<string> {
+  // Use full path to git since Electron may have a limited PATH
+  const fullCmd = cmd.replace(/^git /, `${GIT} `);
   return new Promise((resolve, reject) => {
-    exec(cmd, { cwd, timeout: 5000, maxBuffer: 1024 * 1024 }, (err, stdout, stderr) => {
+    exec(fullCmd, { cwd, timeout: 5000, maxBuffer: 1024 * 1024 }, (err, stdout, stderr) => {
       if (err) {
         reject(new Error(stderr || err.message));
       } else {

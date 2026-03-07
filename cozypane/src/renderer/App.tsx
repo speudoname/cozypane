@@ -9,6 +9,9 @@ import ConversationHistory from './components/ConversationHistory';
 import type { ConversationTurn } from './components/ConversationHistory';
 import Settings from './components/Settings';
 import GitPanel from './components/GitPanel';
+import ToastContainer from './components/Toast';
+import CommandPalette from './components/CommandPalette';
+import type { PaletteAction } from './components/CommandPalette';
 import type { AiAction, CostInfo } from './lib/terminalAnalyzer';
 
 type LayoutMode = 'two-col' | 'three-col';
@@ -57,6 +60,7 @@ export default function App() {
   const [summary, setSummary] = useState<string | null>(null);
   const [summarizing, setSummarizing] = useState(false);
   const [gitBranch, setGitBranch] = useState('');
+  const [paletteOpen, setPaletteOpen] = useState(false);
 
   // Initialize cwd to home directory on mount (only if no persisted cwd)
   useEffect(() => {
@@ -224,6 +228,40 @@ export default function App() {
 
   const toggleLayout = useCallback(() => {
     setLayoutMode(prev => prev === 'two-col' ? 'three-col' : 'two-col');
+  }, []);
+
+  // Cmd+K to open command palette
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+        e.preventDefault();
+        setPaletteOpen(prev => !prev);
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, []);
+
+  const paletteActions: PaletteAction[] = useMemo(() => [
+    { id: 'toggle-panels', label: 'Toggle Panels', category: 'View', shortcut: '', action: () => setPanelsOpen(p => !p) },
+    { id: 'toggle-layout', label: 'Switch Layout Mode', category: 'View', action: () => setLayoutMode(p => p === 'two-col' ? 'three-col' : 'two-col') },
+    { id: 'tab-editor', label: 'Show Editor', category: 'Tab', action: () => setRightPanelTab('preview') },
+    { id: 'tab-activity', label: 'Show Activity Feed', category: 'Tab', action: () => setRightPanelTab('activity') },
+    { id: 'tab-chat', label: 'Show Chat History', category: 'Tab', action: () => setRightPanelTab('conversation') },
+    { id: 'tab-git', label: 'Show Git Panel', category: 'Tab', action: () => setRightPanelTab('git') },
+    { id: 'tab-settings', label: 'Show Settings', category: 'Tab', action: () => setRightPanelTab('settings') },
+    { id: 'git-stage-all', label: 'Stage All Changes', category: 'Git', action: () => { window.cozyPane.git.stageAll(cwd); setRightPanelTab('git'); } },
+    { id: 'git-commit', label: 'Open Git to Commit', category: 'Git', action: () => setRightPanelTab('git') },
+    { id: 'theme-cozy', label: 'Theme: Cozy Dark', category: 'Theme', action: () => applyTheme('cozy-dark') },
+    { id: 'theme-ocean', label: 'Theme: Ocean', category: 'Theme', action: () => applyTheme('ocean') },
+    { id: 'theme-forest', label: 'Theme: Forest', category: 'Theme', action: () => applyTheme('forest') },
+    { id: 'theme-light', label: 'Theme: Light', category: 'Theme', action: () => applyTheme('cozy-light') },
+  ], [cwd]);
+
+  const applyTheme = useCallback((themeId: string) => {
+    document.documentElement.setAttribute('data-theme', themeId);
+    try { localStorage.setItem('cozyPane:theme', themeId); } catch {}
+    window.dispatchEvent(new CustomEvent('cozyPane:themeChange', { detail: themeId }));
   }, []);
 
   const handleDirtyChange = useCallback((filePath: string, isDirty: boolean) => {
@@ -432,6 +470,8 @@ export default function App() {
         costInfo={costInfo}
         gitBranch={gitBranch}
       />
+      <ToastContainer events={activityEvents} />
+      <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} actions={paletteActions} />
     </div>
   );
 }

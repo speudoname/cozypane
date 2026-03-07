@@ -185,6 +185,13 @@ export default function Sidebar({ isOpen, onToggle, onFileSelect, activeFile, on
               className={`file-entry ${node.isDirectory ? 'directory' : ''} ${activeFile === node.path ? 'active' : ''}`}
               style={{ paddingLeft: 16 + node.depth * 16 }}
               onClick={() => handleClick(node)}
+              draggable={node.isFile}
+              onDragStart={e => {
+                if (node.isFile) {
+                  e.dataTransfer.setData('text/plain', node.path);
+                  e.dataTransfer.effectAllowed = 'copy';
+                }
+              }}
             >
               <span className="file-icon">{getFileIcon(node)}</span>
               <span className="file-name" style={changeColor ? { color: changeColor } : undefined}>
