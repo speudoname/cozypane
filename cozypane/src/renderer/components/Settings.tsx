@@ -1,17 +1,5 @@
 import React, { useState, useEffect } from 'react';
 
-interface ProviderInfo {
-  name: string;
-  models: { id: string; name: string }[];
-}
-
-interface SettingsData {
-  provider: string;
-  model: string;
-  hasApiKey: boolean;
-  providers: Record<string, ProviderInfo>;
-}
-
 const THEMES = [
   { id: 'cozy-dark', name: 'Cozy Dark', bg: '#1a1b2e', fg: '#e4e4f0' },
   { id: 'ocean', name: 'Ocean', bg: '#0d1b2a', fg: '#e0e8f0' },
@@ -43,6 +31,8 @@ export default function Settings() {
       setSettings(data);
       setProvider(data.provider);
       setModel(data.model);
+    }).catch(() => {
+      setMessage({ type: 'error', text: 'Failed to load settings' });
     });
   }, []);
 
@@ -73,10 +63,14 @@ export default function Settings() {
 
   const handleClearKey = async () => {
     setSaving(true);
-    await window.cozyPane.settings.set({ provider, model, apiKey: '' });
-    const data = await window.cozyPane.settings.get();
-    setSettings(data);
-    setMessage({ type: 'success', text: 'API key removed' });
+    try {
+      await window.cozyPane.settings.set({ provider, model, apiKey: '' });
+      const data = await window.cozyPane.settings.get();
+      setSettings(data);
+      setMessage({ type: 'success', text: 'API key removed' });
+    } catch {
+      setMessage({ type: 'error', text: 'Failed to clear API key' });
+    }
     setSaving(false);
   };
 

@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import * as monaco from 'monaco-editor';
+import { getLanguage } from '../lib/languageMap';
 
 // Set up Monaco workers with static URL imports (Vite requires static strings)
 import editorWorker from 'monaco-editor/esm/vs/editor/editor.worker?worker';
@@ -17,40 +18,6 @@ self.MonacoEnvironment = {
     return new editorWorker();
   },
 };
-
-// Map file extensions to Monaco language IDs
-function getLanguage(filePath: string): string {
-  const ext = filePath.split('.').pop()?.toLowerCase() || '';
-  const map: Record<string, string> = {
-    ts: 'typescript', tsx: 'typescript',
-    js: 'javascript', jsx: 'javascript', mjs: 'javascript', cjs: 'javascript',
-    json: 'json', jsonc: 'json',
-    html: 'html', htm: 'html',
-    css: 'css', scss: 'scss', less: 'less',
-    md: 'markdown', mdx: 'markdown',
-    py: 'python',
-    rs: 'rust',
-    go: 'go',
-    java: 'java',
-    c: 'c', h: 'c',
-    cpp: 'cpp', cc: 'cpp', cxx: 'cpp', hpp: 'cpp',
-    cs: 'csharp',
-    rb: 'ruby',
-    php: 'php',
-    swift: 'swift',
-    kt: 'kotlin',
-    yaml: 'yaml', yml: 'yaml',
-    toml: 'ini',
-    xml: 'xml', svg: 'xml',
-    sh: 'shell', bash: 'shell', zsh: 'shell',
-    sql: 'sql',
-    graphql: 'graphql', gql: 'graphql',
-    dockerfile: 'dockerfile',
-    makefile: 'makefile',
-    env: 'ini',
-  };
-  return map[ext] || 'plaintext';
-}
 
 // CozyPane dark theme for Monaco
 monaco.editor.defineTheme('cozy-dark', {

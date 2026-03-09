@@ -1,17 +1,10 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 
-interface GitFileStatus {
-  path: string;
-  indexStatus: string;
-  workStatus: string;
-  staged: boolean;
-  status: 'added' | 'modified' | 'deleted' | 'untracked' | 'renamed';
-}
-
-interface GitCommit {
-  hash: string;
-  message: string;
-  timeAgo: string;
+interface RemoteInfo {
+  hasRemote: boolean;
+  remoteUrl: string;
+  ghAuthed: boolean;
+  ghInstalled: boolean;
 }
 
 interface Props {
@@ -19,9 +12,16 @@ interface Props {
   onDiffClick: (path: string, before: string, after: string) => void;
   onBranchChange: (branch: string) => void;
   activityEvents: FileChangeEvent[];
+  onTerminalCommand: (command: string) => void;
+  claudeRunning: boolean;
 }
 
-export default function GitPanel({ cwd, onDiffClick, onBranchChange, activityEvents }: Props) {
+function shellEscape(s: string): string {
+  // Single-quote wrapping: replace each ' with '\''
+  return "'" + s.replace(/'/g, "'\\''") + "'";
+}
+
+export default function GitPanel({ cwd, onDiffClick, onBranchChange, activityEvents, onTerminalCommand, claudeRunning }: Props) {
   const [isRepo, setIsRepo] = useState(false);
   const [loading, setLoading] = useState(true);
   const [files, setFiles] = useState<GitFileStatus[]>([]);
@@ -29,9 +29,26 @@ export default function GitPanel({ cwd, onDiffClick, onBranchChange, activityEve
   const [detached, setDetached] = useState(false);
   const [commits, setCommits] = useState<GitCommit[]>([]);
   const [commitMsg, setCommitMsg] = useState('');
-  const [committing, setCommitting] = useState(false);
   const [revertConfirm, setRevertConfirm] = useState(false);
+  const [remoteInfo, setRemoteInfo] = useState<RemoteInfo>({ hasRemote: false, remoteUrl: '', ghAuthed: false, ghInstalled: false });
+  const [generatingMsg, setGeneratingMsg] = useState(false);
   const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const refreshRef = useRef<(() => Promise<void>) | null>(null);
+
+  const scheduleRefresh = useCallback(() => {
+    if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current);
+    refreshTimerRef.current = setTimeout(() => refreshRef.current?.(), 1500);
+  }, []);
+
+  const fetchRemoteInfo = useCallback(async () => {
+    if (!cwd) return;
+    try {
+      const remote = await window.cozyPane.git.remoteInfo(cwd);
+      setRemoteInfo(remote);
+    } catch (err) {
+      console.error('[GitPanel] remoteInfo error:', err);
+    }
+  }, [cwd]);
 
   const refresh = useCallback(async () => {
     if (!cwd) return;
@@ -67,11 +84,13 @@ export default function GitPanel({ cwd, onDiffClick, onBranchChange, activityEve
     }
     setLoading(false);
   }, [cwd, onBranchChange]);
+  refreshRef.current = refresh;
 
-  // Refresh immediately on cwd change
+  // Refresh immediately on cwd change, fetch remote info once
   useEffect(() => {
     setLoading(true);
     refresh();
+    fetchRemoteInfo();
   }, [cwd]);
 
   // Debounced refresh on activity events
@@ -88,41 +107,28 @@ export default function GitPanel({ cwd, onDiffClick, onBranchChange, activityEve
     };
   }, [activityEvents.length, refresh]);
 
-  // Poll git status every 3s while panel is mounted (catches CLI git commands)
+  // Poll git status every 5s while panel is mounted
   useEffect(() => {
     if (!isRepo) return;
-    const interval = setInterval(refresh, 3000);
+    const interval = setInterval(refresh, 5000);
     return () => clearInterval(interval);
   }, [isRepo, refresh]);
 
-  const handleStage = async (filePath: string) => {
-    await window.cozyPane.git.stage(cwd, filePath);
-    refresh();
-  };
-
-  const handleUnstage = async (filePath: string) => {
-    await window.cozyPane.git.unstage(cwd, filePath);
-    refresh();
-  };
-
-  const handleStageAll = async () => {
-    await window.cozyPane.git.stageAll(cwd);
-    refresh();
-  };
-
-  const handleUnstageAll = async () => {
-    await window.cozyPane.git.unstageAll(cwd);
-    refresh();
-  };
-
-  const handleCommit = async () => {
+  // Write actions — all route through terminal
+  const handleStage = (filePath: string) => { onTerminalCommand(`git add -- ${shellEscape(filePath)}`); scheduleRefresh(); };
+  const handleUnstage = (filePath: string) => { onTerminalCommand(`git reset HEAD -- ${shellEscape(filePath)}`); scheduleRefresh(); };
+  const handleStageAll = () => { onTerminalCommand('git add -A'); scheduleRefresh(); };
+  const handleUnstageAll = () => { onTerminalCommand('git reset HEAD'); scheduleRefresh(); };
+  const handleCommit = () => {
     if (!commitMsg.trim()) return;
-    setCommitting(true);
-    await window.cozyPane.git.commit(cwd, commitMsg.trim());
+    onTerminalCommand(`git commit -m ${shellEscape(commitMsg.trim())}`);
     setCommitMsg('');
-    setCommitting(false);
-    refresh();
+    scheduleRefresh();
   };
+  const handlePush = () => { onTerminalCommand('git push'); scheduleRefresh(); };
+  const handlePull = () => { onTerminalCommand('git pull'); scheduleRefresh(); };
+  const handlePullRebase = () => { onTerminalCommand('git pull --rebase'); scheduleRefresh(); };
+  const handleRevertFile = (filePath: string) => { onTerminalCommand(`git checkout HEAD -- ${shellEscape(filePath)}`); scheduleRefresh(); };
 
   const handleDiff = async (filePath: string) => {
     const result = await window.cozyPane.git.diffFile(cwd, filePath);
@@ -130,21 +136,23 @@ export default function GitPanel({ cwd, onDiffClick, onBranchChange, activityEve
     onDiffClick(filePath, result.before ?? '', result.after ?? '');
   };
 
-  const handleRevertFile = async (filePath: string) => {
-    await window.cozyPane.git.revertFile(cwd, filePath);
-    refresh();
-  };
-
   const aiTouchedFiles = files.filter(f => {
     return activityEvents.some(e => e.path.endsWith(f.path) || f.path.endsWith(e.name));
   });
 
-  const handleRevertAll = async () => {
-    const paths = aiTouchedFiles.map(f => f.path);
-    if (paths.length === 0) return;
-    await window.cozyPane.git.revertFiles(cwd, paths);
+  const handleRevertAll = () => {
+    const paths = aiTouchedFiles.map(f => shellEscape(f.path)).join(' ');
+    if (!paths) return;
+    onTerminalCommand(`git checkout HEAD -- ${paths}`);
     setRevertConfirm(false);
-    refresh();
+    scheduleRefresh();
+  };
+
+  const handleGenerateMsg = async () => {
+    setGeneratingMsg(true);
+    const result = await window.cozyPane.git.generateCommitMsg(cwd);
+    if (result.message) setCommitMsg(result.message);
+    setGeneratingMsg(false);
   };
 
   const staged = files.filter(f => f.staged);
@@ -183,7 +191,9 @@ export default function GitPanel({ cwd, onDiffClick, onBranchChange, activityEve
         <div className="git-empty">
           Not a git repository.
           <br /><br />
-          Run <code>git init</code> in the terminal to get started.
+          <button className="btn git-init-btn" onClick={() => { onTerminalCommand('git init'); scheduleRefresh(); }}>
+            Initialize Repository
+          </button>
         </div>
       </div>
     );
@@ -200,6 +210,11 @@ export default function GitPanel({ cwd, onDiffClick, onBranchChange, activityEve
         <div className="git-branch-row">
           <span className="git-branch-label">Branch:</span>
           <span className="git-branch-name">{detached ? `(${branch})` : branch}</span>
+          <div className="git-actions-row">
+            <button className="btn git-action-btn" onClick={handlePull} title="Pull">Pull</button>
+            <button className="btn git-action-btn" onClick={handlePullRebase} title="Pull --rebase">Pull -r</button>
+            <button className="btn git-action-btn" onClick={handlePush} title="Push">Push</button>
+          </div>
         </div>
 
         {/* Staged section */}
@@ -249,19 +264,29 @@ export default function GitPanel({ cwd, onDiffClick, onBranchChange, activityEve
 
         {/* Commit area */}
         <div className="git-commit-area">
-          <input
-            className="git-commit-input"
-            placeholder="Commit message..."
-            value={commitMsg}
-            onChange={e => setCommitMsg(e.target.value)}
-            onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleCommit(); } }}
-          />
+          <div className="git-commit-input-row">
+            <button
+              className="btn git-generate-btn"
+              onClick={handleGenerateMsg}
+              disabled={generatingMsg || staged.length === 0}
+              title="Generate commit message with AI"
+            >
+              {generatingMsg ? '...' : 'AI'}
+            </button>
+            <input
+              className="git-commit-input"
+              placeholder="Commit message..."
+              value={commitMsg}
+              onChange={e => setCommitMsg(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleCommit(); } }}
+            />
+          </div>
           <button
             className="btn git-commit-btn"
-            disabled={staged.length === 0 || !commitMsg.trim() || committing}
+            disabled={staged.length === 0 || !commitMsg.trim()}
             onClick={handleCommit}
           >
-            {committing ? 'Committing...' : `Commit ${staged.length} file${staged.length !== 1 ? 's' : ''}`}
+            Commit {staged.length} file{staged.length !== 1 ? 's' : ''}
           </button>
         </div>
 
@@ -299,6 +324,37 @@ export default function GitPanel({ cwd, onDiffClick, onBranchChange, activityEve
             )}
           </div>
         )}
+
+        {/* Remote section */}
+        <div className="git-remote-section">
+          <div className="git-section-header">
+            <span>REMOTE</span>
+          </div>
+          <div className="git-remote-body">
+            {remoteInfo.hasRemote ? (
+              <span className="git-remote-url">{remoteInfo.remoteUrl}</span>
+            ) : remoteInfo.ghInstalled && remoteInfo.ghAuthed ? (
+              <button
+                className="btn git-action-btn"
+                onClick={() => { onTerminalCommand('gh repo create --source=. --private --push'); scheduleRefresh(); }}
+              >
+                Create on GitHub
+              </button>
+            ) : remoteInfo.ghInstalled && !remoteInfo.ghAuthed ? (
+              <>
+                <span className="git-remote-hint">gh not authenticated.</span>
+                <button
+                  className="btn git-action-btn"
+                  onClick={() => { onTerminalCommand('gh auth login --web'); }}
+                >
+                  Login to GitHub
+                </button>
+              </>
+            ) : (
+              <span className="git-remote-hint">Install gh CLI for GitHub features</span>
+            )}
+          </div>
+        </div>
       </div>
     </div>
   );

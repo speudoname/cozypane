@@ -1,12 +1,12 @@
 import { ipcMain, BrowserWindow } from 'electron';
-import { exec } from 'child_process';
+import { execFile } from 'child_process';
 import path from 'path';
 import fs from 'fs';
 
 let fileWatcher: fs.FSWatcher | null = null;
-let watchedDir: string = '';
 const recentEvents = new Map<string, number>();
 const fileSnapshots = new Map<string, string>(); // filepath → content at first seen version
+const MAX_SNAPSHOTS = 100;
 
 // Paths that are system noise, not user project files
 const IGNORE_PATTERN = /^(Library|Applications|Pictures|Music|Movies|Public|Downloads|\.Trash|\.cache|\.npm|\.nvm|\.local|\.config|\.docker|\.vscode|\.cursor|Containers)[/\\]/i;
@@ -16,7 +16,7 @@ const IGNORE_EXT = /\.(swp|tmp|pyc|DS_Store)$|~$/;
 function tryGitOriginal(fullPath: string, dirPath: string): Promise<string | null> {
   const relativePath = path.relative(dirPath, fullPath);
   return new Promise(resolve => {
-    exec(`git show HEAD:${JSON.stringify(relativePath)}`, { cwd: dirPath, maxBuffer: 1024 * 1024 }, (err, stdout) => {
+    execFile('/usr/bin/git', ['show', `HEAD:${relativePath}`], { cwd: dirPath, timeout: 5000, maxBuffer: 1024 * 1024 }, (err, stdout) => {
       if (err) { resolve(null); return; }
       resolve(stdout);
     });
@@ -31,7 +31,6 @@ export function registerWatcherHandlers(getWindow: () => BrowserWindow | null) {
     }
     recentEvents.clear();
     fileSnapshots.clear();
-    watchedDir = dirPath;
 
     try {
       fileWatcher = fs.watch(dirPath, { recursive: true }, (eventType, filename) => {
@@ -72,6 +71,15 @@ export function registerWatcherHandlers(getWindow: () => BrowserWindow | null) {
                 fileSnapshots.set(fullPath, content);
               } catch {}
             }
+            // Evict oldest snapshots if over cap
+            if (fileSnapshots.size > MAX_SNAPSHOTS) {
+              const it = fileSnapshots.keys();
+              while (fileSnapshots.size > MAX_SNAPSHOTS) {
+                const oldest = it.next();
+                if (oldest.done) break;
+                fileSnapshots.delete(oldest.value);
+              }
+            }
           }
 
           const w = getWindow();
@@ -96,6 +104,9 @@ export function registerWatcherHandlers(getWindow: () => BrowserWindow | null) {
             });
           }
         });
+      });
+      fileWatcher.on('error', (err) => {
+        console.error('[CozyPane] Watcher error:', err);
       });
       return { success: true };
     } catch (err: any) {

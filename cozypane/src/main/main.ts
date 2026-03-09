@@ -1,7 +1,8 @@
-import { app, BrowserWindow } from 'electron';
+import { app, BrowserWindow, dialog } from 'electron';
 import path from 'path';
+import { autoUpdater } from 'electron-updater';
 
-import { registerPtyHandlers, killPty } from './pty';
+import { registerPtyHandlers, killAllPtys } from './pty';
 import { registerFsHandlers } from './filesystem';
 import { registerWatcherHandlers, closeWatcher } from './watcher';
 import { registerSettingsHandlers } from './settings';
@@ -10,6 +11,10 @@ import { registerGitHandlers } from './git';
 // Global error handlers
 process.on('uncaughtException', (err) => {
   console.error('[CozyPane] Uncaught exception:', err);
+  dialog.showErrorBox('CozyPane Error', `An unexpected error occurred:\n${err.message}`);
+  killAllPtys();
+  closeWatcher();
+  app.exit(1);
 });
 process.on('unhandledRejection', (reason) => {
   console.error('[CozyPane] Unhandled rejection:', reason);
@@ -29,6 +34,7 @@ function createWindow() {
     titleBarStyle: 'hiddenInset',
     trafficLightPosition: { x: 15, y: 15 },
     backgroundColor: '#1a1b2e',
+    icon: path.join(__dirname, '../../build/icon.png'),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -57,11 +63,49 @@ registerWatcherHandlers(getWindow);
 registerSettingsHandlers();
 registerGitHandlers();
 
+// Auto-updater
+function setupAutoUpdater() {
+  if (isDev) return;
+
+  autoUpdater.autoDownload = true;
+  autoUpdater.autoInstallOnAppQuit = true;
+
+  autoUpdater.on('update-available', (info) => {
+    console.log('[CozyPane] Update available:', info.version);
+    mainWindow?.webContents.send('updater:status', { status: 'available', version: info.version });
+  });
+
+  autoUpdater.on('update-downloaded', (info) => {
+    console.log('[CozyPane] Update downloaded:', info.version);
+    mainWindow?.webContents.send('updater:status', { status: 'downloaded', version: info.version });
+    dialog.showMessageBox(mainWindow!, {
+      type: 'info',
+      title: 'Update Ready',
+      message: `CozyPane ${info.version} has been downloaded.`,
+      detail: 'It will be installed when you restart the app.',
+      buttons: ['Restart Now', 'Later'],
+    }).then(({ response }) => {
+      if (response === 0) autoUpdater.quitAndInstall();
+    });
+  });
+
+  autoUpdater.on('error', (err) => {
+    console.error('[CozyPane] Auto-update error:', err.message);
+  });
+
+  autoUpdater.checkForUpdates();
+  // Check every 4 hours
+  setInterval(() => autoUpdater.checkForUpdates(), 4 * 60 * 60 * 1000);
+}
+
 // App lifecycle
-app.whenReady().then(createWindow);
+app.whenReady().then(() => {
+  createWindow();
+  setupAutoUpdater();
+});
 
 app.on('window-all-closed', () => {
-  killPty();
+  killAllPtys();
   if (process.platform !== 'darwin') {
     app.quit();
   }
@@ -74,6 +118,6 @@ app.on('activate', () => {
 });
 
 app.on('before-quit', () => {
-  killPty();
+  killAllPtys();
   closeWatcher();
 });

@@ -8,18 +8,23 @@ import CommandInput from './CommandInput';
 import '@xterm/xterm/css/xterm.css';
 
 interface Props {
+  terminalId: string | null;  // null until PTY created
   cwd: string;
+  isVisible: boolean;
   onCwdChange?: (newCwd: string) => void;
   onActionChange?: (action: AiAction) => void;
   onCostChange?: (cost: CostInfo) => void;
   onConversationUpdate?: (turns: ConversationTurn[]) => void;
+  onTerminalReady?: (id: string) => void;
 }
 
-export default function Terminal({ cwd, onCwdChange, onActionChange, onCostChange, onConversationUpdate }: Props) {
+export default function Terminal({ terminalId, cwd, isVisible, onCwdChange, onActionChange, onCostChange, onConversationUpdate, onTerminalReady }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<XTerm | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
   const ptyCreated = useRef(false);
+  const terminalIdRef = useRef<string | null>(terminalId);
+  terminalIdRef.current = terminalId;
   const tuiModeRef = useRef(false);
   const focusRef = useRef<'input' | 'terminal'>('input');
   const manualUntilRef = useRef(0);
@@ -34,8 +39,12 @@ export default function Terminal({ cwd, onCwdChange, onActionChange, onCostChang
   onCostChangeRef.current = onCostChange;
   const onConversationUpdateRef = useRef(onConversationUpdate);
   onConversationUpdateRef.current = onConversationUpdate;
+  const onTerminalReadyRef = useRef(onTerminalReady);
+  onTerminalReadyRef.current = onTerminalReady;
   const conversationRef = useRef<ConversationTurn[]>([]);
   const assistantBufferRef = useRef('');
+  const isVisibleRef = useRef(isVisible);
+  isVisibleRef.current = isVisible;
 
   const [tuiMode, setTuiMode] = useState(false);
   const [focus, setFocus] = useState<'input' | 'terminal'>('input');
@@ -76,8 +85,19 @@ export default function Terminal({ cwd, onCwdChange, onActionChange, onCostChang
 
   const lastReportedCwd = useRef('');
 
+  const fitAndSync = useCallback(() => {
+    const id = terminalIdRef.current;
+    if (!fitAddonRef.current || !termRef.current || !id) return;
+    try {
+      fitAddonRef.current.fit();
+      window.cozyPane.terminal.resize(id, termRef.current.cols, termRef.current.rows);
+    } catch {}
+  }, []);
+
   const checkCwd = useCallback(() => {
-    window.cozyPane.terminal.getCwd().then(newCwd => {
+    const id = terminalIdRef.current;
+    if (!id) return;
+    window.cozyPane.terminal.getCwd(id).then(newCwd => {
       if (newCwd && newCwd !== lastReportedCwd.current) {
         lastReportedCwd.current = newCwd;
         onCwdChangeRef.current?.(newCwd);
@@ -86,8 +106,11 @@ export default function Terminal({ cwd, onCwdChange, onActionChange, onCostChang
   }, []);
 
   const handleCommandSubmit = useCallback((command: string) => {
+    const id = terminalIdRef.current;
+    if (!id) return;
+
     if (command === '\x03') {
-      window.cozyPane.terminal.write('\x03');
+      window.cozyPane.terminal.write(id, '\x03');
       return;
     }
     setCommandHistory(prev => {
@@ -128,7 +151,7 @@ export default function Terminal({ cwd, onCwdChange, onActionChange, onCostChang
       onConversationUpdateRef.current?.([...conversationRef.current]);
     }
 
-    window.cozyPane.terminal.write(command + '\n');
+    window.cozyPane.terminal.write(id, command + '\n');
     manualUntilRef.current = 0;
 
     // Check cwd after command executes
@@ -139,18 +162,18 @@ export default function Terminal({ cwd, onCwdChange, onActionChange, onCostChang
   useEffect(() => {
     if (!containerRef.current || termRef.current) return;
 
-    const term = new XTerm({
-      fontFamily: "'SF Mono', 'Cascadia Code', 'JetBrains Mono', 'Fira Code', Menlo, Monaco, Consolas, monospace",
-      fontSize: 13,
-      lineHeight: 1.4,
-      cursorBlink: true,
-      cursorStyle: 'bar',
-      theme: {
-        background: '#1a1b2e',
-        foreground: '#e4e4f0',
-        cursor: '#7c6ef0',
-        cursorAccent: '#1a1b2e',
-        selectionBackground: '#4a3fb050',
+    const getXtermTheme = () => {
+      const style = getComputedStyle(document.documentElement);
+      const bg = style.getPropertyValue('--terminal-bg').trim() || '#1a1b2e';
+      const fg = style.getPropertyValue('--terminal-fg').trim() || '#e4e4f0';
+      const cursor = style.getPropertyValue('--terminal-cursor').trim() || '#7c6ef0';
+      const accentDim = style.getPropertyValue('--accent-dim').trim();
+      return {
+        background: bg,
+        foreground: fg,
+        cursor,
+        cursorAccent: bg,
+        selectionBackground: (accentDim || '#4a3fb0') + '50',
         black: '#1a1b2e',
         red: '#f06c7e',
         green: '#5ce0a8',
@@ -167,7 +190,16 @@ export default function Terminal({ cwd, onCwdChange, onActionChange, onCostChang
         brightMagenta: '#d4a0f5',
         brightCyan: '#7ef0e0',
         brightWhite: '#ffffff',
-      },
+      };
+    };
+
+    const term = new XTerm({
+      fontFamily: "'SF Mono', 'Cascadia Code', 'JetBrains Mono', 'Fira Code', Menlo, Monaco, Consolas, monospace",
+      fontSize: 13,
+      lineHeight: 1.4,
+      cursorBlink: true,
+      cursorStyle: 'bar',
+      theme: getXtermTheme(),
     });
 
     const fitAddon = new FitAddon();
@@ -186,10 +218,13 @@ export default function Terminal({ cwd, onCwdChange, onActionChange, onCostChang
     });
 
     term.onData(data => {
-      window.cozyPane.terminal.write(data);
+      const id = terminalIdRef.current;
+      if (id) window.cozyPane.terminal.write(id, data);
     });
 
-    const removeDataListener = window.cozyPane.terminal.onData((data: string) => {
+    const removeDataListener = window.cozyPane.terminal.onData((id: string, data: string) => {
+      if (id !== terminalIdRef.current) return;
+
       term.write(data);
 
       if (TUI_ENTER.test(data)) { tuiModeRef.current = true; setTuiMode(true); }
@@ -198,11 +233,10 @@ export default function Terminal({ cwd, onCwdChange, onActionChange, onCostChang
       // Capture /help output for dynamic slash commands
       if (capturingHelpRef.current) {
         helpBufferRef.current += stripAnsi(data);
-        // Stop capturing when we see the prompt return (❯ or similar)
+        // Stop capturing when we see the prompt return
         if (helpBufferRef.current.length > 100 && /[❯>]\s*$/.test(helpBufferRef.current)) {
           capturingHelpRef.current = false;
           const parsed: { cmd: string; desc: string }[] = [];
-          // Parse lines like: /command  Description text
           for (const line of helpBufferRef.current.split('\n')) {
             const match = line.match(/^\s*(\/\w[\w-]*)\s{2,}(.+)/);
             if (match) {
@@ -219,7 +253,6 @@ export default function Terminal({ cwd, onCwdChange, onActionChange, onCostChang
       // Accumulate assistant output for conversation tracking
       if (activeProcessRef.current === 'claude') {
         assistantBufferRef.current += stripAnsi(data);
-        // Cap buffer to avoid memory issues
         if (assistantBufferRef.current.length > 10000) {
           assistantBufferRef.current = assistantBufferRef.current.slice(-8000);
         }
@@ -228,7 +261,6 @@ export default function Terminal({ cwd, onCwdChange, onActionChange, onCostChang
       // Detect Claude exiting (shell prompt returns)
       const cleaned = stripAnsi(data);
       if (activeProcessRef.current === 'claude' && /[$%#]\s*$/.test(cleaned)) {
-        // Finalize last assistant turn
         if (assistantBufferRef.current.trim()) {
           conversationRef.current.push({
             role: 'assistant',
@@ -251,6 +283,8 @@ export default function Terminal({ cwd, onCwdChange, onActionChange, onCostChang
 
       if (idleTimerRef.current) clearTimeout(idleTimerRef.current);
       idleTimerRef.current = setTimeout(() => {
+        // Skip expensive analysis for hidden terminals
+        if (!isVisibleRef.current) return;
         autoSwitchRef.current();
         checkCwd();
         const action = analyzeAction(rollingBufferRef.current, activeProcessRef.current === 'claude');
@@ -265,18 +299,12 @@ export default function Terminal({ cwd, onCwdChange, onActionChange, onCostChang
     // React to theme changes
     const handleThemeChange = () => {
       if (!termRef.current) return;
-      const style = getComputedStyle(document.documentElement);
-      termRef.current.options.theme = {
-        background: style.getPropertyValue('--terminal-bg').trim() || '#1a1b2e',
-        foreground: style.getPropertyValue('--terminal-fg').trim() || '#e4e4f0',
-        cursor: style.getPropertyValue('--terminal-cursor').trim() || '#7c6ef0',
-        cursorAccent: style.getPropertyValue('--terminal-bg').trim() || '#1a1b2e',
-        selectionBackground: style.getPropertyValue('--accent-dim').trim() + '50',
-      };
+      termRef.current.options.theme = getXtermTheme();
     };
     window.addEventListener('cozyPane:themeChange', handleThemeChange);
 
-    const removeExitListener = window.cozyPane.terminal.onExit(code => {
+    const removeExitListener = window.cozyPane.terminal.onExit((id: string, code: number) => {
+      if (id !== terminalIdRef.current) return;
       term.writeln(`\r\n[Process exited with code ${code}]`);
       activeProcessRef.current = '';
       setClaudeRunning(false);
@@ -284,20 +312,12 @@ export default function Terminal({ cwd, onCwdChange, onActionChange, onCostChang
     });
 
     const resizeObserver = new ResizeObserver(() => {
-      requestAnimationFrame(() => {
-        if (fitAddonRef.current && termRef.current && containerRef.current) {
-          try {
-            fitAddonRef.current.fit();
-            window.cozyPane.terminal.resize(termRef.current.cols, termRef.current.rows);
-          } catch (e) {}
-        }
-      });
+      if (!isVisibleRef.current) return;
+      requestAnimationFrame(() => fitAndSync());
     });
     resizeObserver.observe(containerRef.current);
 
-    setTimeout(() => {
-      try { if (fitAddonRef.current) fitAddonRef.current.fit(); } catch {}
-    }, 200);
+    setTimeout(() => fitAndSync(), 200);
 
     return () => {
       removeDataListener();
@@ -310,13 +330,25 @@ export default function Terminal({ cwd, onCwdChange, onActionChange, onCostChang
     };
   }, []);
 
+  // Re-fit when becoming visible
+  useEffect(() => {
+    if (isVisible) {
+      requestAnimationFrame(() => fitAndSync());
+    }
+  }, [isVisible, fitAndSync]);
+
+  // Create PTY
   useEffect(() => {
     if (!cwd || ptyCreated.current || !termRef.current) return;
     ptyCreated.current = true;
-    window.cozyPane.terminal.create(cwd).then(() => {
-      if (termRef.current) {
-        window.cozyPane.terminal.resize(termRef.current.cols, termRef.current.rows);
+    window.cozyPane.terminal.create(cwd).then((result) => {
+      if ('error' in result) {
+        console.error('Failed to create PTY:', result.error);
+        return;
       }
+      terminalIdRef.current = result.id;
+      onTerminalReadyRef.current?.(result.id);
+      fitAndSync();
     }).catch((err: any) => console.error('Failed to create PTY:', err));
   }, [cwd]);
 

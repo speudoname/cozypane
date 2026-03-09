@@ -10,7 +10,7 @@ export const TUI_ENTER = /\x1b\[\?1049h/;
 export const TUI_EXIT = /\x1b\[\?1049l/;
 
 // Interactive patterns -> raw mode (check against all recent lines)
-export const RAW_PATTERNS = [
+const RAW_PATTERNS = [
   /\[Y\/n\]/i,
   /\[y\/N\]/i,
   /\(y\/n\)/i,
@@ -31,7 +31,7 @@ export const RAW_PATTERNS = [
 ];
 
 // Text input patterns -> input bar
-export const INPUT_PATTERNS = [
+const INPUT_PATTERNS = [
   /[$%#]\s*$/,              // shell prompt
   /❯\s*$/,                 // Claude Code prompt / starship
   /➜\s*/,                  // oh-my-zsh

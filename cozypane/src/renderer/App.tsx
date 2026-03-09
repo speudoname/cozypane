@@ -12,6 +12,8 @@ import GitPanel from './components/GitPanel';
 import ToastContainer from './components/Toast';
 import CommandPalette from './components/CommandPalette';
 import type { PaletteAction } from './components/CommandPalette';
+import TerminalTabBar from './components/TerminalTabBar';
+import type { TerminalTab } from './components/TerminalTabBar';
 import type { AiAction, CostInfo } from './lib/terminalAnalyzer';
 
 type LayoutMode = 'two-col' | 'three-col';
@@ -40,9 +42,15 @@ interface DiffState {
   after: string;
 }
 
+function makeTerminalTab(cwd: string, counter: number): TerminalTab {
+  const id = `tab-${Date.now()}-${counter}`;
+  const label = `Terminal ${counter}`;
+  return { id, ptyId: null, label, cwd, aiAction: 'idle', costInfo: { cost: null, tokens: null }, conversationTurns: [] };
+}
+
 export default function App() {
   const [panelsOpen, setPanelsOpen] = useState(() => loadPersisted('panelsOpen', true));
-  const [cwd, setCwd] = useState<string>(() => loadPersisted('cwd', ''));
+  const terminalCounterRef = useRef(1);
   const [openTabs, setOpenTabs] = useState<OpenTab[]>(() => loadPersisted('openTabs', []));
   const [activeTab, setActiveTab] = useState<string | null>(() => loadPersisted('activeTab', null));
   const [layoutMode, setLayoutMode] = useState<LayoutMode>(() => loadPersisted('layoutMode', 'two-col'));
@@ -53,20 +61,41 @@ export default function App() {
   const [activityEvents, setActivityEvents] = useState<FileChangeEvent[]>([]);
   const [lastWatcherEvent, setLastWatcherEvent] = useState<FileChangeEvent | null>(null);
   const [rightPanelTab, setRightPanelTab] = useState<RightPanelTab>(() => loadPersisted('rightPanelTab', 'preview'));
-  const [aiAction, setAiAction] = useState<AiAction>('idle');
-  const [costInfo, setCostInfo] = useState<CostInfo>({ cost: null, tokens: null });
-  const [conversationTurns, setConversationTurns] = useState<ConversationTurn[]>([]);
   const [diffState, setDiffState] = useState<DiffState | null>(null);
   const [summary, setSummary] = useState<string | null>(null);
   const [summarizing, setSummarizing] = useState(false);
   const [gitBranch, setGitBranch] = useState('');
   const [paletteOpen, setPaletteOpen] = useState(false);
 
+  // Multi-terminal state
+  const [terminalTabs, setTerminalTabs] = useState<TerminalTab[]>(() => {
+    const savedCwd = loadPersisted<string>('cwd', '');
+    return [makeTerminalTab(savedCwd, terminalCounterRef.current++)];
+  });
+  const [activeTerminalId, setActiveTerminalId] = useState(terminalTabs[0].id);
+  const [splitTerminalId, setSplitTerminalId] = useState<string | null>(null);
+  const activeTerminalIdRef = useRef(activeTerminalId);
+  activeTerminalIdRef.current = activeTerminalId;
+  const splitTerminalIdRef = useRef(splitTerminalId);
+  splitTerminalIdRef.current = splitTerminalId;
+
+  // Derived state from active terminal
+  const activeTerminal = terminalTabs.find(t => t.id === activeTerminalId) || terminalTabs[0];
+  const cwd = activeTerminal.cwd;
+  const aiAction = activeTerminal.aiAction;
+  const costInfo = activeTerminal.costInfo;
+  const conversationTurns = activeTerminal.conversationTurns;
+
+  const updateTab = useCallback((tabId: string, updates: Partial<TerminalTab>) => {
+    setTerminalTabs(prev => prev.map(t => t.id === tabId ? { ...t, ...updates } : t));
+  }, []);
+
   // Initialize cwd to home directory on mount (only if no persisted cwd)
   useEffect(() => {
-    if (!cwd) {
-      window.cozyPane.fs.homedir().then(home => setCwd(home));
-    }
+    if (terminalTabs[0]?.cwd) return;
+    window.cozyPane.fs.homedir().then(home => {
+      setTerminalTabs(p => p.map((t, i) => i === 0 && !t.cwd ? { ...t, cwd: home } : t));
+    });
   }, []);
 
   // Persist key state to localStorage
@@ -106,6 +135,50 @@ export default function App() {
     };
   }, [cwd]);
 
+  // Tab operations
+  const addTerminalTab = useCallback(() => {
+    setTerminalTabs(prev => {
+      const currentCwd = prev.find(t => t.id === activeTerminalIdRef.current)?.cwd || '';
+      const newTab = makeTerminalTab(currentCwd, terminalCounterRef.current++);
+      setActiveTerminalId(newTab.id);
+      return [...prev, newTab];
+    });
+  }, []);
+
+  const closeTerminalTab = useCallback((id: string) => {
+    setTerminalTabs(prev => {
+      if (prev.length <= 1) return prev; // Can't close last tab
+      const tab = prev.find(t => t.id === id);
+      if (tab?.ptyId) {
+        window.cozyPane.terminal.close(tab.ptyId);
+      }
+      const remaining = prev.filter(t => t.id !== id);
+      // If closing active tab, switch to adjacent
+      if (id === activeTerminalIdRef.current) {
+        const idx = prev.findIndex(t => t.id === id);
+        const newActive = remaining[Math.min(idx, remaining.length - 1)] || remaining[0];
+        setActiveTerminalId(newActive.id);
+      }
+      // Clear split if it was the split tab
+      if (id === splitTerminalIdRef.current) {
+        setSplitTerminalId(null);
+      }
+      return remaining;
+    });
+  }, []);
+
+  const switchTerminalTab = useCallback((id: string) => {
+    setActiveTerminalId(id);
+  }, []);
+
+  const toggleSplit = useCallback((id: string) => {
+    setSplitTerminalId(prev => {
+      if (prev === id) return null; // Un-split
+      if (id === activeTerminalIdRef.current) return prev; // Can't split active as split
+      return id;
+    });
+  }, []);
+
   const handleFileSelect = useCallback((filePath: string, fileName: string) => {
     setDiffState(null);
     setOpenTabs(prev => {
@@ -121,7 +194,6 @@ export default function App() {
   const handleDiffClick = useCallback(async (filePath: string) => {
     const result = await window.cozyPane.watcher.getDiff(filePath);
     if (result.error || result.before === undefined || result.after === undefined) {
-      // No diff available, open file normally
       const fileName = filePath.split('/').pop() || filePath;
       handleFileSelect(filePath, fileName);
       return;
@@ -230,33 +302,54 @@ export default function App() {
     setLayoutMode(prev => prev === 'two-col' ? 'three-col' : 'two-col');
   }, []);
 
-  // Cmd+K to open command palette
+  // Keyboard shortcuts: Cmd+K palette, Cmd+T new tab, Cmd+W close tab
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
         e.preventDefault();
         setPaletteOpen(prev => !prev);
       }
+      if ((e.metaKey || e.ctrlKey) && e.key === 't') {
+        e.preventDefault();
+        addTerminalTab();
+      }
+      if ((e.metaKey || e.ctrlKey) && e.key === 'w') {
+        e.preventDefault();
+        closeTerminalTab(activeTerminalIdRef.current);
+      }
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
+  }, [addTerminalTab, closeTerminalTab]);
+
+  const terminalTabsRef = useRef(terminalTabs);
+  terminalTabsRef.current = terminalTabs;
+
+  const sendTerminalCommand = useCallback((command: string) => {
+    const tab = terminalTabsRef.current.find(t => t.id === activeTerminalIdRef.current);
+    if (tab?.ptyId) {
+      window.cozyPane.terminal.write(tab.ptyId, command + '\n');
+    }
   }, []);
 
   const paletteActions: PaletteAction[] = useMemo(() => [
     { id: 'toggle-panels', label: 'Toggle Panels', category: 'View', shortcut: '', action: () => setPanelsOpen(p => !p) },
     { id: 'toggle-layout', label: 'Switch Layout Mode', category: 'View', action: () => setLayoutMode(p => p === 'two-col' ? 'three-col' : 'two-col') },
+    { id: 'new-terminal', label: 'New Terminal Tab', category: 'Terminal', shortcut: 'Cmd+T', action: addTerminalTab },
     { id: 'tab-editor', label: 'Show Editor', category: 'Tab', action: () => setRightPanelTab('preview') },
     { id: 'tab-activity', label: 'Show Activity Feed', category: 'Tab', action: () => setRightPanelTab('activity') },
     { id: 'tab-chat', label: 'Show Chat History', category: 'Tab', action: () => setRightPanelTab('conversation') },
     { id: 'tab-git', label: 'Show Git Panel', category: 'Tab', action: () => setRightPanelTab('git') },
     { id: 'tab-settings', label: 'Show Settings', category: 'Tab', action: () => setRightPanelTab('settings') },
-    { id: 'git-stage-all', label: 'Stage All Changes', category: 'Git', action: () => { window.cozyPane.git.stageAll(cwd); setRightPanelTab('git'); } },
+    { id: 'git-stage-all', label: 'Stage All Changes', category: 'Git', action: () => { sendTerminalCommand('git add -A'); setRightPanelTab('git'); } },
     { id: 'git-commit', label: 'Open Git to Commit', category: 'Git', action: () => setRightPanelTab('git') },
+    { id: 'git-push', label: 'Push', category: 'Git', action: () => { sendTerminalCommand('git push'); setRightPanelTab('git'); } },
+    { id: 'git-pull', label: 'Pull', category: 'Git', action: () => { sendTerminalCommand('git pull'); setRightPanelTab('git'); } },
     { id: 'theme-cozy', label: 'Theme: Cozy Dark', category: 'Theme', action: () => applyTheme('cozy-dark') },
     { id: 'theme-ocean', label: 'Theme: Ocean', category: 'Theme', action: () => applyTheme('ocean') },
     { id: 'theme-forest', label: 'Theme: Forest', category: 'Theme', action: () => applyTheme('forest') },
     { id: 'theme-light', label: 'Theme: Light', category: 'Theme', action: () => applyTheme('cozy-light') },
-  ], [cwd]);
+  ], [addTerminalTab, sendTerminalCommand]);
 
   const applyTheme = useCallback((themeId: string) => {
     document.documentElement.setAttribute('data-theme', themeId);
@@ -269,6 +362,10 @@ export default function App() {
       t.path === filePath ? { ...t, dirty: isDirty } : t
     ));
   }, []);
+
+  const setCwd = useCallback((newCwd: string) => {
+    updateTab(activeTerminalIdRef.current, { cwd: newCwd });
+  }, [updateTab]);
 
   const renderBottomPanel = () => {
     if (rightPanelTab === 'activity') {
@@ -299,6 +396,8 @@ export default function App() {
           onDiffClick={handleGitDiffClick}
           onBranchChange={setGitBranch}
           activityEvents={activityEvents}
+          onTerminalCommand={sendTerminalCommand}
+          claudeRunning={aiAction !== 'idle'}
         />
       );
     }
@@ -413,14 +512,46 @@ export default function App() {
       </div>
 
       <div className="main-content">
-        <div className="terminal-pane">
-          <Terminal
-            cwd={cwd}
-            onCwdChange={setCwd}
-            onActionChange={setAiAction}
-            onCostChange={setCostInfo}
-            onConversationUpdate={setConversationTurns}
+        <div className={`terminal-pane ${splitTerminalId ? 'split' : ''}`}>
+          <TerminalTabBar
+            tabs={terminalTabs}
+            activeId={activeTerminalId}
+            splitId={splitTerminalId}
+            onSelect={switchTerminalTab}
+            onClose={closeTerminalTab}
+            onAdd={addTerminalTab}
+            onToggleSplit={toggleSplit}
           />
+          <div className="terminal-instances">
+            {terminalTabs.map(tab => {
+              const isActive = tab.id === activeTerminalId;
+              const isSplit = tab.id === splitTerminalId;
+              const visible = isActive || isSplit;
+              return (
+                <div
+                  key={tab.id}
+                  className="terminal-instance"
+                  style={{ display: visible ? 'flex' : 'none', flex: 1 }}
+                  onClick={() => {
+                    if (isSplit && !isActive) {
+                      setActiveTerminalId(tab.id);
+                    }
+                  }}
+                >
+                  <Terminal
+                    terminalId={tab.ptyId}
+                    cwd={tab.cwd}
+                    isVisible={visible}
+                    onTerminalReady={(ptyId) => updateTab(tab.id, { ptyId })}
+                    onCwdChange={(newCwd) => updateTab(tab.id, { cwd: newCwd })}
+                    onActionChange={(action) => updateTab(tab.id, { aiAction: action })}
+                    onCostChange={(cost) => updateTab(tab.id, { costInfo: cost })}
+                    onConversationUpdate={(turns) => updateTab(tab.id, { conversationTurns: turns })}
+                  />
+                </div>
+              );
+            })}
+          </div>
         </div>
 
         {panelsOpen && (

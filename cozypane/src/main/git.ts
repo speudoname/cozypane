@@ -1,7 +1,8 @@
 import { ipcMain } from 'electron';
-import { exec } from 'child_process';
+import { exec, execFile } from 'child_process';
 import fs from 'fs/promises';
 import path from 'path';
+import { getDecryptedApiKey, getSettings, callLlm } from './settings';
 
 const GIT = '/usr/bin/git';
 
@@ -10,6 +11,18 @@ function gitExec(cmd: string, cwd: string): Promise<string> {
   const fullCmd = cmd.replace(/^git /, `${GIT} `);
   return new Promise((resolve, reject) => {
     exec(fullCmd, { cwd, timeout: 5000, maxBuffer: 1024 * 1024 }, (err, stdout, stderr) => {
+      if (err) {
+        reject(new Error(stderr || err.message));
+      } else {
+        resolve(stdout);
+      }
+    });
+  });
+}
+
+function gitExecFile(args: string[], cwd: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    execFile(GIT, args, { cwd, timeout: 5000, maxBuffer: 1024 * 1024 }, (err, stdout, stderr) => {
       if (err) {
         reject(new Error(stderr || err.message));
       } else {
@@ -101,66 +114,11 @@ export function registerGitHandlers() {
     }
   });
 
-  ipcMain.handle('git:stage', async (_event, cwd: string, filePath: string) => {
-    try {
-      await gitExec(`git add -- "${filePath}"`, cwd);
-      return { success: true };
-    } catch (err: any) {
-      return { success: false, error: err.message };
-    }
-  });
-
-  ipcMain.handle('git:unstage', async (_event, cwd: string, filePath: string) => {
-    try {
-      // On a fresh repo with no commits, reset HEAD fails — use rm --cached instead
-      try {
-        await gitExec(`git reset HEAD -- "${filePath}"`, cwd);
-      } catch {
-        await gitExec(`git rm --cached -- "${filePath}"`, cwd);
-      }
-      return { success: true };
-    } catch (err: any) {
-      return { success: false, error: err.message };
-    }
-  });
-
-  ipcMain.handle('git:stageAll', async (_event, cwd: string) => {
-    try {
-      await gitExec('git add -A', cwd);
-      return { success: true };
-    } catch (err: any) {
-      return { success: false, error: err.message };
-    }
-  });
-
-  ipcMain.handle('git:unstageAll', async (_event, cwd: string) => {
-    try {
-      try {
-        await gitExec('git reset HEAD', cwd);
-      } catch {
-        await gitExec('git rm --cached -r .', cwd);
-      }
-      return { success: true };
-    } catch (err: any) {
-      return { success: false, error: err.message };
-    }
-  });
-
-  ipcMain.handle('git:commit', async (_event, cwd: string, message: string) => {
-    try {
-      const output = await gitExec(`git commit -m "${message.replace(/"/g, '\\"')}"`, cwd);
-      const hashMatch = output.match(/\[[\w/.-]+ ([a-f0-9]+)\]/);
-      return { success: true, hash: hashMatch ? hashMatch[1] : '' };
-    } catch (err: any) {
-      return { success: false, error: err.message };
-    }
-  });
-
   ipcMain.handle('git:diffFile', async (_event, cwd: string, filePath: string) => {
     try {
       let before = '';
       try {
-        before = await gitExec(`git show HEAD:"${filePath}"`, cwd);
+        before = await gitExecFile(['show', `HEAD:${filePath}`], cwd);
       } catch {
         // New file — no HEAD version
         before = '';
@@ -178,22 +136,61 @@ export function registerGitHandlers() {
     }
   });
 
-  ipcMain.handle('git:revertFile', async (_event, cwd: string, filePath: string) => {
+  ipcMain.handle('git:remoteInfo', async (_event, cwd: string) => {
+    const result = { hasRemote: false, remoteUrl: '', ghAuthed: false, ghInstalled: false };
     try {
-      await gitExec(`git checkout HEAD -- "${filePath}"`, cwd);
-      return { success: true };
-    } catch (err: any) {
-      return { success: false, error: err.message };
+      const remoteOut = await gitExec('git remote -v', cwd);
+      const pushLine = remoteOut.split('\n').find(l => l.includes('origin') && l.includes('(push)'));
+      if (pushLine) {
+        result.hasRemote = true;
+        result.remoteUrl = pushLine.replace(/^origin\s+/, '').replace(/\s+\(push\)$/, '').trim();
+      }
+    } catch {}
+
+    // Find gh CLI
+    const ghPaths = ['/opt/homebrew/bin/gh', '/usr/local/bin/gh'];
+    let ghPath = '';
+    try {
+      const whichOut = await new Promise<string>((resolve, reject) => {
+        exec('which gh', { timeout: 3000 }, (err, stdout) => err ? reject(err) : resolve(stdout.trim()));
+      });
+      if (whichOut) ghPath = whichOut;
+    } catch {}
+    if (!ghPath) {
+      for (const p of ghPaths) {
+        try { await fs.access(p); ghPath = p; break; } catch {}
+      }
     }
+
+    if (ghPath) {
+      result.ghInstalled = true;
+      try {
+        await new Promise<string>((resolve, reject) => {
+          exec(`"${ghPath}" auth status`, { timeout: 5000 }, (err, stdout, stderr) => {
+            if (err) reject(err); else resolve(stdout || stderr);
+          });
+        });
+        result.ghAuthed = true;
+      } catch {}
+    }
+
+    return result;
   });
 
-  ipcMain.handle('git:revertFiles', async (_event, cwd: string, filePaths: string[]) => {
+  ipcMain.handle('git:generateCommitMsg', async (_event, cwd: string) => {
     try {
-      const escaped = filePaths.map(p => `"${p}"`).join(' ');
-      await gitExec(`git checkout HEAD -- ${escaped}`, cwd);
-      return { success: true };
+      const stat = await gitExec('git diff --cached --stat', cwd);
+      if (!stat.trim()) return { error: 'No staged changes to describe.' };
+
+      let diff = await gitExec('git diff --cached', cwd);
+      if (diff.length > 4000) diff = diff.slice(0, 4000) + '\n... (truncated)';
+
+      const prompt = `Generate a concise git commit message (one line, max 72 chars) for these staged changes. Return ONLY the commit message, no quotes, no prefix.\n\nStats:\n${stat}\n\nDiff:\n${diff}`;
+      const result = await callLlm(prompt, 100);
+      if (result.error) return { error: result.error };
+      return { message: result.text };
     } catch (err: any) {
-      return { success: false, error: err.message };
+      return { error: err.message || 'Failed to generate commit message' };
     }
   });
 }

@@ -74,6 +74,52 @@ export function getSettings(): StoredSettings & { provider: string; model: strin
   return readSettings();
 }
 
+export async function callLlm(prompt: string, maxTokens: number): Promise<{ text?: string; error?: string }> {
+  const settings = readSettings();
+  const apiKey = decryptKey(settings.encryptedKey);
+  if (!apiKey) return { error: 'No API key configured. Add one in Settings.' };
+
+  if (settings.provider === 'anthropic') {
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify({
+        model: settings.model,
+        max_tokens: maxTokens,
+        messages: [{ role: 'user', content: prompt }],
+      }),
+      signal: AbortSignal.timeout(15000),
+    });
+    if (!response.ok) return { error: `API error: ${response.status} ${response.statusText}` };
+    const data: any = await response.json();
+    if (data.content?.[0]?.text) return { text: data.content[0].text.trim() };
+    return { error: data.error?.message || 'API error' };
+  } else if (settings.provider === 'openai') {
+    const response = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model: settings.model,
+        max_tokens: maxTokens,
+        messages: [{ role: 'user', content: prompt }],
+      }),
+      signal: AbortSignal.timeout(15000),
+    });
+    if (!response.ok) return { error: `API error: ${response.status} ${response.statusText}` };
+    const data: any = await response.json();
+    if (data.choices?.[0]?.message?.content) return { text: data.choices[0].message.content.trim() };
+    return { error: data.error?.message || 'API error' };
+  }
+  return { error: 'Unknown provider' };
+}
+
 export function registerSettingsHandlers() {
   ipcMain.handle('settings:get', () => {
     const settings = readSettings();
@@ -87,65 +133,33 @@ export function registerSettingsHandlers() {
   });
 
   ipcMain.handle('settings:set', (_event, data: { provider: string; model: string; apiKey?: string }) => {
-    const current = readSettings();
-    let encryptedKey = current.encryptedKey;
+    try {
+      const current = readSettings();
+      let encryptedKey = current.encryptedKey;
 
-    if (data.apiKey !== undefined) {
-      encryptedKey = encryptKey(data.apiKey);
+      if (data.apiKey !== undefined) {
+        encryptedKey = encryptKey(data.apiKey);
+      }
+
+      writeSettings({
+        provider: data.provider,
+        model: data.model,
+        encryptedKey,
+      });
+
+      return { success: true };
+    } catch (err: any) {
+      return { error: err.message || 'Failed to save settings' };
     }
-
-    writeSettings({
-      provider: data.provider,
-      model: data.model,
-      encryptedKey,
-    });
-
-    return { success: true };
   });
 
   ipcMain.handle('settings:summarize', async (_event, changes: { type: string; name: string }[]) => {
-    const settings = readSettings();
-    const apiKey = decryptKey(settings.encryptedKey);
-    if (!apiKey) return { error: 'No API key configured. Add one in Settings.' };
-
     const prompt = `Summarize what happened in this coding session based on these file changes. Be concise (1-2 sentences), friendly, and use plain English. Focus on what was accomplished, not individual file names.\n\nChanges:\n${changes.map(c => `- ${c.name}: ${c.type}`).join('\n')}`;
 
     try {
-      if (settings.provider === 'anthropic') {
-        const response = await fetch('https://api.anthropic.com/v1/messages', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'x-api-key': apiKey,
-            'anthropic-version': '2023-06-01',
-          },
-          body: JSON.stringify({
-            model: settings.model,
-            max_tokens: 200,
-            messages: [{ role: 'user', content: prompt }],
-          }),
-        });
-        const data: any = await response.json();
-        if (data.content?.[0]?.text) return { summary: data.content[0].text };
-        return { error: data.error?.message || 'API error' };
-      } else if (settings.provider === 'openai') {
-        const response = await fetch('https://api.openai.com/v1/chat/completions', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${apiKey}`,
-          },
-          body: JSON.stringify({
-            model: settings.model,
-            max_tokens: 200,
-            messages: [{ role: 'user', content: prompt }],
-          }),
-        });
-        const data: any = await response.json();
-        if (data.choices?.[0]?.message?.content) return { summary: data.choices[0].message.content };
-        return { error: data.error?.message || 'API error' };
-      }
-      return { error: 'Unknown provider' };
+      const result = await callLlm(prompt, 200);
+      if (result.error) return { error: result.error };
+      return { summary: result.text };
     } catch (err: any) {
       return { error: err.message || 'API call failed' };
     }

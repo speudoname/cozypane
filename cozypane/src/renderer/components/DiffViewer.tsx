@@ -1,19 +1,6 @@
 import React, { useEffect, useRef } from 'react';
 import * as monaco from 'monaco-editor';
-
-function getLanguage(filePath: string): string {
-  const ext = filePath.split('.').pop()?.toLowerCase() || '';
-  const map: Record<string, string> = {
-    ts: 'typescript', tsx: 'typescript',
-    js: 'javascript', jsx: 'javascript', mjs: 'javascript', cjs: 'javascript',
-    json: 'json', css: 'css', scss: 'scss', less: 'less',
-    html: 'html', md: 'markdown', py: 'python', rs: 'rust', go: 'go',
-    java: 'java', c: 'c', cpp: 'cpp', rb: 'ruby', php: 'php',
-    swift: 'swift', yaml: 'yaml', yml: 'yaml', sh: 'shell',
-    sql: 'sql', xml: 'xml', svg: 'xml',
-  };
-  return map[ext] || 'plaintext';
-}
+import { getLanguage } from '../lib/languageMap';
 
 interface Props {
   filePath: string;

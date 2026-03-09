@@ -2,20 +2,21 @@ import { contextBridge, ipcRenderer } from 'electron';
 
 contextBridge.exposeInMainWorld('cozyPane', {
   terminal: {
-    write: (data: string) => ipcRenderer.send('terminal:write', data),
-    resize: (cols: number, rows: number) => ipcRenderer.send('terminal:resize', cols, rows),
-    onData: (callback: (data: string) => void) => {
-      const listener = (_event: any, data: string) => callback(data);
+    write: (id: string, data: string) => ipcRenderer.send('terminal:write', id, data),
+    resize: (id: string, cols: number, rows: number) => ipcRenderer.send('terminal:resize', id, cols, rows),
+    onData: (callback: (id: string, data: string) => void) => {
+      const listener = (_event: any, id: string, data: string) => callback(id, data);
       ipcRenderer.on('terminal:data', listener);
       return () => ipcRenderer.removeListener('terminal:data', listener);
     },
-    onExit: (callback: (code: number) => void) => {
-      const listener = (_event: any, code: number) => callback(code);
+    onExit: (callback: (id: string, code: number) => void) => {
+      const listener = (_event: any, id: string, code: number) => callback(id, code);
       ipcRenderer.on('terminal:exit', listener);
       return () => ipcRenderer.removeListener('terminal:exit', listener);
     },
     create: (cwd?: string) => ipcRenderer.invoke('terminal:create', cwd),
-    getCwd: () => ipcRenderer.invoke('terminal:getCwd'),
+    close: (id: string) => ipcRenderer.invoke('terminal:close', id),
+    getCwd: (id: string) => ipcRenderer.invoke('terminal:getCwd', id),
   },
   fs: {
     readdir: (dirPath: string) => ipcRenderer.invoke('fs:readdir', dirPath),
@@ -43,13 +44,8 @@ contextBridge.exposeInMainWorld('cozyPane', {
     status: (cwd: string) => ipcRenderer.invoke('git:status', cwd),
     branch: (cwd: string) => ipcRenderer.invoke('git:branch', cwd),
     log: (cwd: string) => ipcRenderer.invoke('git:log', cwd),
-    stage: (cwd: string, path: string) => ipcRenderer.invoke('git:stage', cwd, path),
-    unstage: (cwd: string, path: string) => ipcRenderer.invoke('git:unstage', cwd, path),
-    stageAll: (cwd: string) => ipcRenderer.invoke('git:stageAll', cwd),
-    unstageAll: (cwd: string) => ipcRenderer.invoke('git:unstageAll', cwd),
-    commit: (cwd: string, message: string) => ipcRenderer.invoke('git:commit', cwd, message),
     diffFile: (cwd: string, path: string) => ipcRenderer.invoke('git:diffFile', cwd, path),
-    revertFile: (cwd: string, path: string) => ipcRenderer.invoke('git:revertFile', cwd, path),
-    revertFiles: (cwd: string, paths: string[]) => ipcRenderer.invoke('git:revertFiles', cwd, paths),
+    remoteInfo: (cwd: string) => ipcRenderer.invoke('git:remoteInfo', cwd),
+    generateCommitMsg: (cwd: string) => ipcRenderer.invoke('git:generateCommitMsg', cwd),
   },
 });

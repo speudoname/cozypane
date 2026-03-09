@@ -3,3 +3,6 @@ dist/
 .DS_Store
 *.tsbuildinfo
 audits/
+.env
+certs/
+release/
