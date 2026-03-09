@@ -21,7 +21,7 @@ jobs:
           - os: macos-latest
             platform: mac
             arch: arm64
-          - os: macos-13
+          - os: macos-latest
             platform: mac
             arch: x64
           - os: windows-latest
@@ -61,6 +61,7 @@ jobs:
             cozypane/release/*.exe
             cozypane/release/*.AppImage
             cozypane/release/*.deb
+            cozypane/release/*.rpm
             cozypane/release/latest*.yml
           if-no-files-found: error
 
@@ -120,4 +121,5 @@ jobs:
             artifacts/build-*/*.exe
             artifacts/build-*/*.AppImage
             artifacts/build-*/*.deb
+            artifacts/build-*/*.rpm
           generate_release_notes: true
