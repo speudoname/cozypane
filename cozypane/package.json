@@ -2,10 +2,7 @@
   "name": "cozypane",
   "version": "0.1.0",
   "description": "A cozy terminal for AI-powered coding tools",
-  "author": {
-    "name": "CozyPane",
-    "email": "levan@sarke.ge"
-  },
+  "author": "CozyPane",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -84,7 +81,7 @@
       "notarize": false
     },
     "dmg": {
-      "title": "${productName} ${version}",
+      "title": "${productName}",
       "contents": [
         {
           "x": 130,
