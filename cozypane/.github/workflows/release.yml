@@ -43,13 +43,18 @@ jobs:
       - name: Build app
         run: npm run build
 
-      - name: Build distributables
+      - name: Build distributables (macOS)
+        if: matrix.platform == 'mac'
         env:
-          CSC_LINK: ${{ matrix.platform == 'mac' && secrets.MAC_CSC_LINK || '' }}
-          CSC_KEY_PASSWORD: ${{ matrix.platform == 'mac' && secrets.MAC_CSC_KEY_PASSWORD || '' }}
-          APPLE_ID: ${{ matrix.platform == 'mac' && secrets.APPLE_ID || '' }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ matrix.platform == 'mac' && secrets.APPLE_APP_SPECIFIC_PASSWORD || '' }}
-          APPLE_TEAM_ID: ${{ matrix.platform == 'mac' && secrets.APPLE_TEAM_ID || '' }}
+          CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: npx electron-builder --mac --${{ matrix.arch }} --publish never
+
+      - name: Build distributables (non-macOS)
+        if: matrix.platform != 'mac'
         run: npx electron-builder --${{ matrix.platform }} --${{ matrix.arch }} --publish never
 
       - name: Upload artifacts
@@ -62,55 +67,28 @@ jobs:
             release/*.exe
             release/*.AppImage
             release/*.deb
+            release/*.rpm
             release/latest*.yml
           if-no-files-found: error
 
-  upload:
+      - name: Upload update metadata
+        if: matrix.platform == 'mac' && matrix.arch == 'arm64'
+        uses: actions/upload-artifact@v4
+        with:
+          name: update-mac
+          path: release/latest-mac.yml
+          if-no-files-found: warn
+
+  release:
     needs: build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-
-      - name: Install wrangler
-        run: npm install -g wrangler
-
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
           path: artifacts
-
-      - name: Get version
-        id: version
-        run: echo "version=$(node -p "require('./package.json').version")" >> $GITHUB_OUTPUT
-
-      - name: Upload to R2
-        env:
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-        run: |
-          VERSION=${{ steps.version.outputs.version }}
-          BUCKET="cozypane-downloads"
-
-          # Upload all build artifacts to versioned and latest paths
-          for dir in artifacts/build-*/; do
-            for file in "$dir"*; do
-              [ -f "$file" ] || continue
-              name=$(basename "$file")
-              echo "Uploading $name..."
-              wrangler r2 object put "${BUCKET}/v${VERSION}/${name}" --file="$file"
-              wrangler r2 object put "${BUCKET}/latest/${name}" --file="$file"
-            done
-          done
-
-      - name: Deploy landing page
-        env:
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-        run: wrangler pages deploy website/ --project-name=cozypane-site --commit-dirty=true
 
       - name: Create GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
@@ -122,4 +100,18 @@ jobs:
             artifacts/build-*/*.exe
             artifacts/build-*/*.AppImage
             artifacts/build-*/*.deb
+            artifacts/build-*/*.rpm
+            artifacts/build-*/*.yml
           generate_release_notes: true
+
+  deploy-website:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy landing page
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: npx wrangler pages deploy website/ --project-name=cozypane-site --commit-dirty=true
