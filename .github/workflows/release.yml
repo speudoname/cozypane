@@ -57,7 +57,14 @@ jobs:
           name: build-mac-${{ matrix.arch }}
           path: |
             cozypane/release/*.zip
-            cozypane/release/latest-mac.yml
+          if-no-files-found: warn
+
+      - name: Upload update metadata
+        if: matrix.arch == 'arm64'
+        uses: actions/upload-artifact@v4
+        with:
+          name: update-mac
+          path: cozypane/release/latest-mac.yml
           if-no-files-found: warn
 
   build-linux:
@@ -168,6 +175,7 @@ jobs:
             artifacts/build-mac-x64/*
             artifacts/build-linux-x64/*
             artifacts/build-win-x64/*
+            artifacts/update-mac/*
 
   deploy-website:
     needs: release
