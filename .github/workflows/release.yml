@@ -95,8 +95,21 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v0.1.0
-          name: CozyPane v0.1.0
+          tag_name: ${{ github.ref_name }}
+          name: CozyPane ${{ github.ref_name }}
           generate_release_notes: true
           files: |
             artifacts/**/*
+
+  deploy-website:
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy to Cloudflare Pages
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages deploy cozypane/website --project-name=cozypane-site

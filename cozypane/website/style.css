@@ -223,8 +223,15 @@ body {
 
 .download-sub {
   color: var(--text-dim);
-  margin-bottom: 40px;
+  margin-bottom: 8px;
   font-size: 16px;
+}
+
+.download-version {
+  color: var(--text-muted);
+  font-size: 14px;
+  font-family: var(--font-mono);
+  margin-bottom: 32px;
 }
 
 .download-grid {

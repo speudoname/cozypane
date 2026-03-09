@@ -151,7 +151,7 @@ export default function Terminal({ terminalId, cwd, isVisible, onCwdChange, onAc
       onConversationUpdateRef.current?.([...conversationRef.current]);
     }
 
-    window.cozyPane.terminal.write(id, command + '\n');
+    window.cozyPane.terminal.write(id, command + '\r');
     manualUntilRef.current = 0;
 
     // Check cwd after command executes

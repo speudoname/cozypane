@@ -96,7 +96,7 @@
       <div class="feature-card">
         <div class="feature-icon">&#128187;</div>
         <h3>Cross-Platform</h3>
-        <p>macOS today, Windows and Linux coming soon. Built with Electron for native feel.</p>
+        <p>macOS, Windows, and Linux. Built with Electron for native feel.</p>
       </div>
     </div>
   </section>
@@ -105,43 +105,44 @@
   <section class="download" id="download">
     <h2>Download CozyPane</h2>
     <p class="download-sub">Free and open source. Pick your platform.</p>
+    <p class="download-version" id="download-version"></p>
     <div class="download-grid">
-      <a href="https://github.com/speudoname/cozypane/releases/latest/download/CozyPane-0.1.0-arm64.dmg" class="download-card" data-os="mac-arm">
+      <a href="#" class="download-card" data-os="mac-arm" data-pattern="arm64-mac.zip">
         <div class="download-icon">&#63743;</div>
         <div class="download-info">
           <strong>macOS Apple Silicon</strong>
-          <span>M1, M2, M3, M4 &mdash; .dmg</span>
+          <span>M1, M2, M3, M4 &mdash; .zip</span>
         </div>
       </a>
-      <a href="https://github.com/speudoname/cozypane/releases/latest/download/CozyPane-0.1.0-x64.dmg" class="download-card" data-os="mac-intel">
+      <a href="#" class="download-card" data-os="mac-intel" data-pattern="-mac.zip" data-exclude="arm64">
         <div class="download-icon">&#63743;</div>
         <div class="download-info">
           <strong>macOS Intel</strong>
-          <span>Intel Macs &mdash; .dmg</span>
+          <span>Intel Macs &mdash; .zip</span>
         </div>
       </a>
-      <a href="https://github.com/speudoname/cozypane/releases/latest/download/CozyPane-0.1.0-x64.exe" class="download-card" data-os="windows">
+      <a href="#" class="download-card" data-os="windows" data-pattern=".exe">
         <div class="download-icon">&#8862;</div>
         <div class="download-info">
           <strong>Windows</strong>
-          <span>64-bit &mdash; .exe installer</span>
+          <span>.exe installer</span>
         </div>
       </a>
-      <a href="https://github.com/speudoname/cozypane/releases/latest/download/CozyPane-0.1.0.AppImage" class="download-card" data-os="linux-appimage">
+      <a href="#" class="download-card" data-os="linux-appimage" data-pattern=".AppImage">
         <div class="download-icon">&#128039;</div>
         <div class="download-info">
           <strong>Linux AppImage</strong>
           <span>64-bit &mdash; portable</span>
         </div>
       </a>
-      <a href="https://github.com/speudoname/cozypane/releases/latest/download/cozypane_0.1.0_amd64.deb" class="download-card" data-os="linux-deb">
+      <a href="#" class="download-card" data-os="linux-deb" data-pattern=".deb">
         <div class="download-icon">&#128039;</div>
         <div class="download-info">
           <strong>Linux .deb</strong>
           <span>Ubuntu/Debian &mdash; 64-bit</span>
         </div>
       </a>
-      <a href="https://github.com/speudoname/cozypane/releases/latest/download/cozypane-0.1.0.x86_64.rpm" class="download-card" data-os="linux-rpm">
+      <a href="#" class="download-card" data-os="linux-rpm" data-pattern=".rpm">
         <div class="download-icon">&#128039;</div>
         <div class="download-info">
           <strong>Linux .rpm</strong>
@@ -154,7 +155,7 @@
   <!-- Footer -->
   <footer class="footer">
     <div class="footer-inner">
-      <span>CozyPane v0.1.0</span>
+      <span id="footer-version">CozyPane</span>
       <div class="footer-links">
         <a href="https://github.com/speudoname/cozypane">GitHub</a>
         <a href="https://github.com/speudoname/cozypane/issues">Issues</a>
