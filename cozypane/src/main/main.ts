@@ -276,6 +276,24 @@ function setupAutoUpdater() {
 
 // App lifecycle
 app.whenReady().then(() => {
+  // On macOS, warn if not running from /Applications (updates won't work properly)
+  if (process.platform === 'darwin' && !app.isInApplicationsFolder()) {
+    dialog.showMessageBox({
+      type: 'warning',
+      title: 'Move to Applications',
+      message: 'CozyPane is not in the Applications folder.',
+      detail: 'Auto-updates only work when the app is in /Applications. Would you like to move it now?',
+      buttons: ['Move to Applications', 'Not Now'],
+      defaultId: 0,
+    }).then(({ response }) => {
+      if (response === 0) {
+        try {
+          app.moveToApplicationsFolder();
+        } catch {}
+      }
+    });
+  }
+
   buildMenu();
   createWindow();
   setupAutoUpdater();
