@@ -57,6 +57,8 @@ jobs:
 
       - name: Build distributables
         run: npx electron-builder --${{ matrix.platform }} --${{ matrix.arch }} --publish never
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -70,63 +72,23 @@ jobs:
             cozypane/release/*.deb
             cozypane/release/*.rpm
             cozypane/release/latest*.yml
-          if-no-files-found: error
+          if-no-files-found: warn
 
-  upload:
+  release:
     needs: build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-
-      - name: Install wrangler
-        run: npm install -g wrangler
 
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
           path: artifacts
 
-      - name: Get version
-        id: version
-        run: echo "version=$(node -p "require('./package.json').version")" >> $GITHUB_OUTPUT
-
-      - name: Upload to R2
-        env:
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-        run: |
-          VERSION=${{ steps.version.outputs.version }}
-          BUCKET="cozypane-downloads"
-
-          for dir in ../artifacts/build-*/; do
-            for file in "$dir"*; do
-              [ -f "$file" ] || continue
-              name=$(basename "$file")
-              echo "Uploading $name..."
-              wrangler r2 object put "${BUCKET}/v${VERSION}/${name}" --file="$file"
-              wrangler r2 object put "${BUCKET}/latest/${name}" --file="$file"
-            done
-          done
-
-      - name: Deploy landing page
-        env:
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-        run: wrangler pages deploy website/ --project-name=cozypane-site --commit-dirty=true
-
       - name: Create GitHub Release
-        if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: |
-            artifacts/build-*/*.dmg
-            artifacts/build-*/*.zip
-            artifacts/build-*/*.exe
-            artifacts/build-*/*.AppImage
-            artifacts/build-*/*.deb
-            artifacts/build-*/*.rpm
+          tag_name: ${{ github.ref_name }}
           generate_release_notes: true
+          files: |
+            artifacts/build-*/*

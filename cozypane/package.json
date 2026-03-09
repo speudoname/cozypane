@@ -2,7 +2,19 @@
   "name": "cozypane",
   "version": "0.1.0",
   "description": "A cozy terminal for AI-powered coding tools",
-  "author": "CozyPane",
+  "author": {
+    "name": "CozyPane",
+    "email": "levan@sarke.ge"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/speudoname/cozypane.git"
+  },
+  "homepage": "https://cozypane.com",
+  "bugs": {
+    "url": "https://github.com/speudoname/cozypane/issues"
+  },
   "main": "dist/main/main.js",
   "scripts": {
     "dev": "concurrently \"npm run dev:main\" \"npm run dev:renderer\"",
@@ -69,7 +81,7 @@
       "hardenedRuntime": true,
       "gatekeeperAssess": false,
       "darkModeSupport": true,
-      "notarize": true
+      "notarize": false
     },
     "dmg": {
       "title": "${productName} ${version}",
@@ -108,8 +120,9 @@
       "icon": "build/icon.png"
     },
     "publish": {
-      "provider": "generic",
-      "url": "https://downloads.cozypane.com/latest"
+      "provider": "github",
+      "owner": "speudoname",
+      "repo": "cozypane"
     }
   }
 }
