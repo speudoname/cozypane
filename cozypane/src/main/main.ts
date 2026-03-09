@@ -257,7 +257,11 @@ function setupAutoUpdater() {
       detail: 'It will be installed when you restart the app.',
       buttons: ['Restart Now', 'Later'],
     }).then(({ response }) => {
-      if (response === 0) autoUpdater.quitAndInstall();
+      if (response === 0) {
+        // Force quit all windows first — macOS can block quitAndInstall otherwise
+        BrowserWindow.getAllWindows().forEach(w => w.close());
+        autoUpdater.quitAndInstall(false, true);
+      }
     });
   });
 
