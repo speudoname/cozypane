@@ -1,0 +1,58 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="petal3" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#f5dc8a"/>
+      <stop offset="100%" stop-color="#e8a838"/>
+    </linearGradient>
+    <linearGradient id="promptGrad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#9b8af0"/>
+      <stop offset="100%" stop-color="#5ce0a8"/>
+    </linearGradient>
+    <radialGradient id="glow3" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#f0c95c" stop-opacity="0.15"/>
+      <stop offset="100%" stop-color="#f0c95c" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <!-- Background -->
+  <rect width="512" height="512" rx="108" fill="#1a1b2e"/>
+
+  <!-- Warm glow behind flower -->
+  <circle cx="256" cy="256" r="220" fill="url(#glow3)"/>
+
+  <g transform="translate(256,256)">
+    <!-- Simple 6-petal flower, large and bold -->
+    <g fill="url(#petal3)">
+      <!-- Top -->
+      <path d="M0,-70 Q-35,-155 0,-180 Q35,-155 0,-70Z"/>
+      <!-- Top-right -->
+      <path d="M0,-70 Q-35,-155 0,-180 Q35,-155 0,-70Z" transform="rotate(60)"/>
+      <!-- Bottom-right -->
+      <path d="M0,-70 Q-35,-155 0,-180 Q35,-155 0,-70Z" transform="rotate(120)"/>
+      <!-- Bottom -->
+      <path d="M0,-70 Q-35,-155 0,-180 Q35,-155 0,-70Z" transform="rotate(180)"/>
+      <!-- Bottom-left -->
+      <path d="M0,-70 Q-35,-155 0,-180 Q35,-155 0,-70Z" transform="rotate(240)"/>
+      <!-- Top-left -->
+      <path d="M0,-70 Q-35,-155 0,-180 Q35,-155 0,-70Z" transform="rotate(300)"/>
+    </g>
+
+    <!-- Between petals, smaller -->
+    <g fill="#e8a838" opacity="0.6">
+      <path d="M0,-60 Q-25,-130 0,-150 Q25,-130 0,-60Z" transform="rotate(30)"/>
+      <path d="M0,-60 Q-25,-130 0,-150 Q25,-130 0,-60Z" transform="rotate(90)"/>
+      <path d="M0,-60 Q-25,-130 0,-150 Q25,-130 0,-60Z" transform="rotate(150)"/>
+      <path d="M0,-60 Q-25,-130 0,-150 Q25,-130 0,-60Z" transform="rotate(210)"/>
+      <path d="M0,-60 Q-25,-130 0,-150 Q25,-130 0,-60Z" transform="rotate(270)"/>
+      <path d="M0,-60 Q-25,-130 0,-150 Q25,-130 0,-60Z" transform="rotate(330)"/>
+    </g>
+
+    <!-- Dark center -->
+    <circle cx="0" cy="0" r="65" fill="#14152a" stroke="#2a2b42" stroke-width="2"/>
+
+    <!-- >_ prompt with gradient -->
+    <text x="-34" y="12" font-family="SF Mono, Menlo, monospace" font-size="48" font-weight="800" fill="url(#promptGrad)">
+      &gt;_
+    </text>
+  </g>
+</svg>

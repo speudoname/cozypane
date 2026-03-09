@@ -5,7 +5,7 @@ import Terminal from './components/Terminal';
 import StatusBar from './components/StatusBar';
 import ActivityFeed from './components/ActivityFeed';
 import DiffViewer from './components/DiffViewer';
-import ConversationHistory from './components/ConversationHistory';
+import SessionSummary from './components/SessionSummary';
 import type { ConversationTurn } from './components/ConversationHistory';
 import Settings from './components/Settings';
 import GitPanel from './components/GitPanel';
@@ -17,7 +17,7 @@ import type { TerminalTab } from './components/TerminalTabBar';
 import type { AiAction, CostInfo } from './lib/terminalAnalyzer';
 
 type LayoutMode = 'two-col' | 'three-col';
-type RightPanelTab = 'preview' | 'activity' | 'conversation' | 'settings' | 'git';
+type RightPanelTab = 'preview' | 'activity' | 'summary' | 'settings' | 'git';
 
 function loadPersisted<T>(key: string, fallback: T): T {
   try {
@@ -67,6 +67,13 @@ export default function App() {
   const [gitBranch, setGitBranch] = useState('');
   const [paletteOpen, setPaletteOpen] = useState(false);
 
+  // Per-panel zoom levels (font sizes)
+  const [terminalFontSize, setTerminalFontSize] = useState(() => loadPersisted('terminalFontSize', 13));
+  const [editorFontSize, setEditorFontSize] = useState(() => loadPersisted('editorFontSize', 13));
+  const [sidebarFontSize, setSidebarFontSize] = useState(() => loadPersisted('sidebarFontSize', 13));
+  const [panelFontSize, setPanelFontSize] = useState(() => loadPersisted('panelFontSize', 12));
+  const hoverZoneRef = useRef<'terminal' | 'sidebar' | 'editor' | 'panel'>('terminal');
+
   // Multi-terminal state
   const [terminalTabs, setTerminalTabs] = useState<TerminalTab[]>(() => {
     const savedCwd = loadPersisted<string>('cwd', '');
@@ -107,6 +114,10 @@ export default function App() {
   useEffect(() => { savePersisted('rightPanelTab', rightPanelTab); }, [rightPanelTab]);
   useEffect(() => { if (!isResizing) savePersisted('panelWidth', panelWidth); }, [panelWidth, isResizing]);
   useEffect(() => { savePersisted('sidebarRatio', sidebarRatio); }, [sidebarRatio]);
+  useEffect(() => { savePersisted('terminalFontSize', terminalFontSize); }, [terminalFontSize]);
+  useEffect(() => { savePersisted('editorFontSize', editorFontSize); }, [editorFontSize]);
+  useEffect(() => { savePersisted('sidebarFontSize', sidebarFontSize); }, [sidebarFontSize]);
+  useEffect(() => { savePersisted('panelFontSize', panelFontSize); }, [panelFontSize]);
 
   const changedFiles = useMemo(() => {
     const map = new Map<string, 'create' | 'modify' | 'delete'>();
@@ -322,6 +333,64 @@ export default function App() {
     return () => window.removeEventListener('keydown', handler);
   }, [addTerminalTab, closeTerminalTab]);
 
+  // Per-panel zoom via Cmd+/- based on hover zone
+  const adjustZoom = useCallback((delta: number, reset?: boolean) => {
+    const zone = hoverZoneRef.current;
+    const clamp = (v: number, min: number, max: number) => Math.max(min, Math.min(max, v));
+    if (zone === 'terminal') {
+      setTerminalFontSize(prev => reset ? 13 : clamp(prev + delta, 8, 28));
+    } else if (zone === 'editor') {
+      setEditorFontSize(prev => reset ? 13 : clamp(prev + delta, 8, 28));
+    } else if (zone === 'sidebar') {
+      setSidebarFontSize(prev => reset ? 13 : clamp(prev + delta, 9, 22));
+    } else {
+      setPanelFontSize(prev => reset ? 12 : clamp(prev + delta, 8, 22));
+    }
+  }, []);
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey)) return;
+      if (e.key === '=' || e.key === '+') {
+        e.preventDefault();
+        adjustZoom(1);
+      } else if (e.key === '-') {
+        e.preventDefault();
+        adjustZoom(-1);
+      } else if (e.key === '0') {
+        e.preventDefault();
+        adjustZoom(0, true);
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [adjustZoom]);
+
+  // Menu event listeners from Electron main process
+  useEffect(() => {
+    const cleanups = [
+      window.cozyPane.onMenuAction('menu:new-tab', addTerminalTab),
+      window.cozyPane.onMenuAction('menu:close-tab', () => closeTerminalTab(activeTerminalIdRef.current)),
+      window.cozyPane.onMenuAction('menu:toggle-panels', togglePanels),
+      window.cozyPane.onMenuAction('menu:toggle-layout', toggleLayout),
+      window.cozyPane.onMenuAction('menu:settings', () => { setPanelsOpen(true); setRightPanelTab('settings'); }),
+      window.cozyPane.onMenuAction('menu:clear-terminal', () => {
+        const tab = terminalTabsRef.current.find(t => t.id === activeTerminalIdRef.current);
+        if (tab?.ptyId) window.cozyPane.terminal.write(tab.ptyId, 'clear\n');
+      }),
+      window.cozyPane.onMenuAction('menu:split-view', () => {
+        const tabs = terminalTabsRef.current;
+        if (tabs.length < 2) return;
+        const other = tabs.find(t => t.id !== activeTerminalIdRef.current);
+        if (other) toggleSplit(other.id);
+      }),
+      window.cozyPane.onMenuAction('menu:zoom-in', () => adjustZoom(1)),
+      window.cozyPane.onMenuAction('menu:zoom-out', () => adjustZoom(-1)),
+      window.cozyPane.onMenuAction('menu:zoom-reset', () => adjustZoom(0, true)),
+    ];
+    return () => cleanups.forEach(fn => fn());
+  }, [addTerminalTab, closeTerminalTab, togglePanels, toggleLayout, toggleSplit, adjustZoom]);
+
   const terminalTabsRef = useRef(terminalTabs);
   terminalTabsRef.current = terminalTabs;
 
@@ -338,7 +407,7 @@ export default function App() {
     { id: 'new-terminal', label: 'New Terminal Tab', category: 'Terminal', shortcut: 'Cmd+T', action: addTerminalTab },
     { id: 'tab-editor', label: 'Show Editor', category: 'Tab', action: () => setRightPanelTab('preview') },
     { id: 'tab-activity', label: 'Show Activity Feed', category: 'Tab', action: () => setRightPanelTab('activity') },
-    { id: 'tab-chat', label: 'Show Chat History', category: 'Tab', action: () => setRightPanelTab('conversation') },
+    { id: 'tab-summary', label: 'Show Session Summary', category: 'Tab', action: () => setRightPanelTab('summary') },
     { id: 'tab-git', label: 'Show Git Panel', category: 'Tab', action: () => setRightPanelTab('git') },
     { id: 'tab-settings', label: 'Show Settings', category: 'Tab', action: () => setRightPanelTab('settings') },
     { id: 'git-stage-all', label: 'Stage All Changes', category: 'Git', action: () => { sendTerminalCommand('git add -A'); setRightPanelTab('git'); } },
@@ -381,8 +450,8 @@ export default function App() {
       );
     }
 
-    if (rightPanelTab === 'conversation') {
-      return <ConversationHistory turns={conversationTurns} />;
+    if (rightPanelTab === 'summary') {
+      return <SessionSummary turns={conversationTurns} aiAction={aiAction} activityEvents={activityEvents} />;
     }
 
     if (rightPanelTab === 'settings') {
@@ -412,7 +481,7 @@ export default function App() {
               <span className="tab-close" role="button" aria-label="Close diff" onClick={() => setDiffState(null)}>x</span>
             </div>
           </div>
-          <DiffViewer filePath={diffState.filePath} before={diffState.before} after={diffState.after} />
+          <DiffViewer filePath={diffState.filePath} before={diffState.before} after={diffState.after} fontSize={editorFontSize} />
         </>
       );
     }
@@ -438,7 +507,7 @@ export default function App() {
             </div>
           ))}
         </div>
-        <FilePreview filePath={activeTab} onDirtyChange={handleDirtyChange} />
+        <FilePreview filePath={activeTab} onDirtyChange={handleDirtyChange} fontSize={editorFontSize} />
       </>
     );
   };
@@ -461,13 +530,10 @@ export default function App() {
         )}
       </button>
       <button
-        className={`panel-tab ${rightPanelTab === 'conversation' ? 'active' : ''}`}
-        onClick={() => setRightPanelTab('conversation')}
+        className={`panel-tab ${rightPanelTab === 'summary' ? 'active' : ''}`}
+        onClick={() => setRightPanelTab('summary')}
       >
-        Chat
-        {conversationTurns.length > 0 && (
-          <span className="panel-tab-badge">{conversationTurns.length}</span>
-        )}
+        Summary
       </button>
       <button
         className={`panel-tab ${rightPanelTab === 'git' ? 'active' : ''}`}
@@ -512,7 +578,9 @@ export default function App() {
       </div>
 
       <div className="main-content">
-        <div className={`terminal-pane ${splitTerminalId ? 'split' : ''}`}>
+        <div className={`terminal-pane ${splitTerminalId ? 'split' : ''}`}
+          onMouseEnter={() => { hoverZoneRef.current = 'terminal'; }}
+        >
           <TerminalTabBar
             tabs={terminalTabs}
             activeId={activeTerminalId}
@@ -542,6 +610,7 @@ export default function App() {
                     terminalId={tab.ptyId}
                     cwd={tab.cwd}
                     isVisible={visible}
+                    fontSize={terminalFontSize}
                     onTerminalReady={(ptyId) => updateTab(tab.id, { ptyId })}
                     onCwdChange={(newCwd) => updateTab(tab.id, { cwd: newCwd })}
                     onActionChange={(action) => updateTab(tab.id, { aiAction: action })}
@@ -563,11 +632,15 @@ export default function App() {
 
             {layoutMode === 'two-col' ? (
               <div className="right-panel" style={{ width: panelWidth }}>
-                <div className="panel-section" style={{ flex: sidebarRatio }}>
+                <div className="panel-section" style={{ flex: sidebarRatio, fontSize: sidebarFontSize }}
+                  onMouseEnter={() => { hoverZoneRef.current = 'sidebar'; }}
+                >
                   <Sidebar {...sidebarProps} />
                 </div>
                 <div className="resize-handle-h" onMouseDown={handleSplitResizeStart} />
-                <div className="panel-section preview-section" style={{ flex: 1 - sidebarRatio }}>
+                <div className="panel-section preview-section" style={{ flex: 1 - sidebarRatio, fontSize: panelFontSize }}
+                  onMouseEnter={() => { hoverZoneRef.current = rightPanelTab === 'preview' ? 'editor' : 'panel'; }}
+                >
                   {panelTabBar}
                   {renderBottomPanel()}
                 </div>
@@ -575,12 +648,16 @@ export default function App() {
             ) : (
               <>
                 <div className="right-panel" style={{ width: 180, minWidth: 140, maxWidth: 240 }}>
-                  <div className="panel-section" style={{ flex: 1 }}>
+                  <div className="panel-section" style={{ flex: 1, fontSize: sidebarFontSize }}
+                    onMouseEnter={() => { hoverZoneRef.current = 'sidebar'; }}
+                  >
                     <Sidebar {...sidebarProps} />
                   </div>
                 </div>
                 <div className="right-panel preview-panel" style={{ width: panelWidth }}>
-                  <div className="panel-section preview-section" style={{ flex: 1 }}>
+                  <div className="panel-section preview-section" style={{ flex: 1, fontSize: panelFontSize }}
+                    onMouseEnter={() => { hoverZoneRef.current = rightPanelTab === 'preview' ? 'editor' : 'panel'; }}
+                  >
                     {panelTabBar}
                     {renderBottomPanel()}
                   </div>

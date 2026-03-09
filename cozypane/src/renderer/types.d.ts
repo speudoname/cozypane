@@ -62,8 +62,12 @@ declare global {
     fs: {
       readdir: (dirPath: string) => Promise<FileEntry[]>;
       readfile: (filePath: string) => Promise<FileContent>;
+      readBinary: (filePath: string) => Promise<{ base64?: string; mime?: string; size?: number; error?: string }>;
       writefile: (filePath: string, content: string) => Promise<{ success?: boolean; error?: string }>;
       homedir: () => Promise<string>;
+      pickFile: () => Promise<{ paths: string[] }>;
+      saveClipboardImage: () => Promise<{ path: string | null }>;
+      clipboardFilePaths: () => Promise<{ paths: string[] }>;
     };
     watcher: {
       start: (dirPath: string) => Promise<{ success?: boolean; error?: string }>;
@@ -76,6 +80,7 @@ declare global {
       set: (data: { provider: string; model: string; apiKey?: string }) => Promise<{ success?: boolean; error?: string }>;
       summarize: (changes: { type: string; name: string }[]) => Promise<{ summary?: string; error?: string }>;
     };
+    onMenuAction: (channel: string, callback: () => void) => () => void;
     git: {
       isRepo: (cwd: string) => Promise<{ isRepo: boolean }>;
       status: (cwd: string) => Promise<{ files: GitFileStatus[]; error?: string }>;

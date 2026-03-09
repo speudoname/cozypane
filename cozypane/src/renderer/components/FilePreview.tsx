@@ -48,12 +48,176 @@ monaco.editor.defineTheme('cozy-dark', {
   },
 });
 
+const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'ico', 'bmp']);
+const VIDEO_EXTS = new Set(['mp4', 'webm', 'mov']);
+const AUDIO_EXTS = new Set(['mp3', 'wav', 'ogg']);
+const PDF_EXTS = new Set(['pdf']);
+const BINARY_EXTS = new Set([
+  'zip', 'tar', 'gz', 'rar', '7z', 'dmg', 'iso', 'exe', 'dll', 'so', 'dylib',
+  'woff', 'woff2', 'ttf', 'otf', 'eot',
+  'sqlite', 'db',
+  'class', 'o', 'pyc', 'wasm',
+  'icns',
+]);
+
+function getExt(filePath: string): string {
+  return filePath.split('.').pop()?.toLowerCase() || '';
+}
+
+type FileType = 'text' | 'image' | 'video' | 'audio' | 'pdf' | 'binary';
+
+function detectFileType(filePath: string): FileType {
+  const ext = getExt(filePath);
+  if (IMAGE_EXTS.has(ext)) return 'image';
+  if (VIDEO_EXTS.has(ext)) return 'video';
+  if (AUDIO_EXTS.has(ext)) return 'audio';
+  if (PDF_EXTS.has(ext)) return 'pdf';
+  if (BINARY_EXTS.has(ext)) return 'binary';
+  return 'text';
+}
+
+function formatSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+// ─── Media Preview Component ───
+
+interface MediaPreviewProps {
+  filePath: string;
+  fileType: FileType;
+}
+
+function MediaPreview({ filePath, fileType }: MediaPreviewProps) {
+  const [dataUrl, setDataUrl] = useState<string | null>(null);
+  const [fileInfo, setFileInfo] = useState<{ size: number; mime: string } | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [zoom, setZoom] = useState(1);
+
+  useEffect(() => {
+    setLoading(true);
+    setError(null);
+    setDataUrl(null);
+    setFileInfo(null);
+    setZoom(1);
+
+    window.cozyPane.fs.readBinary(filePath).then(result => {
+      if (result.error) {
+        setError(result.error);
+      } else if (result.base64 && result.mime) {
+        setDataUrl(`data:${result.mime};base64,${result.base64}`);
+        setFileInfo({ size: result.size || 0, mime: result.mime });
+      }
+      setLoading(false);
+    }).catch(() => { setLoading(false); setError('Could not load file'); });
+  }, [filePath]);
+
+  if (loading) {
+    return <div className="media-preview-center">Loading...</div>;
+  }
+  if (error) {
+    return <div className="media-preview-center">{error}</div>;
+  }
+
+  const fileName = filePath.split('/').pop() || filePath;
+
+  if (fileType === 'image' && dataUrl) {
+    return (
+      <div className="media-preview">
+        <div className="media-toolbar">
+          <span className="media-filename">{fileName}</span>
+          {fileInfo && <span className="media-info">{fileInfo.mime} — {formatSize(fileInfo.size)}</span>}
+          <div className="media-zoom-controls">
+            <button onClick={() => setZoom(z => Math.max(0.1, z - 0.25))}>-</button>
+            <span>{Math.round(zoom * 100)}%</span>
+            <button onClick={() => setZoom(z => Math.min(5, z + 0.25))}>+</button>
+            <button onClick={() => setZoom(1)}>1:1</button>
+          </div>
+        </div>
+        <div className="media-image-container"
+          onWheel={e => {
+            if (e.metaKey || e.ctrlKey) {
+              e.preventDefault();
+              setZoom(z => Math.max(0.1, Math.min(5, z + (e.deltaY < 0 ? 0.1 : -0.1))));
+            }
+          }}
+        >
+          <img
+            src={dataUrl}
+            alt={fileName}
+            style={{ transform: `scale(${zoom})`, transformOrigin: 'center center' }}
+            draggable={false}
+          />
+        </div>
+      </div>
+    );
+  }
+
+  if (fileType === 'video' && dataUrl) {
+    return (
+      <div className="media-preview">
+        <div className="media-toolbar">
+          <span className="media-filename">{fileName}</span>
+          {fileInfo && <span className="media-info">{formatSize(fileInfo.size)}</span>}
+        </div>
+        <div className="media-video-container">
+          <video controls src={dataUrl} style={{ maxWidth: '100%', maxHeight: '100%' }} />
+        </div>
+      </div>
+    );
+  }
+
+  if (fileType === 'audio' && dataUrl) {
+    return (
+      <div className="media-preview">
+        <div className="media-toolbar">
+          <span className="media-filename">{fileName}</span>
+          {fileInfo && <span className="media-info">{formatSize(fileInfo.size)}</span>}
+        </div>
+        <div className="media-preview-center">
+          <div className="media-audio-icon">♫</div>
+          <audio controls src={dataUrl} style={{ width: '80%', maxWidth: 400 }} />
+        </div>
+      </div>
+    );
+  }
+
+  if (fileType === 'pdf' && dataUrl) {
+    return (
+      <div className="media-preview">
+        <div className="media-toolbar">
+          <span className="media-filename">{fileName}</span>
+          {fileInfo && <span className="media-info">{formatSize(fileInfo.size)}</span>}
+        </div>
+        <iframe src={dataUrl} style={{ flex: 1, width: '100%', border: 'none', background: '#fff' }} title={fileName} />
+      </div>
+    );
+  }
+
+  // Binary fallback
+  return (
+    <div className="media-preview">
+      <div className="media-preview-center">
+        <div className="media-binary-icon">&#128196;</div>
+        <div className="media-filename">{fileName}</div>
+        {fileInfo && <div className="media-info">{fileInfo.mime} — {formatSize(fileInfo.size)}</div>}
+        <div className="media-info" style={{ marginTop: 8 }}>Binary file — cannot be previewed as text</div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Main FilePreview Component ───
+
 interface Props {
   filePath: string | null;
+  fontSize?: number;
   onDirtyChange?: (filePath: string, isDirty: boolean) => void;
 }
 
-export default function FilePreview({ filePath, onDirtyChange }: Props) {
+export default function FilePreview({ filePath, fontSize = 13, onDirtyChange }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const editorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -64,6 +228,9 @@ export default function FilePreview({ filePath, onDirtyChange }: Props) {
   const originalVersionRef = useRef<number>(0);
   const onDirtyChangeRef = useRef(onDirtyChange);
   onDirtyChangeRef.current = onDirtyChange;
+
+  const fileType = filePath ? detectFileType(filePath) : 'text';
+  const isMedia = fileType !== 'text';
 
   // Create editor instance once
   useEffect(() => {
@@ -126,14 +293,21 @@ export default function FilePreview({ filePath, onDirtyChange }: Props) {
     };
   }, []);
 
-  // Load file content when filePath changes
+  // Update font size when prop changes
+  useEffect(() => {
+    if (editorRef.current) {
+      editorRef.current.updateOptions({ fontSize });
+    }
+  }, [fontSize]);
+
+  // Load file content when filePath changes (text files only)
   useEffect(() => {
     const editor = editorRef.current;
     if (!editor) return;
 
     currentPathRef.current = filePath;
 
-    if (!filePath) {
+    if (!filePath || detectFileType(filePath) !== 'text') {
       editor.setValue('');
       setError(null);
       return;
@@ -176,7 +350,20 @@ export default function FilePreview({ filePath, onDirtyChange }: Props) {
           Saving...
         </div>
       )}
-      {loading && (
+
+      {/* Media files — show media preview */}
+      {isMedia && filePath && (
+        <MediaPreview filePath={filePath} fileType={fileType} />
+      )}
+
+      {/* Text files — show Monaco editor */}
+      <div ref={containerRef} style={{
+        width: '100%',
+        height: '100%',
+        display: isMedia ? 'none' : 'block',
+      }} />
+
+      {!isMedia && loading && (
         <div style={{
           position: 'absolute', inset: 0, zIndex: 5,
           display: 'flex', alignItems: 'center', justifyContent: 'center',
@@ -185,7 +372,7 @@ export default function FilePreview({ filePath, onDirtyChange }: Props) {
           Loading...
         </div>
       )}
-      {error && (
+      {!isMedia && error && (
         <div style={{
           position: 'absolute', inset: 0, zIndex: 5,
           display: 'flex', alignItems: 'center', justifyContent: 'center',
@@ -194,7 +381,6 @@ export default function FilePreview({ filePath, onDirtyChange }: Props) {
           {error}
         </div>
       )}
-      <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
     </div>
   );
 }

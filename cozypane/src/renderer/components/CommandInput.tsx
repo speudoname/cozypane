@@ -7,6 +7,7 @@ interface SlashCommand {
 
 interface Props {
   onSubmit: (command: string) => void;
+  onRawKey?: (data: string) => void;
   visible: boolean;
   history: string[];
   onFocus?: () => void;
@@ -35,7 +36,17 @@ const DEFAULT_SLASH_COMMANDS: SlashCommand[] = [
   { cmd: '/vim', desc: 'Enter vim mode for editing' },
 ];
 
-export default function CommandInput({ onSubmit, visible, history, onFocus, isFocused, showSlashCommands, dynamicSlashCommands }: Props) {
+const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg', 'ico']);
+
+function getFileExt(name: string): string {
+  return name.split('.').pop()?.toLowerCase() || '';
+}
+
+function isImageFile(name: string): boolean {
+  return IMAGE_EXTS.has(getFileExt(name));
+}
+
+export default function CommandInput({ onSubmit, onRawKey, visible, history, onFocus, isFocused, showSlashCommands, dynamicSlashCommands }: Props) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [value, setValue] = useState('');
   const [historyIndex, setHistoryIndex] = useState(-1);
@@ -44,6 +55,16 @@ export default function CommandInput({ onSubmit, visible, history, onFocus, isFo
   const [suggestions, setSuggestions] = useState<SlashCommand[]>([]);
   const [selectedSuggestion, setSelectedSuggestion] = useState(0);
   const [dragOver, setDragOver] = useState(false);
+  const [attachedPaths, setAttachedPaths] = useState<string[]>([]);
+
+  // Insert path(s) at cursor position in textarea
+  const insertPaths = useCallback((paths: string[]) => {
+    if (paths.length === 0) return;
+    const joined = paths.join(' ');
+    setValue(prev => prev ? prev + ' ' + joined : joined);
+    setAttachedPaths(prev => [...prev, ...paths]);
+    textareaRef.current?.focus();
+  }, []);
 
   useEffect(() => {
     if (visible && isFocused && textareaRef.current) {
@@ -51,13 +72,26 @@ export default function CommandInput({ onSubmit, visible, history, onFocus, isFo
     }
   }, [visible, isFocused]);
 
-  // Auto-resize textarea
+  // Listen for file drops forwarded from terminal area
   useEffect(() => {
-    if (textareaRef.current) {
-      textareaRef.current.style.height = 'auto';
-      const scrollHeight = textareaRef.current.scrollHeight;
-      textareaRef.current.style.height = Math.min(scrollHeight, 200) + 'px';
-    }
+    const handler = (e: Event) => {
+      const paths = (e as CustomEvent).detail as string;
+      if (paths) insertPaths(paths.split(' '));
+    };
+    window.addEventListener('cozyPane:fileDrop', handler);
+    return () => window.removeEventListener('cozyPane:fileDrop', handler);
+  }, [insertPaths]);
+
+  // Auto-resize textarea — max ~10 lines then scroll
+  useEffect(() => {
+    const ta = textareaRef.current;
+    if (!ta) return;
+    ta.style.height = '0';
+    ta.style.overflowY = 'hidden';
+    const maxH = 200; // ~10 lines at 13px * 1.5 line-height + padding
+    const sh = ta.scrollHeight;
+    ta.style.height = Math.min(sh, maxH) + 'px';
+    ta.style.overflowY = sh > maxH ? 'auto' : 'hidden';
   }, [value]);
 
   // Update slash command suggestions
@@ -77,6 +111,47 @@ export default function CommandInput({ onSubmit, visible, history, onFocus, isFo
     setSuggestions([]);
     textareaRef.current?.focus();
   }, []);
+
+  // File picker via + button
+  const handlePickFile = useCallback(async () => {
+    const result = await window.cozyPane.fs.pickFile();
+    if (result.paths.length > 0) {
+      insertPaths(result.paths);
+    }
+  }, [insertPaths]);
+
+  // Handle paste — intercept clipboard images and file copies
+  const handlePaste = useCallback(async (e: React.ClipboardEvent) => {
+    // Check for pasted files (e.g. images from clipboard)
+    const items = e.clipboardData.items;
+    let hasImage = false;
+    for (let i = 0; i < items.length; i++) {
+      if (items[i].type.startsWith('image/')) {
+        hasImage = true;
+        break;
+      }
+    }
+
+    if (hasImage) {
+      e.preventDefault();
+      // Save clipboard image to temp file and insert path
+      const result = await window.cozyPane.fs.saveClipboardImage();
+      if (result.path) {
+        insertPaths([result.path]);
+      }
+      return;
+    }
+
+    // Check for copied files (Cmd+C on files in Finder)
+    const result = await window.cozyPane.fs.clipboardFilePaths();
+    if (result.paths.length > 0) {
+      e.preventDefault();
+      insertPaths(result.paths);
+      return;
+    }
+
+    // Otherwise let normal text paste happen
+  }, [insertPaths]);
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     // If suggestions visible, handle navigation
@@ -107,6 +182,7 @@ export default function CommandInput({ onSubmit, visible, history, onFocus, isFo
       e.preventDefault();
       onSubmit(value);
       setValue('');
+      setAttachedPaths([]);
       setHistoryIndex(-1);
       setSavedDraft('');
       return;
@@ -161,6 +237,13 @@ export default function CommandInput({ onSubmit, visible, history, onFocus, isFo
       e.preventDefault();
     }
 
+    // Shift+Tab — forward to terminal (e.g. Claude Code mode switch)
+    if (e.key === 'Tab' && e.shiftKey) {
+      e.preventDefault();
+      onRawKey?.('\x1b[Z');
+      return;
+    }
+
     // Tab (when no suggestions) = insert spaces
     if (e.key === 'Tab' && suggestions.length === 0) {
       e.preventDefault();
@@ -177,11 +260,26 @@ export default function CommandInput({ onSubmit, visible, history, onFocus, isFo
     }
   }, [value, onSubmit, history, historyIndex, savedDraft, suggestions, selectedSuggestion, applySuggestion]);
 
+  const removeAttached = useCallback((pathToRemove: string) => {
+    setAttachedPaths(prev => prev.filter(p => p !== pathToRemove));
+    setValue(prev => {
+      // Remove the path from the value text
+      return prev.replace(pathToRemove, '').replace(/  +/g, ' ').trim();
+    });
+  }, []);
+
   if (!visible) return null;
 
   return (
-    <div className="command-input-container">
-      <div className="command-input-prompt">$</div>
+    <div className={`command-input-container ${dragOver ? 'drag-over' : ''}`}>
+      <button
+        className="command-input-attach"
+        onClick={handlePickFile}
+        title="Attach file (inserts path)"
+        aria-label="Attach file"
+      >
+        +
+      </button>
       <div className="command-input-wrapper">
         {suggestions.length > 0 && (
           <div className="slash-suggestions">
@@ -197,6 +295,21 @@ export default function CommandInput({ onSubmit, visible, history, onFocus, isFo
             ))}
           </div>
         )}
+        {attachedPaths.length > 0 && (
+          <div className="attached-files">
+            {attachedPaths.map((p, i) => {
+              const name = p.split('/').pop() || p;
+              const isImage = isImageFile(name);
+              return (
+                <span key={i} className={`attached-chip ${isImage ? 'image' : ''}`} title={p}>
+                  <span className="attached-icon">{isImage ? '~' : '#'}</span>
+                  <span className="attached-name">{name}</span>
+                  <span className="attached-remove" onClick={() => removeAttached(p)}>x</span>
+                </span>
+              );
+            })}
+          </div>
+        )}
         <textarea
           ref={textareaRef}
           className={`command-input ${isFocused ? 'focused' : 'dimmed'} ${dragOver ? 'drag-over' : ''}`}
@@ -205,12 +318,21 @@ export default function CommandInput({ onSubmit, visible, history, onFocus, isFo
           onDrop={e => {
             e.preventDefault();
             setDragOver(false);
+            // Handle files dragged from Finder
+            if (e.dataTransfer.files.length > 0) {
+              const paths = Array.from(e.dataTransfer.files).map(f => (f as any).path as string).filter(Boolean);
+              if (paths.length > 0) {
+                insertPaths(paths);
+                return;
+              }
+            }
+            // Handle text drag (e.g. from sidebar)
             const path = e.dataTransfer.getData('text/plain');
             if (path) {
-              setValue(prev => prev ? prev + ' ' + path : path);
-              textareaRef.current?.focus();
+              insertPaths([path]);
             }
           }}
+          onPaste={handlePaste}
           value={value}
           onChange={e => {
             setValue(e.target.value);
@@ -231,6 +353,12 @@ export default function CommandInput({ onSubmit, visible, history, onFocus, isFo
         <span>Enter to run</span>
         <span>Shift+Enter newline</span>
       </div>
+
+      {dragOver && (
+        <div className="drop-overlay">
+          Drop file to add path
+        </div>
+      )}
     </div>
   );
 }

@@ -6,9 +6,10 @@ interface Props {
   filePath: string;
   before: string;
   after: string;
+  fontSize?: number;
 }
 
-export default function DiffViewer({ filePath, before, after }: Props) {
+export default function DiffViewer({ filePath, before, after, fontSize = 13 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const editorRef = useRef<monaco.editor.IStandaloneDiffEditor | null>(null);
 
@@ -33,6 +34,12 @@ export default function DiffViewer({ filePath, before, after }: Props) {
       editorRef.current = null;
     };
   }, []);
+
+  useEffect(() => {
+    if (editorRef.current) {
+      editorRef.current.updateOptions({ fontSize });
+    }
+  }, [fontSize]);
 
   useEffect(() => {
     const editor = editorRef.current;

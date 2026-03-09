@@ -84,6 +84,12 @@ body {
   text-align: center;
 }
 
+.hero-icon {
+  border-radius: 24px;
+  margin-bottom: 24px;
+  filter: drop-shadow(0 4px 24px rgba(124, 110, 240, 0.25));
+}
+
 .hero h1 {
   font-size: 48px;
   font-weight: 800;

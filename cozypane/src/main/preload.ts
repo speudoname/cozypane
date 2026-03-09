@@ -22,7 +22,11 @@ contextBridge.exposeInMainWorld('cozyPane', {
     readdir: (dirPath: string) => ipcRenderer.invoke('fs:readdir', dirPath),
     readfile: (filePath: string) => ipcRenderer.invoke('fs:readfile', filePath),
     writefile: (filePath: string, content: string) => ipcRenderer.invoke('fs:writefile', filePath, content),
+    readBinary: (filePath: string) => ipcRenderer.invoke('fs:readBinary', filePath),
     homedir: () => ipcRenderer.invoke('fs:homedir'),
+    pickFile: () => ipcRenderer.invoke('fs:pickFile'),
+    saveClipboardImage: () => ipcRenderer.invoke('fs:saveClipboardImage'),
+    clipboardFilePaths: () => ipcRenderer.invoke('fs:clipboardFilePaths'),
   },
   watcher: {
     start: (dirPath: string) => ipcRenderer.invoke('watcher:start', dirPath),
@@ -38,6 +42,11 @@ contextBridge.exposeInMainWorld('cozyPane', {
     get: () => ipcRenderer.invoke('settings:get'),
     set: (data: { provider: string; model: string; apiKey?: string }) => ipcRenderer.invoke('settings:set', data),
     summarize: (changes: { type: string; name: string }[]) => ipcRenderer.invoke('settings:summarize', changes),
+  },
+  onMenuAction: (channel: string, callback: () => void) => {
+    const listener = () => callback();
+    ipcRenderer.on(channel, listener);
+    return () => ipcRenderer.removeListener(channel, listener);
   },
   git: {
     isRepo: (cwd: string) => ipcRenderer.invoke('git:isRepo', cwd),

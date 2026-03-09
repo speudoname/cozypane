@@ -164,6 +164,23 @@ export default function Sidebar({ isOpen, onToggle, onFileSelect, activeFile, on
     }
   }
 
+  // Build a map of directory paths → number of changed files inside them
+  const changedDirs = useMemo(() => {
+    const counts = new Map<string, number>();
+    if (!changedFiles || !cwd) return counts;
+    for (const filePath of changedFiles.keys()) {
+      // Walk up from the file's parent dir to cwd, incrementing each ancestor
+      let dir = filePath.slice(0, filePath.lastIndexOf('/'));
+      while (dir.length >= cwd.length) {
+        counts.set(dir, (counts.get(dir) || 0) + 1);
+        const parent = dir.slice(0, dir.lastIndexOf('/'));
+        if (parent === dir) break;
+        dir = parent;
+      }
+    }
+    return counts;
+  }, [changedFiles, cwd]);
+
   const folderName = cwd ? cwd.split('/').filter(Boolean).pop() || '/' : 'Files';
   const flatNodes = useMemo(() => flattenTree(tree), [tree]);
 
@@ -179,10 +196,11 @@ export default function Sidebar({ isOpen, onToggle, onFileSelect, activeFile, on
         {flatNodes.map(node => {
           const changeType = changedFiles?.get(node.path);
           const changeColor = getChangeColor(changeType);
+          const dirChangeCount = node.isDirectory ? changedDirs.get(node.path) : undefined;
           return (
             <div
               key={node.path}
-              className={`file-entry ${node.isDirectory ? 'directory' : ''} ${activeFile === node.path ? 'active' : ''}`}
+              className={`file-entry ${node.isDirectory ? 'directory' : ''} ${activeFile === node.path ? 'active' : ''} ${dirChangeCount ? 'has-changes' : ''}`}
               style={{ paddingLeft: 16 + node.depth * 16 }}
               onClick={() => handleClick(node)}
               draggable={node.isFile}
@@ -201,6 +219,9 @@ export default function Sidebar({ isOpen, onToggle, onFileSelect, activeFile, on
                 <span className="file-change-dot" style={{ color: changeColor }}>
                   {changeType === 'create' ? '+' : changeType === 'modify' ? '●' : '−'}
                 </span>
+              )}
+              {dirChangeCount && !changeType && (
+                <span className="dir-change-badge">{dirChangeCount}</span>
               )}
             </div>
           );

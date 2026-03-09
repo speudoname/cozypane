@@ -11,6 +11,7 @@ interface Props {
   terminalId: string | null;  // null until PTY created
   cwd: string;
   isVisible: boolean;
+  fontSize?: number;
   onCwdChange?: (newCwd: string) => void;
   onActionChange?: (action: AiAction) => void;
   onCostChange?: (cost: CostInfo) => void;
@@ -18,9 +19,10 @@ interface Props {
   onTerminalReady?: (id: string) => void;
 }
 
-export default function Terminal({ terminalId, cwd, isVisible, onCwdChange, onActionChange, onCostChange, onConversationUpdate, onTerminalReady }: Props) {
+export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, onCwdChange, onActionChange, onCostChange, onConversationUpdate, onTerminalReady }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<XTerm | null>(null);
+  const [termDragOver, setTermDragOver] = useState(false);
   const fitAddonRef = useRef<FitAddon | null>(null);
   const ptyCreated = useRef(false);
   const terminalIdRef = useRef<string | null>(terminalId);
@@ -55,9 +57,11 @@ export default function Terminal({ terminalId, cwd, isVisible, onCwdChange, onAc
     } catch { return []; }
   });
   const [claudeRunning, setClaudeRunning] = useState(false);
+  const [scrolledUp, setScrolledUp] = useState(false);
   const [dynamicSlashCommands, setDynamicSlashCommands] = useState<{ cmd: string; desc: string }[]>([]);
   const helpBufferRef = useRef('');
   const capturingHelpRef = useRef(false);
+  const helpFetchedRef = useRef(false);
 
   const switchFocus = useCallback((to: 'input' | 'terminal', manual = false) => {
     focusRef.current = to;
@@ -151,7 +155,7 @@ export default function Terminal({ terminalId, cwd, isVisible, onCwdChange, onAc
       onConversationUpdateRef.current?.([...conversationRef.current]);
     }
 
-    window.cozyPane.terminal.write(id, command + '\r');
+    window.cozyPane.terminal.write(id, command.replace(/\n/g, '\r') + '\r');
     manualUntilRef.current = 0;
 
     // Check cwd after command executes
@@ -210,6 +214,13 @@ export default function Terminal({ terminalId, cwd, isVisible, onCwdChange, onAc
     termRef.current = term;
     fitAddonRef.current = fitAddon;
 
+    // Detect when user scrolls away from the bottom
+    term.onScroll(() => {
+      const buf = term.buffer.active;
+      const atBottom = buf.viewportY >= buf.baseY;
+      setScrolledUp(!atBottom);
+    });
+
     term.attachCustomKeyEventHandler((e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === 'c' && term.hasSelection()) return true;
       if ((e.metaKey || e.ctrlKey) && e.key === 'v') return true;
@@ -250,8 +261,26 @@ export default function Terminal({ terminalId, cwd, isVisible, onCwdChange, onAc
         }
       }
 
-      // Accumulate assistant output for conversation tracking
-      if (activeProcessRef.current === 'claude') {
+      // Auto-fetch /help when Claude prompt first appears
+      if (activeProcessRef.current === 'claude' && !helpFetchedRef.current && !capturingHelpRef.current) {
+        const clean = stripAnsi(data);
+        // Claude Code shows ❯ as its interactive prompt
+        if (/❯\s*$/.test(clean)) {
+          helpFetchedRef.current = true;
+          capturingHelpRef.current = true;
+          helpBufferRef.current = '';
+          // Small delay so the prompt renders first
+          setTimeout(() => {
+            const id = terminalIdRef.current;
+            if (id) {
+              window.cozyPane.terminal.write(id, '/help\r');
+            }
+          }, 300);
+        }
+      }
+
+      // Accumulate assistant output for conversation tracking (skip during /help capture)
+      if (activeProcessRef.current === 'claude' && !capturingHelpRef.current) {
         assistantBufferRef.current += stripAnsi(data);
         if (assistantBufferRef.current.length > 10000) {
           assistantBufferRef.current = assistantBufferRef.current.slice(-8000);
@@ -271,6 +300,7 @@ export default function Terminal({ terminalId, cwd, isVisible, onCwdChange, onAc
           onConversationUpdateRef.current?.([...conversationRef.current]);
         }
         activeProcessRef.current = '';
+        helpFetchedRef.current = false;
         setClaudeRunning(false);
         onActionChangeRef.current?.('idle');
       }
@@ -337,6 +367,14 @@ export default function Terminal({ terminalId, cwd, isVisible, onCwdChange, onAc
     }
   }, [isVisible, fitAndSync]);
 
+  // Update font size when prop changes
+  useEffect(() => {
+    if (termRef.current) {
+      termRef.current.options.fontSize = fontSize;
+      requestAnimationFrame(() => fitAndSync());
+    }
+  }, [fontSize, fitAndSync]);
+
   // Create PTY
   useEffect(() => {
     if (!cwd || ptyCreated.current || !termRef.current) return;
@@ -352,16 +390,71 @@ export default function Terminal({ terminalId, cwd, isVisible, onCwdChange, onAc
     }).catch((err: any) => console.error('Failed to create PTY:', err));
   }, [cwd]);
 
+  const scrollToBottom = useCallback(() => {
+    if (termRef.current) {
+      termRef.current.scrollToBottom();
+      setScrolledUp(false);
+    }
+  }, []);
+
+  const handleFileDrop = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setTermDragOver(false);
+    const id = terminalIdRef.current;
+    if (!id) return;
+
+    let paths: string[] = [];
+    if (e.dataTransfer.files.length > 0) {
+      paths = Array.from(e.dataTransfer.files).map(f => (f as any).path as string).filter(Boolean);
+    }
+    if (paths.length === 0) {
+      const text = e.dataTransfer.getData('text/plain');
+      if (text) paths = [text];
+    }
+    if (paths.length > 0) {
+      const joined = paths.join(' ');
+      if (focusRef.current === 'input') {
+        window.dispatchEvent(new CustomEvent('cozyPane:fileDrop', { detail: joined }));
+      } else {
+        window.cozyPane.terminal.write(id, joined);
+      }
+    }
+  }, []);
+
   return (
     <div className="terminal-full">
-      <div
-        className={`terminal-output ${focus === 'terminal' && !tuiMode ? 'terminal-focused' : ''}`}
-        ref={containerRef}
-        onMouseDown={() => switchFocus('terminal', true)}
-      />
+      <div className="terminal-output-wrapper"
+        onDragOver={e => { e.preventDefault(); setTermDragOver(true); }}
+        onDragLeave={(e) => {
+          // Only trigger leave if leaving the wrapper entirely
+          if (!e.currentTarget.contains(e.relatedTarget as Node)) setTermDragOver(false);
+        }}
+        onDrop={handleFileDrop}
+      >
+        <div
+          className={`terminal-output ${focus === 'terminal' && !tuiMode ? 'terminal-focused' : ''}`}
+          ref={containerRef}
+          onMouseDown={() => switchFocus('terminal', true)}
+        />
+        {termDragOver && (
+          <div className="terminal-drop-overlay">
+            Drop to insert file path
+          </div>
+        )}
+        {scrolledUp && (
+          <button className="scroll-to-bottom" onClick={scrollToBottom} title="Scroll to bottom">
+            ↓
+          </button>
+        )}
+      </div>
       {!tuiMode && (
         <CommandInput
           onSubmit={handleCommandSubmit}
+          onRawKey={(data) => {
+            const id = terminalIdRef.current;
+            if (id) window.cozyPane.terminal.write(id, data);
+          }}
           visible={true}
           history={commandHistory}
           onFocus={() => switchFocus('input', true)}
