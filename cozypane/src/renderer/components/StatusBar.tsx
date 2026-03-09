@@ -56,7 +56,7 @@ export default function StatusBar({ cwd, layoutMode, onToggleLayout, panelsOpen,
         </button>
       )}
       <div className="status-item">
-        <span>CozyPane v0.1.0</span>
+        <span>CozyPane v{__APP_VERSION__}</span>
       </div>
     </div>
   );
