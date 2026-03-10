@@ -78,7 +78,7 @@
       "hardenedRuntime": true,
       "gatekeeperAssess": false,
       "darkModeSupport": true,
-      "notarize": true
+      "notarize": false
     },
     "dmg": {
       "title": "${productName}",
