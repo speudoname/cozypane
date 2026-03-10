@@ -222,8 +222,12 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, on
     });
 
     term.attachCustomKeyEventHandler((e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key === 'c' && term.hasSelection()) return true;
-      if ((e.metaKey || e.ctrlKey) && e.key === 'v') return true;
+      // Copy: Cmd+C (mac) or Ctrl+Shift+C (linux/win) when text is selected
+      if (e.key === 'c' && (e.metaKey || (e.ctrlKey && e.shiftKey)) && term.hasSelection()) return true;
+      // Also allow Ctrl+C for copy when there's a selection (cross-platform)
+      if (e.key === 'c' && e.ctrlKey && !e.shiftKey && term.hasSelection()) return true;
+      // Paste: Cmd+V (mac) or Ctrl+Shift+V (linux/win) or Ctrl+V
+      if (e.key === 'v' && (e.metaKey || e.ctrlKey)) return true;
       if (tuiModeRef.current || focusRef.current === 'terminal') return true;
       return false;
     });
@@ -436,9 +440,15 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, on
           className={`terminal-output ${focus === 'terminal' && !tuiMode ? 'terminal-focused' : ''}`}
           ref={containerRef}
           onMouseDown={() => switchFocus('terminal', true)}
+          onDragOver={e => { e.preventDefault(); e.stopPropagation(); setTermDragOver(true); }}
+          onDrop={handleFileDrop}
         />
         {termDragOver && (
-          <div className="terminal-drop-overlay">
+          <div className="terminal-drop-overlay"
+            onDragOver={e => e.preventDefault()}
+            onDrop={handleFileDrop}
+            onDragLeave={() => setTermDragOver(false)}
+          >
             Drop to insert file path
           </div>
         )}

@@ -262,6 +262,18 @@ html, body, #root {
   text-overflow: ellipsis;
 }
 
+.terminal-tab-rename {
+  background: var(--bg-primary);
+  border: 1px solid var(--accent);
+  border-radius: 3px;
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: inherit;
+  padding: 0 4px;
+  width: 90px;
+  outline: none;
+}
+
 .terminal-tab-close {
   font-size: 13px;
   line-height: 1;
@@ -330,7 +342,9 @@ html, body, #root {
   padding: 8px 0 8px 8px;
   overflow: hidden;
   min-height: 0;
+  position: relative;
 }
+
 
 /* Make xterm scrollbar thinner and not overlay content */
 .terminal-output .xterm-viewport {
@@ -1948,7 +1962,7 @@ html, body, #root {
   font-size: 13px;
   font-weight: 600;
   color: var(--accent);
-  pointer-events: none;
+  pointer-events: auto;
   z-index: 10;
 }
 

@@ -589,6 +589,7 @@ export default function App() {
             onClose={closeTerminalTab}
             onAdd={addTerminalTab}
             onToggleSplit={toggleSplit}
+            onRename={(id, name) => updateTab(id, { customLabel: name || undefined })}
           />
           <div className="terminal-instances">
             {terminalTabs.map(tab => {

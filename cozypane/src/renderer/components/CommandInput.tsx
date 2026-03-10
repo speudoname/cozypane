@@ -226,8 +226,14 @@ export default function CommandInput({ onSubmit, onRawKey, visible, history, onF
       }
     }
 
-    // Ctrl+C
+    // Ctrl+C — but let native copy happen if text is selected
     if (e.key === 'c' && e.ctrlKey) {
+      const textarea = textareaRef.current;
+      const hasSelection = textarea && textarea.selectionStart !== textarea.selectionEnd;
+      if (hasSelection) {
+        // Let native copy happen
+        return;
+      }
       if (value === '') {
         onSubmit('\x03');
       } else {
