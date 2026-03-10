@@ -346,13 +346,13 @@ export default function CommandInput({ onSubmit, onRawKey, visible, history, onF
           }}
           onKeyDown={handleKeyDown}
           onFocus={onFocus}
+          role="textbox"
           aria-label="Command input"
+          aria-multiline="true"
           placeholder="Type a command... (/ for Claude commands)"
           rows={1}
           spellCheck={false}
           autoComplete="off"
-          autoCorrect="off"
-          autoCapitalize="off"
         />
       </div>
       <div className="command-input-hint">

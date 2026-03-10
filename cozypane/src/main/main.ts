@@ -95,6 +95,28 @@ function buildMenu() {
       ],
     }] : []),
     {
+      label: 'Edit',
+      submenu: [
+        { role: 'undo' },
+        { role: 'redo' },
+        { type: 'separator' },
+        { role: 'cut' },
+        { role: 'copy' },
+        { role: 'paste' },
+        { role: 'selectAll' },
+        ...(isMac ? [
+          { type: 'separator' as const },
+          {
+            label: 'Speech',
+            submenu: [
+              { role: 'startSpeaking' as const },
+              { role: 'stopSpeaking' as const },
+            ],
+          },
+        ] : []),
+      ],
+    },
+    {
       label: 'Terminal',
       submenu: [
         {
