@@ -417,11 +417,11 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, on
       if (text) paths = [text];
     }
     if (paths.length > 0) {
-      const joined = paths.join(' ');
       if (focusRef.current === 'input') {
-        window.dispatchEvent(new CustomEvent('cozyPane:fileDrop', { detail: joined }));
+        window.dispatchEvent(new CustomEvent('cozyPane:fileDrop', { detail: paths }));
       } else {
-        window.cozyPane.terminal.write(id, joined);
+        const escaped = paths.map(p => p.includes(' ') ? `'${p}'` : p).join(' ');
+        window.cozyPane.terminal.write(id, escaped);
       }
     }
   }, []);

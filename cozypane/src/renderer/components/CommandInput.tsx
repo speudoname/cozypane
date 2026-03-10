@@ -60,8 +60,8 @@ export default function CommandInput({ onSubmit, onRawKey, visible, history, onF
   // Insert path(s) at cursor position in textarea
   const insertPaths = useCallback((paths: string[]) => {
     if (paths.length === 0) return;
-    const joined = paths.join(' ');
-    setValue(prev => prev ? prev + ' ' + joined : joined);
+    const escaped = paths.map(p => p.includes(' ') ? `'${p}'` : p).join(' ');
+    setValue(prev => prev ? prev + ' ' + escaped : escaped);
     setAttachedPaths(prev => [...prev, ...paths]);
     textareaRef.current?.focus();
   }, []);
@@ -75,8 +75,8 @@ export default function CommandInput({ onSubmit, onRawKey, visible, history, onF
   // Listen for file drops forwarded from terminal area
   useEffect(() => {
     const handler = (e: Event) => {
-      const paths = (e as CustomEvent).detail as string;
-      if (paths) insertPaths(paths.split(' '));
+      const paths = (e as CustomEvent).detail as string[];
+      if (paths && paths.length > 0) insertPaths(paths);
     };
     window.addEventListener('cozyPane:fileDrop', handler);
     return () => window.removeEventListener('cozyPane:fileDrop', handler);
