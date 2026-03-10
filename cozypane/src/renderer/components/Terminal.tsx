@@ -410,7 +410,7 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, on
 
     let paths: string[] = [];
     if (e.dataTransfer.files.length > 0) {
-      paths = Array.from(e.dataTransfer.files).map(f => (f as any).path as string).filter(Boolean);
+      paths = Array.from(e.dataTransfer.files).map(f => window.cozyPane.getPathForFile(f)).filter(Boolean);
     }
     if (paths.length === 0) {
       const text = e.dataTransfer.getData('text/plain');

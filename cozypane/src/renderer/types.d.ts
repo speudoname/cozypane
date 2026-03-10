@@ -51,6 +51,7 @@ declare global {
   }
 
   interface CozyPaneAPI {
+    getPathForFile: (file: File) => string;
     terminal: {
       write: (id: string, data: string) => void;
       resize: (id: string, cols: number, rows: number) => void;

@@ -326,7 +326,7 @@ export default function CommandInput({ onSubmit, onRawKey, visible, history, onF
             setDragOver(false);
             // Handle files dragged from Finder
             if (e.dataTransfer.files.length > 0) {
-              const paths = Array.from(e.dataTransfer.files).map(f => (f as any).path as string).filter(Boolean);
+              const paths = Array.from(e.dataTransfer.files).map(f => window.cozyPane.getPathForFile(f)).filter(Boolean);
               if (paths.length > 0) {
                 insertPaths(paths);
                 return;
