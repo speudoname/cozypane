@@ -1,6 +1,6 @@
 {
   "name": "cozypane",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "description": "A cozy terminal for AI-powered coding tools",
   "author": "CozyPane <levan@sarke.ge>",
   "license": "MIT",
@@ -78,7 +78,7 @@
       "hardenedRuntime": true,
       "gatekeeperAssess": false,
       "darkModeSupport": true,
-      "notarize": false
+      "notarize": { "teamId": "X3F4527AS7" }
     },
     "dmg": {
       "title": "${productName}",

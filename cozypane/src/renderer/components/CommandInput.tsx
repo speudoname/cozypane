@@ -86,9 +86,8 @@ export default function CommandInput({ onSubmit, onRawKey, visible, history, onF
   useEffect(() => {
     const ta = textareaRef.current;
     if (!ta) return;
-    ta.style.height = '0';
-    ta.style.overflowY = 'hidden';
-    const maxH = 200; // ~10 lines at 13px * 1.5 line-height + padding
+    ta.style.height = 'auto';
+    const maxH = 200;
     const sh = ta.scrollHeight;
     ta.style.height = Math.min(sh, maxH) + 'px';
     ta.style.overflowY = sh > maxH ? 'auto' : 'hidden';
@@ -355,10 +354,12 @@ export default function CommandInput({ onSubmit, onRawKey, visible, history, onF
           autoComplete="off"
         />
       </div>
-      <div className="command-input-hint">
-        <span>Enter to run</span>
-        <span>Shift+Enter newline</span>
-      </div>
+      {!value.includes('\n') && (
+        <div className="command-input-hint">
+          <span>Enter to run</span>
+          <span>Shift+Enter newline</span>
+        </div>
+      )}
 
       {dragOver && (
         <div className="drop-overlay">

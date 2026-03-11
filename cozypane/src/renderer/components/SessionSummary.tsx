@@ -1,4 +1,4 @@
-import React, { useMemo, useRef, useEffect } from 'react';
+import React, { useMemo, useRef, useEffect, useState } from 'react';
 import type { ConversationTurn } from './ConversationHistory';
 import type { AiAction } from '../lib/terminalAnalyzer';
 
@@ -57,6 +57,7 @@ const ICONS: Record<string, string> = {
 
 export default function SessionSummary({ turns, aiAction, activityEvents }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null);
+  const [expandedEntries, setExpandedEntries] = useState<Set<number>>(new Set());
 
   const entries = useMemo(() => {
     const result: SummaryEntry[] = [];
@@ -68,7 +69,7 @@ export default function SessionSummary({ turns, aiAction, activityEvents }: Prop
           result.push({
             type: 'prompt',
             icon: ICONS.user,
-            text: text.length > 120 ? text.slice(0, 120) + '...' : text,
+            text: text.length > 500 ? text.slice(0, 500) + '...' : text,
             timestamp: turn.timestamp,
           });
         }
@@ -130,7 +131,15 @@ export default function SessionSummary({ turns, aiAction, activityEvents }: Prop
           </div>
         ) : (
           entries.map((entry, i) => (
-            <div key={i} className={`summary-entry ${entry.type}`}>
+            <div
+              key={i}
+              className={`summary-entry ${entry.type} ${expandedEntries.has(i) ? 'expanded' : ''}`}
+              onClick={() => setExpandedEntries(prev => {
+                const next = new Set(prev);
+                if (next.has(i)) next.delete(i); else next.add(i);
+                return next;
+              })}
+            >
               <span className="summary-icon">{entry.icon}</span>
               <span className="summary-text">{entry.text}</span>
               <span className="summary-time">{timeStr(entry.timestamp)}</span>

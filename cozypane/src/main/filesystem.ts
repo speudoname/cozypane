@@ -8,7 +8,7 @@ export function registerFsHandlers() {
     try {
       const entries = await fs.promises.readdir(dirPath, { withFileTypes: true });
       return entries
-        .filter(entry => !entry.name.startsWith('.') || entry.name === '.env')
+        .filter(entry => entry.name !== '.git')
         .map(entry => ({
           name: entry.name,
           path: path.join(dirPath, entry.name),
@@ -74,5 +74,85 @@ export function registerFsHandlers() {
 
   ipcMain.handle('fs:homedir', () => {
     return os.homedir();
+  });
+
+  ipcMain.handle('fs:getSlashCommands', async (_event, cwd?: string) => {
+    const commands = new Map<string, { cmd: string; desc: string; source: string }>();
+
+    // 1. Built-in commands
+    const builtins = [
+      { cmd: '/help', desc: 'Show help and available commands' },
+      { cmd: '/clear', desc: 'Clear conversation history' },
+      { cmd: '/compact', desc: 'Compact conversation to save context' },
+      { cmd: '/config', desc: 'View or modify configuration' },
+      { cmd: '/cost', desc: 'Show token usage and cost' },
+      { cmd: '/doctor', desc: 'Check Claude Code health' },
+      { cmd: '/init', desc: 'Initialize project with CLAUDE.md' },
+      { cmd: '/login', desc: 'Switch accounts or login' },
+      { cmd: '/logout', desc: 'Sign out of current session' },
+      { cmd: '/memory', desc: 'Edit CLAUDE.md memory file' },
+      { cmd: '/model', desc: 'Switch AI model' },
+      { cmd: '/permissions', desc: 'View or modify permissions' },
+      { cmd: '/review', desc: 'Review a pull request' },
+      { cmd: '/status', desc: 'Show current status' },
+      { cmd: '/terminal-setup', desc: 'Install shell integration' },
+      { cmd: '/vim', desc: 'Enter vim mode for editing' },
+    ];
+    for (const b of builtins) {
+      commands.set(b.cmd, { ...b, source: 'built-in' });
+    }
+
+    // Helper: scan a commands directory for .md files
+    async function scanCommandsDir(dir: string, source: string) {
+      try {
+        const entries = await fs.promises.readdir(dir, { withFileTypes: true });
+        for (const entry of entries) {
+          if (!entry.isFile() || !entry.name.endsWith('.md')) continue;
+          const cmdName = '/' + entry.name.replace(/\.md$/, '');
+          let desc = 'Custom command';
+          try {
+            const content = await fs.promises.readFile(path.join(dir, entry.name), 'utf-8');
+            const firstLine = content.split('\n').find(l => l.trim().length > 0);
+            if (firstLine) desc = firstLine.trim().replace(/^#+\s*/, '').slice(0, 80);
+          } catch {}
+          commands.set(cmdName, { cmd: cmdName, desc, source });
+        }
+      } catch {}
+    }
+
+    // 2. Global custom commands
+    const home = os.homedir();
+    await scanCommandsDir(path.join(home, '.claude', 'commands'), 'global');
+
+    // 3. Project custom commands
+    if (cwd) {
+      await scanCommandsDir(path.join(cwd, '.claude', 'commands'), 'project');
+    }
+
+    // 4. Installed skills
+    try {
+      const skillsDir = path.join(home, '.claude', 'skills');
+      const skillEntries = await fs.promises.readdir(skillsDir, { withFileTypes: true });
+      for (const entry of skillEntries) {
+        if (!entry.isDirectory()) continue;
+        try {
+          const skillFile = path.join(skillsDir, entry.name, 'SKILL.md');
+          const content = await fs.promises.readFile(skillFile, 'utf-8');
+          // Parse YAML frontmatter
+          const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
+          if (fmMatch) {
+            const fm = fmMatch[1];
+            const nameMatch = fm.match(/^name:\s*(.+)/m);
+            const descMatch = fm.match(/^description:\s*(.+)/m);
+            const name = nameMatch ? nameMatch[1].trim().replace(/^["']|["']$/g, '') : entry.name;
+            const desc = descMatch ? descMatch[1].trim().replace(/^["']|["']$/g, '') : 'Installed skill';
+            const cmd = '/' + name.toLowerCase().replace(/\s+/g, '-');
+            commands.set(cmd, { cmd, desc, source: 'skill' });
+          }
+        } catch {}
+      }
+    } catch {}
+
+    return Array.from(commands.values());
   });
 }

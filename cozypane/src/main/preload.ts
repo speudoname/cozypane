@@ -28,6 +28,7 @@ contextBridge.exposeInMainWorld('cozyPane', {
     pickFile: () => ipcRenderer.invoke('fs:pickFile'),
     saveClipboardImage: () => ipcRenderer.invoke('fs:saveClipboardImage'),
     clipboardFilePaths: () => ipcRenderer.invoke('fs:clipboardFilePaths'),
+    getSlashCommands: (cwd?: string) => ipcRenderer.invoke('fs:getSlashCommands', cwd),
   },
   watcher: {
     start: (dirPath: string) => ipcRenderer.invoke('watcher:start', dirPath),

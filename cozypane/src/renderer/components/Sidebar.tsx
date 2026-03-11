@@ -200,7 +200,7 @@ export default function Sidebar({ isOpen, onToggle, onFileSelect, activeFile, on
           return (
             <div
               key={node.path}
-              className={`file-entry ${node.isDirectory ? 'directory' : ''} ${activeFile === node.path ? 'active' : ''} ${dirChangeCount ? 'has-changes' : ''}`}
+              className={`file-entry ${node.isDirectory ? 'directory' : ''} ${activeFile === node.path ? 'active' : ''} ${dirChangeCount ? 'has-changes' : ''} ${node.name.startsWith('.') ? 'dotfile' : ''}`}
               style={{ paddingLeft: 16 + node.depth * 16 }}
               onClick={() => handleClick(node)}
               draggable={node.isFile}

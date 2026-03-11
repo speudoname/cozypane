@@ -171,10 +171,8 @@ function buildMenu() {
         },
         { type: 'separator' },
         { role: 'togglefullscreen' },
-        ...(isDev ? [
-          { type: 'separator' as const },
-          { role: 'toggleDevTools' as const },
-        ] : []),
+        { type: 'separator' as const },
+        { role: 'toggleDevTools' as const },
       ],
     },
     {

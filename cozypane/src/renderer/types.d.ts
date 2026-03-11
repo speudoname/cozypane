@@ -70,6 +70,7 @@ declare global {
       pickFile: () => Promise<{ paths: string[] }>;
       saveClipboardImage: () => Promise<{ path: string | null }>;
       clipboardFilePaths: () => Promise<{ paths: string[] }>;
+      getSlashCommands: (cwd?: string) => Promise<{ cmd: string; desc: string; source: string }[]>;
     };
     watcher: {
       start: (dirPath: string) => Promise<{ success?: boolean; error?: string }>;

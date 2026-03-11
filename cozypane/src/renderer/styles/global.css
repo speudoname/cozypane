@@ -427,6 +427,8 @@ html, body, #root {
   resize: none;
   outline: none;
   min-height: 32px;
+  max-height: 200px;
+  box-sizing: border-box;
   transition: border-color 0.15s;
 }
 
@@ -715,6 +717,16 @@ html, body, #root {
 
 .file-entry.directory {
   font-weight: 500;
+}
+
+.file-entry.dotfile {
+  opacity: 0.5;
+}
+.file-entry.dotfile:hover {
+  opacity: 0.75;
+}
+.file-entry.dotfile.active {
+  opacity: 0.85;
 }
 
 .file-icon {
@@ -1235,6 +1247,11 @@ html, body, #root {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  cursor: pointer;
+}
+.summary-entry.expanded .summary-text {
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .summary-time {

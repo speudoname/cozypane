@@ -157,10 +157,14 @@ export default function App() {
   }, []);
 
   const closeTerminalTab = useCallback((id: string) => {
+    const tab = terminalTabs.find(t => t.id === id);
+    if (!tab || terminalTabs.length <= 1) return; // Can't close last tab
+
+    if (!window.confirm(`Close terminal "${tab.customLabel || tab.name}"?`)) return;
+
     setTerminalTabs(prev => {
-      if (prev.length <= 1) return prev; // Can't close last tab
-      const tab = prev.find(t => t.id === id);
-      if (tab?.ptyId) {
+      if (prev.length <= 1) return prev;
+      if (tab.ptyId) {
         window.cozyPane.terminal.close(tab.ptyId);
       }
       const remaining = prev.filter(t => t.id !== id);
@@ -176,7 +180,7 @@ export default function App() {
       }
       return remaining;
     });
-  }, []);
+  }, [terminalTabs]);
 
   const switchTerminalTab = useCallback((id: string) => {
     setActiveTerminalId(id);

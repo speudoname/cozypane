@@ -59,9 +59,6 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, on
   const [claudeRunning, setClaudeRunning] = useState(false);
   const [scrolledUp, setScrolledUp] = useState(false);
   const [dynamicSlashCommands, setDynamicSlashCommands] = useState<{ cmd: string; desc: string }[]>([]);
-  const helpBufferRef = useRef('');
-  const capturingHelpRef = useRef(false);
-  const helpFetchedRef = useRef(false);
 
   const switchFocus = useCallback((to: 'input' | 'terminal', manual = false) => {
     focusRef.current = to;
@@ -88,13 +85,19 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, on
   autoSwitchRef.current = autoSwitch;
 
   const lastReportedCwd = useRef('');
+  const wrapperRef = useRef<HTMLDivElement>(null);
 
   const fitAndSync = useCallback(() => {
     const id = terminalIdRef.current;
     if (!fitAddonRef.current || !termRef.current || !id) return;
     try {
+      const term = termRef.current;
+      const wasAtBottom = term.buffer.active.viewportY >= term.buffer.active.baseY;
       fitAddonRef.current.fit();
-      window.cozyPane.terminal.resize(id, termRef.current.cols, termRef.current.rows);
+      window.cozyPane.terminal.resize(id, term.cols, term.rows);
+      if (wasAtBottom) {
+        term.scrollToBottom();
+      }
     } catch {}
   }, []);
 
@@ -131,12 +134,6 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, on
     if (trimmed.startsWith('claude') || trimmed.startsWith('npx claude')) {
       activeProcessRef.current = 'claude';
       setClaudeRunning(true);
-    }
-
-    // Detect /help command to capture output
-    if (activeProcessRef.current === 'claude' && command.trim() === '/help') {
-      capturingHelpRef.current = true;
-      helpBufferRef.current = '';
     }
 
     // Track conversation while Claude is running
@@ -245,46 +242,8 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, on
       if (TUI_ENTER.test(data)) { tuiModeRef.current = true; setTuiMode(true); }
       if (TUI_EXIT.test(data)) { tuiModeRef.current = false; setTuiMode(false); }
 
-      // Capture /help output for dynamic slash commands
-      if (capturingHelpRef.current) {
-        helpBufferRef.current += stripAnsi(data);
-        // Stop capturing when we see the prompt return
-        if (helpBufferRef.current.length > 100 && /[❯>]\s*$/.test(helpBufferRef.current)) {
-          capturingHelpRef.current = false;
-          const parsed: { cmd: string; desc: string }[] = [];
-          for (const line of helpBufferRef.current.split('\n')) {
-            const match = line.match(/^\s*(\/\w[\w-]*)\s{2,}(.+)/);
-            if (match) {
-              parsed.push({ cmd: match[1], desc: match[2].trim() });
-            }
-          }
-          if (parsed.length > 0) {
-            setDynamicSlashCommands(parsed);
-          }
-          helpBufferRef.current = '';
-        }
-      }
-
-      // Auto-fetch /help when Claude prompt first appears
-      if (activeProcessRef.current === 'claude' && !helpFetchedRef.current && !capturingHelpRef.current) {
-        const clean = stripAnsi(data);
-        // Claude Code shows ❯ as its interactive prompt
-        if (/❯\s*$/.test(clean)) {
-          helpFetchedRef.current = true;
-          capturingHelpRef.current = true;
-          helpBufferRef.current = '';
-          // Small delay so the prompt renders first
-          setTimeout(() => {
-            const id = terminalIdRef.current;
-            if (id) {
-              window.cozyPane.terminal.write(id, '/help\r');
-            }
-          }, 300);
-        }
-      }
-
-      // Accumulate assistant output for conversation tracking (skip during /help capture)
-      if (activeProcessRef.current === 'claude' && !capturingHelpRef.current) {
+      // Accumulate assistant output for conversation tracking
+      if (activeProcessRef.current === 'claude') {
         assistantBufferRef.current += stripAnsi(data);
         if (assistantBufferRef.current.length > 10000) {
           assistantBufferRef.current = assistantBufferRef.current.slice(-8000);
@@ -304,7 +263,6 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, on
           onConversationUpdateRef.current?.([...conversationRef.current]);
         }
         activeProcessRef.current = '';
-        helpFetchedRef.current = false;
         setClaudeRunning(false);
         onActionChangeRef.current?.('idle');
       }
@@ -350,6 +308,7 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, on
       requestAnimationFrame(() => fitAndSync());
     });
     resizeObserver.observe(containerRef.current);
+    if (wrapperRef.current) resizeObserver.observe(wrapperRef.current);
 
     setTimeout(() => fitAndSync(), 200);
 
@@ -401,6 +360,15 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, on
     }
   }, []);
 
+  // Load slash commands from filesystem
+  useEffect(() => {
+    window.cozyPane.fs.getSlashCommands(cwd || undefined).then((commands: any[]) => {
+      if (commands && commands.length > 0) {
+        setDynamicSlashCommands(commands.map((c: any) => ({ cmd: c.cmd, desc: c.desc })));
+      }
+    }).catch(() => {});
+  }, [cwd]);
+
   const handleFileDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
@@ -428,7 +396,7 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, on
 
   return (
     <div className="terminal-full">
-      <div className="terminal-output-wrapper"
+      <div className="terminal-output-wrapper" ref={wrapperRef}
         onDragOver={e => { e.preventDefault(); setTermDragOver(true); }}
         onDragLeave={(e) => {
           // Only trigger leave if leaving the wrapper entirely
@@ -469,7 +437,7 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, on
           history={commandHistory}
           onFocus={() => switchFocus('input', true)}
           isFocused={focus === 'input'}
-          showSlashCommands={claudeRunning}
+          showSlashCommands={true}
           dynamicSlashCommands={dynamicSlashCommands}
         />
       )}
