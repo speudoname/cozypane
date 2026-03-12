@@ -199,7 +199,7 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, on
     };
 
     const term = new XTerm({
-      fontFamily: "'SF Mono', 'Cascadia Code', 'JetBrains Mono', 'Fira Code', Menlo, Monaco, Consolas, monospace",
+      fontFamily: "'DejaVu Sans Mono', 'SF Mono', 'Cascadia Code', 'JetBrains Mono', 'Fira Code', Menlo, Monaco, Consolas, monospace",
       fontSize: 13,
       lineHeight: 1.4,
       cursorBlink: true,
