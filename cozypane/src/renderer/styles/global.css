@@ -307,6 +307,69 @@ html, body, #root {
   background: var(--bg-hover);
 }
 
+/* Zoom controls — used in terminal tab bar and sidebar */
+.zoom-controls {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: auto;
+  padding: 0 8px;
+  flex-shrink: 0;
+}
+
+.zoom-controls-compact {
+  padding: 0;
+  gap: 1px;
+}
+
+.zoom-btn {
+  background: none;
+  border: 1px solid transparent;
+  color: var(--text-muted);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-sm);
+  transition: all 0.15s;
+  padding: 0;
+}
+
+.zoom-btn:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+  border-color: var(--border);
+}
+
+.zoom-label {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 10px;
+  font-family: var(--font-mono);
+  cursor: pointer;
+  padding: 2px 4px;
+  min-width: 28px;
+  text-align: center;
+  border-radius: var(--radius-sm);
+  transition: all 0.15s;
+}
+
+.zoom-label:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+
+.sidebar-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
 /* Terminal instances container */
 .terminal-instances {
   display: flex;
@@ -334,7 +397,7 @@ html, body, #root {
   display: flex;
   flex-direction: column;
   flex: 1;
-  overflow: hidden;
+  min-height: 0;
 }
 
 .terminal-output {
@@ -415,7 +478,7 @@ html, body, #root {
 }
 
 .command-input {
-  flex: 1;
+  width: 100%;
   background: var(--bg-tertiary);
   border: 1px solid var(--border);
   border-radius: var(--radius);
@@ -430,6 +493,7 @@ html, body, #root {
   max-height: 200px;
   box-sizing: border-box;
   transition: border-color 0.15s;
+  overflow: hidden;
 }
 
 .command-input:focus {

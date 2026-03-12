@@ -9,6 +9,10 @@ interface Props {
   cwd: string;
   changedFiles?: Map<string, 'create' | 'modify' | 'delete'>;
   lastWatcherEvent?: FileChangeEvent | null;
+  fontSize?: number;
+  onZoomIn?: () => void;
+  onZoomOut?: () => void;
+  onZoomReset?: () => void;
 }
 
 interface TreeNode {
@@ -60,7 +64,7 @@ function getChangeColor(type: string | undefined): string | undefined {
   }
 }
 
-export default function Sidebar({ isOpen, onToggle, onFileSelect, activeFile, onCwdChange, cwd, changedFiles, lastWatcherEvent }: Props) {
+export default function Sidebar({ isOpen, onToggle, onFileSelect, activeFile, onCwdChange, cwd, changedFiles, lastWatcherEvent, fontSize, onZoomIn, onZoomOut, onZoomReset }: Props) {
   const [tree, setTree] = useState<TreeNode[]>([]);
 
   // Load root tree when cwd changes
@@ -188,9 +192,18 @@ export default function Sidebar({ isOpen, onToggle, onFileSelect, activeFile, on
     <div className={`sidebar ${isOpen ? '' : 'collapsed'}`}>
       <div className="sidebar-header">
         <span className="sidebar-title" title={cwd}>{folderName}</span>
-        <button className="sidebar-toggle" onClick={onToggle} aria-label="Toggle sidebar">
-          &lt;
-        </button>
+        <div className="sidebar-header-actions">
+          {onZoomIn && onZoomOut && (
+            <div className="zoom-controls zoom-controls-compact">
+              <button className="zoom-btn" onClick={onZoomOut} title="Zoom out">−</button>
+              <button className="zoom-label" onClick={onZoomReset} title="Reset zoom">{fontSize ?? 13}</button>
+              <button className="zoom-btn" onClick={onZoomIn} title="Zoom in">+</button>
+            </div>
+          )}
+          <button className="sidebar-toggle" onClick={onToggle} aria-label="Toggle sidebar">
+            &lt;
+          </button>
+        </div>
       </div>
       <div className="file-tree">
         {flatNodes.map(node => {

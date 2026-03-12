@@ -96,7 +96,11 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, on
       fitAddonRef.current.fit();
       window.cozyPane.terminal.resize(id, term.cols, term.rows);
       if (wasAtBottom) {
+        // Scroll after fit settles to avoid race with viewport repositioning
         term.scrollToBottom();
+        requestAnimationFrame(() => {
+          if (termRef.current) termRef.current.scrollToBottom();
+        });
       }
     } catch {}
   }, []);
@@ -200,6 +204,7 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, on
       lineHeight: 1.4,
       cursorBlink: true,
       cursorStyle: 'bar',
+      scrollback: 10000,
       theme: getXtermTheme(),
     });
 
@@ -237,7 +242,12 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, on
     const removeDataListener = window.cozyPane.terminal.onData((id: string, data: string) => {
       if (id !== terminalIdRef.current) return;
 
+      const buf = term.buffer.active;
+      const wasAtBottom = buf.viewportY >= buf.baseY;
       term.write(data);
+      if (wasAtBottom) {
+        term.scrollToBottom();
+      }
 
       if (TUI_ENTER.test(data)) { tuiModeRef.current = true; setTuiMode(true); }
       if (TUI_EXIT.test(data)) { tuiModeRef.current = false; setTuiMode(false); }

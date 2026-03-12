@@ -160,7 +160,7 @@ export default function App() {
     const tab = terminalTabs.find(t => t.id === id);
     if (!tab || terminalTabs.length <= 1) return; // Can't close last tab
 
-    if (!window.confirm(`Close terminal "${tab.customLabel || tab.name}"?`)) return;
+    if (!window.confirm(`Close terminal "${tab.customLabel || tab.label}"?`)) return;
 
     setTerminalTabs(prev => {
       if (prev.length <= 1) return prev;
@@ -551,6 +551,13 @@ export default function App() {
       >
         Settings
       </button>
+      {rightPanelTab === 'preview' && (
+        <div className="zoom-controls">
+          <button className="zoom-btn" onClick={() => setEditorFontSize(prev => Math.max(8, prev - 1))} title="Zoom out">−</button>
+          <button className="zoom-label" onClick={() => setEditorFontSize(13)} title="Reset zoom">{editorFontSize}px</button>
+          <button className="zoom-btn" onClick={() => setEditorFontSize(prev => Math.min(28, prev + 1))} title="Zoom in">+</button>
+        </div>
+      )}
     </div>
   );
 
@@ -563,6 +570,10 @@ export default function App() {
     cwd,
     changedFiles,
     lastWatcherEvent,
+    fontSize: sidebarFontSize,
+    onZoomIn: () => setSidebarFontSize(prev => Math.min(22, prev + 1)),
+    onZoomOut: () => setSidebarFontSize(prev => Math.max(9, prev - 1)),
+    onZoomReset: () => setSidebarFontSize(13),
   };
 
   return (
@@ -594,6 +605,10 @@ export default function App() {
             onAdd={addTerminalTab}
             onToggleSplit={toggleSplit}
             onRename={(id, name) => updateTab(id, { customLabel: name || undefined })}
+            fontSize={terminalFontSize}
+            onZoomIn={() => setTerminalFontSize(prev => Math.min(28, prev + 1))}
+            onZoomOut={() => setTerminalFontSize(prev => Math.max(8, prev - 1))}
+            onZoomReset={() => setTerminalFontSize(13)}
           />
           <div className="terminal-instances">
             {terminalTabs.map(tab => {

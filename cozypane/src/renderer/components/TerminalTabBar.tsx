@@ -31,9 +31,13 @@ interface Props {
   onAdd: () => void;
   onToggleSplit: (id: string) => void;
   onRename: (id: string, name: string) => void;
+  fontSize?: number;
+  onZoomIn?: () => void;
+  onZoomOut?: () => void;
+  onZoomReset?: () => void;
 }
 
-export default function TerminalTabBar({ tabs, activeId, splitId, onSelect, onClose, onAdd, onToggleSplit, onRename }: Props) {
+export default function TerminalTabBar({ tabs, activeId, splitId, onSelect, onClose, onAdd, onToggleSplit, onRename, fontSize, onZoomIn, onZoomOut, onZoomReset }: Props) {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editValue, setEditValue] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
@@ -102,6 +106,13 @@ export default function TerminalTabBar({ tabs, activeId, splitId, onSelect, onCl
         );
       })}
       <button className="terminal-tab-add" onClick={onAdd} title="New terminal (Cmd+T)">+</button>
+      {onZoomIn && onZoomOut && (
+        <div className="zoom-controls">
+          <button className="zoom-btn" onClick={onZoomOut} title="Zoom out (Cmd+-)">−</button>
+          <button className="zoom-label" onClick={onZoomReset} title="Reset zoom (Cmd+0)">{fontSize ?? 13}px</button>
+          <button className="zoom-btn" onClick={onZoomIn} title="Zoom in (Cmd+=)">+</button>
+        </div>
+      )}
     </div>
   );
 }
