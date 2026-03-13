@@ -95,7 +95,8 @@ export async function callLlm(prompt: string, maxTokens: number): Promise<{ text
       signal: AbortSignal.timeout(15000),
     });
     if (!response.ok) return { error: `API error: ${response.status} ${response.statusText}` };
-    const data: any = await response.json();
+    let data: any;
+    try { data = await response.json(); } catch { return { error: 'Invalid response from API' }; }
     if (data.content?.[0]?.text) return { text: data.content[0].text.trim() };
     return { error: data.error?.message || 'API error' };
   } else if (settings.provider === 'openai') {
@@ -113,7 +114,8 @@ export async function callLlm(prompt: string, maxTokens: number): Promise<{ text
       signal: AbortSignal.timeout(15000),
     });
     if (!response.ok) return { error: `API error: ${response.status} ${response.statusText}` };
-    const data: any = await response.json();
+    let data: any;
+    try { data = await response.json(); } catch { return { error: 'Invalid response from API' }; }
     if (data.choices?.[0]?.message?.content) return { text: data.choices[0].message.content.trim() };
     return { error: data.error?.message || 'API error' };
   }

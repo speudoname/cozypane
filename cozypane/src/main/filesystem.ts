@@ -112,8 +112,15 @@ export function registerFsHandlers() {
           let desc = 'Custom command';
           try {
             const content = await fs.promises.readFile(path.join(dir, entry.name), 'utf-8');
-            const firstLine = content.split('\n').find(l => l.trim().length > 0);
-            if (firstLine) desc = firstLine.trim().replace(/^#+\s*/, '').slice(0, 80);
+            // Try YAML frontmatter first
+            const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
+            if (fmMatch) {
+              const descMatch = fmMatch[1].match(/^description:\s*(.+)/m);
+              if (descMatch) desc = descMatch[1].trim().replace(/^["']|["']$/g, '').slice(0, 80);
+            } else {
+              const firstLine = content.split('\n').find(l => l.trim().length > 0);
+              if (firstLine) desc = firstLine.trim().replace(/^#+\s*/, '').slice(0, 80);
+            }
           } catch {}
           commands.set(cmdName, { cmd: cmdName, desc, source });
         }
@@ -150,6 +157,44 @@ export function registerFsHandlers() {
             commands.set(cmd, { cmd, desc, source: 'skill' });
           }
         } catch {}
+      }
+    } catch {}
+
+    // 5. Plugin commands (marketplace plugins)
+    const marketplacesDir = path.join(home, '.claude', 'plugins', 'marketplaces');
+    try {
+      const marketplaces = await fs.promises.readdir(marketplacesDir, { withFileTypes: true });
+      for (const mp of marketplaces) {
+        if (!mp.isDirectory()) continue;
+        for (const sub of ['plugins', 'external_plugins']) {
+          const pluginsDir = path.join(marketplacesDir, mp.name, sub);
+          try {
+            const plugins = await fs.promises.readdir(pluginsDir, { withFileTypes: true });
+            for (const plugin of plugins) {
+              if (!plugin.isDirectory()) continue;
+              await scanCommandsDir(
+                path.join(pluginsDir, plugin.name, 'commands'),
+                'plugin'
+              );
+            }
+          } catch {}
+        }
+      }
+    } catch {}
+
+    // 6. Installed plugin cache commands
+    try {
+      const installedPath = path.join(home, '.claude', 'plugins', 'installed_plugins.json');
+      const installedRaw = await fs.promises.readFile(installedPath, 'utf-8');
+      const installed = JSON.parse(installedRaw);
+      if (installed.plugins) {
+        for (const entries of Object.values(installed.plugins) as any[]) {
+          for (const entry of entries) {
+            if (entry.installPath) {
+              await scanCommandsDir(path.join(entry.installPath, 'commands'), 'plugin');
+            }
+          }
+        }
       }
     } catch {}
 

@@ -1,10 +1,10 @@
-import { app, BrowserWindow, dialog, Menu, shell, ipcMain, clipboard, nativeImage } from 'electron';
+import { app, BrowserWindow, dialog, Menu, shell, ipcMain, clipboard } from 'electron';
 import path from 'path';
 import fs from 'fs';
 import os from 'os';
 import { autoUpdater } from 'electron-updater';
 
-import { registerPtyHandlers, killAllPtys } from './pty';
+import { registerPtyHandlers, killAllPtys, hasActivePtys } from './pty';
 import { registerFsHandlers } from './filesystem';
 import { registerWatcherHandlers, closeWatcher } from './watcher';
 import { registerSettingsHandlers } from './settings';
@@ -23,11 +23,13 @@ process.on('unhandledRejection', (reason) => {
 });
 
 let mainWindow: BrowserWindow | null = null;
+let forceQuit = false;
 const isDev = !app.isPackaged;
 
 function getWindow() { return mainWindow; }
 
 function createWindow() {
+  forceQuit = false;
   mainWindow = new BrowserWindow({
     width: 1400,
     height: 900,
@@ -62,6 +64,25 @@ function createWindow() {
       if (key === '=' || key === '+' || key === '-' || key === '0') {
         _event.preventDefault();
       }
+    }
+  });
+
+  mainWindow.on('close', (e) => {
+    if (!forceQuit && hasActivePtys()) {
+      e.preventDefault();
+      dialog.showMessageBox(mainWindow!, {
+        type: 'warning',
+        buttons: ['Close', 'Cancel'],
+        defaultId: 1,
+        cancelId: 1,
+        title: 'Close CozyPane?',
+        message: 'Terminal sessions are still running. Are you sure you want to close?',
+      }).then(({ response }) => {
+        if (response === 0) {
+          forceQuit = true;
+          mainWindow?.close();
+        }
+      });
     }
   });
 
@@ -227,12 +248,16 @@ ipcMain.handle('fs:pickFile', async () => {
 ipcMain.handle('fs:saveClipboardImage', async () => {
   const img = clipboard.readImage();
   if (img.isEmpty()) return { path: null };
-  const tmpDir = path.join(os.tmpdir(), 'cozypane');
-  fs.mkdirSync(tmpDir, { recursive: true });
-  const fileName = `clipboard-${Date.now()}.png`;
-  const filePath = path.join(tmpDir, fileName);
-  fs.writeFileSync(filePath, img.toPNG());
-  return { path: filePath };
+  try {
+    const tmpDir = path.join(os.tmpdir(), 'cozypane');
+    fs.mkdirSync(tmpDir, { recursive: true });
+    const fileName = `clipboard-${Date.now()}.png`;
+    const filePath = path.join(tmpDir, fileName);
+    fs.writeFileSync(filePath, img.toPNG());
+    return { path: filePath };
+  } catch (err: any) {
+    return { path: null, error: err.message };
+  }
 });
 
 // Check if clipboard has file paths (copied files in Finder)
@@ -270,7 +295,8 @@ function setupAutoUpdater() {
   autoUpdater.on('update-downloaded', (info) => {
     console.log('[CozyPane] Update downloaded:', info.version);
     mainWindow?.webContents.send('updater:status', { status: 'downloaded', version: info.version });
-    dialog.showMessageBox(mainWindow!, {
+    if (!mainWindow) return;
+    dialog.showMessageBox(mainWindow, {
       type: 'info',
       title: 'Update Ready',
       message: `CozyPane ${info.version} has been downloaded.`,
@@ -332,7 +358,24 @@ app.on('activate', () => {
   }
 });
 
-app.on('before-quit', () => {
-  killAllPtys();
-  closeWatcher();
+app.on('before-quit', (e) => {
+  if (!forceQuit && mainWindow && hasActivePtys()) {
+    e.preventDefault();
+    dialog.showMessageBox(mainWindow, {
+      type: 'warning',
+      buttons: ['Quit', 'Cancel'],
+      defaultId: 1,
+      cancelId: 1,
+      title: 'Quit CozyPane?',
+      message: 'Terminal sessions are still running. Are you sure you want to quit?',
+    }).then(({ response }) => {
+      if (response === 0) {
+        forceQuit = true;
+        app.quit();
+      }
+    });
+  } else {
+    killAllPtys();
+    closeWatcher();
+  }
 });

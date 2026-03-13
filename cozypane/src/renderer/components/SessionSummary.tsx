@@ -1,5 +1,4 @@
 import React, { useMemo, useRef, useEffect, useState } from 'react';
-import type { ConversationTurn } from './ConversationHistory';
 import type { AiAction } from '../lib/terminalAnalyzer';
 
 interface SummaryEntry {

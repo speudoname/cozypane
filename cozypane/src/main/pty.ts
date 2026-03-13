@@ -133,6 +133,10 @@ export function registerPtyHandlers(getWindow: () => BrowserWindow | null) {
   });
 }
 
+export function hasActivePtys(): boolean {
+  return ptyMap.size > 0;
+}
+
 export function killAllPtys() {
   for (const [, entry] of ptyMap) {
     try { entry.process.kill(); } catch {}

@@ -14,27 +14,8 @@ interface Props {
   isFocused?: boolean;
   showSlashCommands?: boolean;
   dynamicSlashCommands?: SlashCommand[];
+  terminalId?: string;
 }
-
-// Fallback slash commands
-const DEFAULT_SLASH_COMMANDS: SlashCommand[] = [
-  { cmd: '/help', desc: 'Show help and available commands' },
-  { cmd: '/clear', desc: 'Clear conversation history' },
-  { cmd: '/compact', desc: 'Compact conversation to save context' },
-  { cmd: '/config', desc: 'View or modify configuration' },
-  { cmd: '/cost', desc: 'Show token usage and cost' },
-  { cmd: '/doctor', desc: 'Check Claude Code health' },
-  { cmd: '/init', desc: 'Initialize project with CLAUDE.md' },
-  { cmd: '/login', desc: 'Switch accounts or login' },
-  { cmd: '/logout', desc: 'Sign out of current session' },
-  { cmd: '/memory', desc: 'Edit CLAUDE.md memory file' },
-  { cmd: '/model', desc: 'Switch AI model' },
-  { cmd: '/permissions', desc: 'View or modify permissions' },
-  { cmd: '/review', desc: 'Review a pull request' },
-  { cmd: '/status', desc: 'Show current status' },
-  { cmd: '/terminal-setup', desc: 'Install shell integration' },
-  { cmd: '/vim', desc: 'Enter vim mode for editing' },
-];
 
 const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg', 'ico']);
 
@@ -46,12 +27,12 @@ function isImageFile(name: string): boolean {
   return IMAGE_EXTS.has(getFileExt(name));
 }
 
-export default function CommandInput({ onSubmit, onRawKey, visible, history, onFocus, isFocused, showSlashCommands, dynamicSlashCommands }: Props) {
+export default function CommandInput({ onSubmit, onRawKey, visible, history, onFocus, isFocused, showSlashCommands, dynamicSlashCommands, terminalId }: Props) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [value, setValue] = useState('');
   const [historyIndex, setHistoryIndex] = useState(-1);
   const [savedDraft, setSavedDraft] = useState('');
-  const SLASH_COMMANDS = dynamicSlashCommands && dynamicSlashCommands.length > 0 ? dynamicSlashCommands : DEFAULT_SLASH_COMMANDS;
+  const SLASH_COMMANDS = dynamicSlashCommands || [];
   const [suggestions, setSuggestions] = useState<SlashCommand[]>([]);
   const [selectedSuggestion, setSelectedSuggestion] = useState(0);
   const [dragOver, setDragOver] = useState(false);
@@ -72,15 +53,20 @@ export default function CommandInput({ onSubmit, onRawKey, visible, history, onF
     }
   }, [visible, isFocused]);
 
-  // Listen for file drops forwarded from terminal area
+  // Listen for file drops forwarded from terminal area (scoped to this terminal)
   useEffect(() => {
     const handler = (e: Event) => {
-      const paths = (e as CustomEvent).detail as string[];
+      const detail = (e as CustomEvent).detail;
+      // Support both old format (string[]) and new format ({ paths, terminalId })
+      const paths: string[] = Array.isArray(detail) ? detail : detail?.paths;
+      const dropTerminalId: string | undefined = Array.isArray(detail) ? undefined : detail?.terminalId;
+      // Only handle drops targeted at this terminal (or unscoped drops)
+      if (dropTerminalId && terminalId && dropTerminalId !== terminalId) return;
       if (paths && paths.length > 0) insertPaths(paths);
     };
     window.addEventListener('cozyPane:fileDrop', handler);
     return () => window.removeEventListener('cozyPane:fileDrop', handler);
-  }, [insertPaths]);
+  }, [insertPaths, terminalId]);
 
   // Auto-resize textarea — max ~10 lines then scroll
   useEffect(() => {
@@ -142,11 +128,15 @@ export default function CommandInput({ onSubmit, onRawKey, visible, history, onF
     }
 
     // Check for copied files (Cmd+C on files in Finder)
-    const result = await window.cozyPane.fs.clipboardFilePaths();
-    if (result.paths.length > 0) {
-      e.preventDefault();
-      insertPaths(result.paths);
-      return;
+    try {
+      const result = await window.cozyPane.fs.clipboardFilePaths();
+      if (result.paths.length > 0) {
+        e.preventDefault();
+        insertPaths(result.paths);
+        return;
+      }
+    } catch {
+      // Fall through to normal paste
     }
 
     // Otherwise let normal text paste happen

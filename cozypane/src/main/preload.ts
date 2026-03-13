@@ -46,6 +46,13 @@ contextBridge.exposeInMainWorld('cozyPane', {
     summarize: (changes: { type: string; name: string }[]) => ipcRenderer.invoke('settings:summarize', changes),
   },
   onMenuAction: (channel: string, callback: () => void) => {
+    const ALLOWED_CHANNELS = new Set([
+      'menu:new-tab', 'menu:close-tab', 'menu:toggle-panels', 'menu:toggle-layout',
+      'menu:settings', 'menu:clear-terminal', 'menu:split-view',
+      'menu:zoom-in', 'menu:zoom-out', 'menu:zoom-reset',
+      'updater:status',
+    ]);
+    if (!ALLOWED_CHANNELS.has(channel)) return () => {};
     const listener = () => callback();
     ipcRenderer.on(channel, listener);
     return () => ipcRenderer.removeListener(channel, listener);

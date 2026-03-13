@@ -3,7 +3,6 @@ import { Terminal as XTerm } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import { stripAnsi, TUI_ENTER, TUI_EXIT, analyzeFocus, analyzeAction, parseCostInfo, type AiAction, type CostInfo } from '../lib/terminalAnalyzer';
-import type { ConversationTurn } from './ConversationHistory';
 import CommandInput from './CommandInput';
 import '@xterm/xterm/css/xterm.css';
 
@@ -47,6 +46,7 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, on
   const assistantBufferRef = useRef('');
   const isVisibleRef = useRef(isVisible);
   isVisibleRef.current = isVisible;
+  const followOutputRef = useRef(true);
 
   const [tuiMode, setTuiMode] = useState(false);
   const [focus, setFocus] = useState<'input' | 'terminal'>('input');
@@ -92,11 +92,9 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, on
     if (!fitAddonRef.current || !termRef.current || !id) return;
     try {
       const term = termRef.current;
-      const wasAtBottom = term.buffer.active.viewportY >= term.buffer.active.baseY;
       fitAddonRef.current.fit();
       window.cozyPane.terminal.resize(id, term.cols, term.rows);
-      if (wasAtBottom) {
-        // Scroll after fit settles to avoid race with viewport repositioning
+      if (followOutputRef.current) {
         term.scrollToBottom();
         requestAnimationFrame(() => {
           if (termRef.current) termRef.current.scrollToBottom();
@@ -157,6 +155,8 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, on
     }
 
     window.cozyPane.terminal.write(id, command.replace(/\n/g, '\r') + '\r');
+    followOutputRef.current = true;
+    setScrolledUp(false);
     manualUntilRef.current = 0;
 
     // Check cwd after command executes
@@ -169,32 +169,30 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, on
 
     const getXtermTheme = () => {
       const style = getComputedStyle(document.documentElement);
-      const bg = style.getPropertyValue('--terminal-bg').trim() || '#1a1b2e';
-      const fg = style.getPropertyValue('--terminal-fg').trim() || '#e4e4f0';
-      const cursor = style.getPropertyValue('--terminal-cursor').trim() || '#7c6ef0';
-      const accentDim = style.getPropertyValue('--accent-dim').trim();
+      const v = (name: string, fallback: string) => style.getPropertyValue(name).trim() || fallback;
+      const bg = v('--terminal-bg', '#1a1b2e');
       return {
         background: bg,
-        foreground: fg,
-        cursor,
+        foreground: v('--terminal-fg', '#e4e4f0'),
+        cursor: v('--terminal-cursor', '#7c6ef0'),
         cursorAccent: bg,
-        selectionBackground: (accentDim || '#4a3fb0') + '50',
-        black: '#1a1b2e',
-        red: '#f06c7e',
-        green: '#5ce0a8',
-        yellow: '#f0c95c',
-        blue: '#5cb8f0',
-        magenta: '#c07ef0',
-        cyan: '#5ce0d0',
-        white: '#e4e4f0',
-        brightBlack: '#6b6c7e',
-        brightRed: '#f5909e',
-        brightGreen: '#7ef0c0',
-        brightYellow: '#f5dc8a',
-        brightBlue: '#82ccf5',
-        brightMagenta: '#d4a0f5',
-        brightCyan: '#7ef0e0',
-        brightWhite: '#ffffff',
+        selectionBackground: v('--accent-dim', '#4a3fb0') + '50',
+        black: v('--terminal-black', '#1a1b2e'),
+        red: v('--terminal-red', '#f06c7e'),
+        green: v('--terminal-green', '#5ce0a8'),
+        yellow: v('--terminal-yellow', '#f0c95c'),
+        blue: v('--terminal-blue', '#5cb8f0'),
+        magenta: v('--terminal-magenta', '#c07ef0'),
+        cyan: v('--terminal-cyan', '#5ce0d0'),
+        white: v('--terminal-white', '#e4e4f0'),
+        brightBlack: v('--terminal-bright-black', '#6b6c7e'),
+        brightRed: v('--terminal-bright-red', '#f5909e'),
+        brightGreen: v('--terminal-bright-green', '#7ef0c0'),
+        brightYellow: v('--terminal-bright-yellow', '#f5dc8a'),
+        brightBlue: v('--terminal-bright-blue', '#82ccf5'),
+        brightMagenta: v('--terminal-bright-magenta', '#d4a0f5'),
+        brightCyan: v('--terminal-bright-cyan', '#7ef0e0'),
+        brightWhite: v('--terminal-bright-white', '#ffffff'),
       };
     };
 
@@ -216,11 +214,44 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, on
     termRef.current = term;
     fitAddonRef.current = fitAddon;
 
-    // Detect when user scrolls away from the bottom
+    // Intent-based scroll tracking: followOutputRef tracks whether the user
+    // wants to stay at the bottom. We only set it to false on genuine user
+    // scroll-up actions, and set it back to true when they scroll to bottom
+    // or submit a command. This avoids the race conditions of checking
+    // viewportY vs baseY on every onScroll event (which fires for both
+    // programmatic and user scrolls, with unreliable intermediate values).
+    term.element?.addEventListener('wheel', (e) => {
+      if (e.deltaY < 0) {
+        // User scrolling up — stop following output
+        followOutputRef.current = false;
+        setScrolledUp(true);
+      } else if (e.deltaY > 0) {
+        // User scrolling down — check if they reached the bottom
+        requestAnimationFrame(() => {
+          if (!termRef.current) return;
+          const buf = termRef.current.buffer.active;
+          if (buf.viewportY >= buf.baseY - 1) {
+            followOutputRef.current = true;
+            setScrolledUp(false);
+          }
+        });
+      }
+    }, { passive: true });
+
+    // Also detect keyboard scrolling (Shift+PageUp etc.) and scrollbar drags
+    // via onScroll, but only to detect scrolling AWAY from bottom.
+    // We use a suppression timestamp to ignore programmatic scroll events.
+    const suppressScrollUntil = { current: 0 };
     term.onScroll(() => {
+      if (Date.now() < suppressScrollUntil.current) return;
       const buf = term.buffer.active;
-      const atBottom = buf.viewportY >= buf.baseY;
-      setScrolledUp(!atBottom);
+      if (buf.viewportY < buf.baseY - 1) {
+        followOutputRef.current = false;
+        setScrolledUp(true);
+      } else {
+        followOutputRef.current = true;
+        setScrolledUp(false);
+      }
     });
 
     term.attachCustomKeyEventHandler((e: KeyboardEvent) => {
@@ -242,12 +273,13 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, on
     const removeDataListener = window.cozyPane.terminal.onData((id: string, data: string) => {
       if (id !== terminalIdRef.current) return;
 
-      const buf = term.buffer.active;
-      const wasAtBottom = buf.viewportY >= buf.baseY;
-      term.write(data);
-      if (wasAtBottom) {
-        term.scrollToBottom();
-      }
+      // Suppress onScroll during write+scrollToBottom to prevent false positives
+      suppressScrollUntil.current = Date.now() + 150;
+      term.write(data, () => {
+        if (followOutputRef.current) {
+          term.scrollToBottom();
+        }
+      });
 
       if (TUI_ENTER.test(data)) { tuiModeRef.current = true; setTuiMode(true); }
       if (TUI_EXIT.test(data)) { tuiModeRef.current = false; setTuiMode(false); }
@@ -261,8 +293,7 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, on
       }
 
       // Detect Claude exiting (shell prompt returns)
-      const cleaned = stripAnsi(data);
-      if (activeProcessRef.current === 'claude' && /[$%#]\s*$/.test(cleaned)) {
+      if (activeProcessRef.current === 'claude' && /[$%#]\s*$/.test(stripAnsi(data))) {
         if (assistantBufferRef.current.trim()) {
           conversationRef.current.push({
             role: 'assistant',
@@ -365,8 +396,15 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, on
 
   const scrollToBottom = useCallback(() => {
     if (termRef.current) {
+      followOutputRef.current = true;
       termRef.current.scrollToBottom();
       setScrolledUp(false);
+      // Re-scroll after any pending writes settle
+      requestAnimationFrame(() => {
+        if (termRef.current) {
+          termRef.current.scrollToBottom();
+        }
+      });
     }
   }, []);
 
@@ -396,7 +434,7 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, on
     }
     if (paths.length > 0) {
       if (focusRef.current === 'input') {
-        window.dispatchEvent(new CustomEvent('cozyPane:fileDrop', { detail: paths }));
+        window.dispatchEvent(new CustomEvent('cozyPane:fileDrop', { detail: { paths, terminalId: id } }));
       } else {
         const escaped = paths.map(p => p.includes(' ') ? `'${p}'` : p).join(' ');
         window.cozyPane.terminal.write(id, escaped);
@@ -449,6 +487,7 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, on
           isFocused={focus === 'input'}
           showSlashCommands={true}
           dynamicSlashCommands={dynamicSlashCommands}
+          terminalId={terminalIdRef.current || undefined}
         />
       )}
       {!tuiMode && (

@@ -29,7 +29,18 @@ export default function DiffViewer({ filePath, before, after, fontSize = 13 }: P
 
     editorRef.current = diffEditor;
 
+    // Apply current theme on mount
+    monaco.editor.setTheme(localStorage.getItem('cozyPane:theme') || 'cozy-dark');
+
+    // Listen for theme changes
+    const handleThemeChange = (e: Event) => {
+      const themeId = (e as CustomEvent).detail || 'cozy-dark';
+      monaco.editor.setTheme(themeId);
+    };
+    window.addEventListener('cozyPane:themeChange', handleThemeChange);
+
     return () => {
+      window.removeEventListener('cozyPane:themeChange', handleThemeChange);
       diffEditor.dispose();
       editorRef.current = null;
     };

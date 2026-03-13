@@ -6,7 +6,6 @@ import StatusBar from './components/StatusBar';
 import ActivityFeed from './components/ActivityFeed';
 import DiffViewer from './components/DiffViewer';
 import SessionSummary from './components/SessionSummary';
-import type { ConversationTurn } from './components/ConversationHistory';
 import Settings from './components/Settings';
 import GitPanel from './components/GitPanel';
 import ToastContainer from './components/Toast';
@@ -60,6 +59,13 @@ export default function App() {
   const resizeCleanupRef = useRef<(() => void) | null>(null);
   const [activityEvents, setActivityEvents] = useState<FileChangeEvent[]>([]);
   const [lastWatcherEvent, setLastWatcherEvent] = useState<FileChangeEvent | null>(null);
+
+  // Per-tab watcher state cache
+  interface TabWatcherState {
+    activityEvents: FileChangeEvent[];
+    summary: string | null;
+  }
+  const tabWatcherCache = useRef(new Map<string, TabWatcherState>());
   const [rightPanelTab, setRightPanelTab] = useState<RightPanelTab>(() => loadPersisted('rightPanelTab', 'preview'));
   const [diffState, setDiffState] = useState<DiffState | null>(null);
   const [summary, setSummary] = useState<string | null>(null);
@@ -85,6 +91,8 @@ export default function App() {
   activeTerminalIdRef.current = activeTerminalId;
   const splitTerminalIdRef = useRef(splitTerminalId);
   splitTerminalIdRef.current = splitTerminalId;
+  const terminalTabsRef = useRef(terminalTabs);
+  terminalTabsRef.current = terminalTabs;
 
   // Derived state from active terminal
   const activeTerminal = terminalTabs.find(t => t.id === activeTerminalId) || terminalTabs[0];
@@ -119,6 +127,29 @@ export default function App() {
   useEffect(() => { savePersisted('sidebarFontSize', sidebarFontSize); }, [sidebarFontSize]);
   useEffect(() => { savePersisted('panelFontSize', panelFontSize); }, [panelFontSize]);
 
+  // Refs for per-tab watcher save/restore
+  const activityEventsRef = useRef(activityEvents);
+  activityEventsRef.current = activityEvents;
+  const summaryRef = useRef(summary);
+  summaryRef.current = summary;
+  const prevActiveTabRef = useRef(activeTerminalId);
+
+  // Save/restore watcher state on tab switch
+  useEffect(() => {
+    const prevId = prevActiveTabRef.current;
+    if (prevId === activeTerminalId) return;
+    // Save leaving tab
+    tabWatcherCache.current.set(prevId, {
+      activityEvents: activityEventsRef.current,
+      summary: summaryRef.current,
+    });
+    // Restore or init new tab
+    const cached = tabWatcherCache.current.get(activeTerminalId);
+    setActivityEvents(cached?.activityEvents ?? []);
+    setSummary(cached?.summary ?? null);
+    prevActiveTabRef.current = activeTerminalId;
+  }, [activeTerminalId]);
+
   const changedFiles = useMemo(() => {
     const map = new Map<string, 'create' | 'modify' | 'delete'>();
     for (let i = activityEvents.length - 1; i >= 0; i--) {
@@ -131,8 +162,6 @@ export default function App() {
   useEffect(() => {
     if (!cwd) return;
 
-    setActivityEvents([]);
-    setSummary(null);
     window.cozyPane.watcher.start(cwd);
 
     const removeListener = window.cozyPane.watcher.onChange((event: FileChangeEvent) => {
@@ -157,8 +186,9 @@ export default function App() {
   }, []);
 
   const closeTerminalTab = useCallback((id: string) => {
-    const tab = terminalTabs.find(t => t.id === id);
-    if (!tab || terminalTabs.length <= 1) return; // Can't close last tab
+    const tabs = terminalTabsRef.current;
+    const tab = tabs.find(t => t.id === id);
+    if (!tab || tabs.length <= 1) return; // Can't close last tab
 
     if (!window.confirm(`Close terminal "${tab.customLabel || tab.label}"?`)) return;
 
@@ -167,6 +197,7 @@ export default function App() {
       if (tab.ptyId) {
         window.cozyPane.terminal.close(tab.ptyId);
       }
+      tabWatcherCache.current.delete(id);
       const remaining = prev.filter(t => t.id !== id);
       // If closing active tab, switch to adjacent
       if (id === activeTerminalIdRef.current) {
@@ -180,7 +211,7 @@ export default function App() {
       }
       return remaining;
     });
-  }, [terminalTabs]);
+  }, []);
 
   const switchTerminalTab = useCallback((id: string) => {
     setActiveTerminalId(id);
@@ -318,17 +349,19 @@ export default function App() {
   }, []);
 
   // Keyboard shortcuts: Cmd+K palette, Cmd+T new tab, Cmd+W close tab
+  const isMac = navigator.platform.includes('Mac');
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+      const mod = isMac ? e.metaKey : e.ctrlKey;
+      if (mod && e.key === 'k') {
         e.preventDefault();
         setPaletteOpen(prev => !prev);
       }
-      if ((e.metaKey || e.ctrlKey) && e.key === 't') {
+      if (mod && e.key === 't') {
         e.preventDefault();
         addTerminalTab();
       }
-      if ((e.metaKey || e.ctrlKey) && e.key === 'w') {
+      if (mod && e.key === 'w') {
         e.preventDefault();
         closeTerminalTab(activeTerminalIdRef.current);
       }
@@ -394,9 +427,6 @@ export default function App() {
     ];
     return () => cleanups.forEach(fn => fn());
   }, [addTerminalTab, closeTerminalTab, togglePanels, toggleLayout, toggleSplit, adjustZoom]);
-
-  const terminalTabsRef = useRef(terminalTabs);
-  terminalTabsRef.current = terminalTabs;
 
   const sendTerminalCommand = useCallback((command: string) => {
     const tab = terminalTabsRef.current.find(t => t.id === activeTerminalIdRef.current);

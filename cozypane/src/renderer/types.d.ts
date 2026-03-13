@@ -44,6 +44,12 @@ declare global {
     status: 'added' | 'modified' | 'deleted' | 'untracked' | 'renamed';
   }
 
+  interface ConversationTurn {
+    role: 'user' | 'assistant';
+    content: string;
+    timestamp: number;
+  }
+
   interface GitCommit {
     hash: string;
     message: string;

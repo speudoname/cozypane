@@ -2,23 +2,9 @@ import { ipcMain } from 'electron';
 import { exec, execFile } from 'child_process';
 import fs from 'fs/promises';
 import path from 'path';
-import { getDecryptedApiKey, getSettings, callLlm } from './settings';
+import { callLlm } from './settings';
 
 const GIT = '/usr/bin/git';
-
-function gitExec(cmd: string, cwd: string): Promise<string> {
-  // Use full path to git since Electron may have a limited PATH
-  const fullCmd = cmd.replace(/^git /, `${GIT} `);
-  return new Promise((resolve, reject) => {
-    exec(fullCmd, { cwd, timeout: 5000, maxBuffer: 1024 * 1024 }, (err, stdout, stderr) => {
-      if (err) {
-        reject(new Error(stderr || err.message));
-      } else {
-        resolve(stdout);
-      }
-    });
-  });
-}
 
 function gitExecFile(args: string[], cwd: string): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -68,7 +54,7 @@ function parseStatus(line: string): GitFileStatus | null {
 export function registerGitHandlers() {
   ipcMain.handle('git:isRepo', async (_event, cwd: string) => {
     try {
-      await gitExec('git rev-parse --is-inside-work-tree', cwd);
+      await gitExecFile(['rev-parse', '--is-inside-work-tree'], cwd);
       return { isRepo: true };
     } catch {
       return { isRepo: false };
@@ -77,7 +63,7 @@ export function registerGitHandlers() {
 
   ipcMain.handle('git:status', async (_event, cwd: string) => {
     try {
-      const output = await gitExec('git status --porcelain=v1', cwd);
+      const output = await gitExecFile(['status', '--porcelain=v1'], cwd);
       const files: GitFileStatus[] = [];
       for (const line of output.split('\n')) {
         if (!line) continue;
@@ -92,9 +78,9 @@ export function registerGitHandlers() {
 
   ipcMain.handle('git:branch', async (_event, cwd: string) => {
     try {
-      const branch = (await gitExec('git branch --show-current', cwd)).trim();
+      const branch = (await gitExecFile(['branch', '--show-current'], cwd)).trim();
       if (branch) return { branch, detached: false };
-      const hash = (await gitExec('git rev-parse --short HEAD', cwd)).trim();
+      const hash = (await gitExecFile(['rev-parse', '--short', 'HEAD'], cwd)).trim();
       return { branch: hash, detached: true };
     } catch {
       return { branch: '', detached: false };
@@ -103,7 +89,7 @@ export function registerGitHandlers() {
 
   ipcMain.handle('git:log', async (_event, cwd: string) => {
     try {
-      const output = await gitExec('git log --oneline --format="%h|%s|%ar" -20', cwd);
+      const output = await gitExecFile(['log', '--oneline', '--format=%h|%s|%ar', '-20'], cwd);
       const commits = output.trim().split('\n').filter(Boolean).map(line => {
         const [hash, message, timeAgo] = line.split('|');
         return { hash, message, timeAgo };
@@ -139,7 +125,7 @@ export function registerGitHandlers() {
   ipcMain.handle('git:remoteInfo', async (_event, cwd: string) => {
     const result = { hasRemote: false, remoteUrl: '', ghAuthed: false, ghInstalled: false };
     try {
-      const remoteOut = await gitExec('git remote -v', cwd);
+      const remoteOut = await gitExecFile(['remote', '-v'], cwd);
       const pushLine = remoteOut.split('\n').find(l => l.includes('origin') && l.includes('(push)'));
       if (pushLine) {
         result.hasRemote = true;
@@ -179,10 +165,10 @@ export function registerGitHandlers() {
 
   ipcMain.handle('git:generateCommitMsg', async (_event, cwd: string) => {
     try {
-      const stat = await gitExec('git diff --cached --stat', cwd);
+      const stat = await gitExecFile(['diff', '--cached', '--stat'], cwd);
       if (!stat.trim()) return { error: 'No staged changes to describe.' };
 
-      let diff = await gitExec('git diff --cached', cwd);
+      let diff = await gitExecFile(['diff', '--cached'], cwd);
       if (diff.length > 4000) diff = diff.slice(0, 4000) + '\n... (truncated)';
 
       const prompt = `Generate a concise git commit message (one line, max 72 chars) for these staged changes. Return ONLY the commit message, no quotes, no prefix.\n\nStats:\n${stat}\n\nDiff:\n${diff}`;

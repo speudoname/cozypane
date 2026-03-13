@@ -1,6 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import type { AiAction, CostInfo } from '../lib/terminalAnalyzer';
-import type { ConversationTurn } from './ConversationHistory';
 
 export interface TerminalTab {
   id: string;

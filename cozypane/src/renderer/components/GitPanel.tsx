@@ -110,7 +110,7 @@ export default function GitPanel({ cwd, onDiffClick, onBranchChange, activityEve
   // Poll git status every 5s while panel is mounted
   useEffect(() => {
     if (!isRepo) return;
-    const interval = setInterval(refresh, 5000);
+    const interval = setInterval(refresh, 15000);
     return () => clearInterval(interval);
   }, [isRepo, refresh]);
 
@@ -150,9 +150,14 @@ export default function GitPanel({ cwd, onDiffClick, onBranchChange, activityEve
 
   const handleGenerateMsg = async () => {
     setGeneratingMsg(true);
-    const result = await window.cozyPane.git.generateCommitMsg(cwd);
-    if (result.message) setCommitMsg(result.message);
-    setGeneratingMsg(false);
+    try {
+      const result = await window.cozyPane.git.generateCommitMsg(cwd);
+      if (result.message) setCommitMsg(result.message);
+    } catch (err) {
+      console.error('[GitPanel] generateCommitMsg error:', err);
+    } finally {
+      setGeneratingMsg(false);
+    }
   };
 
   const staged = files.filter(f => f.staged);
