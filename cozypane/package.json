@@ -1,6 +1,6 @@
 {
   "name": "cozypane",
-  "version": "0.4.6",
+  "version": "0.4.7",
   "description": "A cozy terminal for AI-powered coding tools",
   "author": "CozyPane <levan@sarke.ge>",
   "license": "MIT",
@@ -31,6 +31,7 @@
     "postinstall": "electron-builder install-app-deps"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.27.1",
     "electron-updater": "^6.8.3",
     "node-pty": "^1.0.0"
   },
@@ -68,8 +69,20 @@
     ],
     "mac": {
       "target": [
-        { "target": "dmg", "arch": ["arm64", "x64"] },
-        { "target": "zip", "arch": ["arm64", "x64"] }
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
       ],
       "category": "public.app-category.developer-tools",
       "icon": "build/icon.icns",
@@ -78,7 +91,9 @@
       "hardenedRuntime": true,
       "gatekeeperAssess": false,
       "darkModeSupport": true,
-      "notarize": { "teamId": "X3F4527AS7" }
+      "notarize": {
+        "teamId": "X3F4527AS7"
+      }
     },
     "dmg": {
       "title": "${productName}",

@@ -322,6 +322,35 @@ function setupAutoUpdater() {
   setInterval(() => autoUpdater.checkForUpdates(), 4 * 60 * 60 * 1000);
 }
 
+// Register MCP server config in ~/.claude.json so Claude Code discovers CozyPane tools
+function registerMcpConfig() {
+  try {
+    const mcpServerPath = isDev
+      ? path.join(__dirname, 'mcp-server.js')
+      : path.join(process.resourcesPath!, 'app.asar', 'dist', 'main', 'mcp-server.js');
+
+    const claudeConfigPath = path.join(os.homedir(), '.claude.json');
+    let config: Record<string, any> = {};
+
+    try {
+      config = JSON.parse(fs.readFileSync(claudeConfigPath, 'utf-8'));
+    } catch {}
+
+    if (!config.mcpServers) config.mcpServers = {};
+
+    config.mcpServers.cozypane = {
+      type: 'stdio',
+      command: 'node',
+      args: [mcpServerPath],
+    };
+
+    fs.writeFileSync(claudeConfigPath, JSON.stringify(config, null, 2));
+    console.log('[CozyPane] MCP server registered in ~/.claude.json');
+  } catch (err) {
+    console.error('[CozyPane] Failed to register MCP config:', err);
+  }
+}
+
 // App lifecycle
 app.whenReady().then(() => {
   // On macOS, warn if not running from /Applications (updates won't work properly)
@@ -350,6 +379,7 @@ app.whenReady().then(() => {
   buildMenu();
   createWindow();
   setupAutoUpdater();
+  registerMcpConfig();
 });
 
 // Handle cozypane:// protocol URLs on macOS

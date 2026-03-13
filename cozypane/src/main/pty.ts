@@ -2,6 +2,7 @@ import { ipcMain, BrowserWindow } from 'electron';
 import { exec } from 'child_process';
 import os from 'os';
 import fs from 'fs';
+import { getToken, API_BASE } from './deploy';
 
 const pty = require('node-pty');
 
@@ -32,6 +33,8 @@ function createPty(getWindow: () => BrowserWindow | null, cwd?: string): { id: s
         TERM: 'xterm-256color',
         COLORTERM: 'truecolor',
         CLAUDECODE: '',
+        COZYPANE_DEPLOY_TOKEN: getToken(),
+        COZYPANE_API_URL: API_BASE,
       },
     });
 

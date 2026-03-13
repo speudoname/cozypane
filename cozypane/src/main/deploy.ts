@@ -6,7 +6,7 @@ import { promisify } from 'util';
 
 const execFileAsync = promisify(execFile);
 
-const API_BASE = process.env.COZYPANE_API_URL || 'https://api.cozypane.com';
+export const API_BASE = process.env.COZYPANE_API_URL || 'https://api.cozypane.com';
 
 interface StoredAuth {
   encryptedToken: string;
@@ -58,7 +58,7 @@ function decryptToken(encrypted: string): string {
   try { return Buffer.from(encrypted, 'base64').toString('utf-8'); } catch { return ''; }
 }
 
-function getToken(): string {
+export function getToken(): string {
   const auth = readAuth();
   if (!auth) return '';
   return decryptToken(auth.encryptedToken);
