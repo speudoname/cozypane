@@ -22,7 +22,7 @@ function createPty(getWindow: () => BrowserWindow | null, cwd?: string): { id: s
   const id = `term-${nextId++}`;
 
   try {
-    const process = pty.spawn(shell, [], {
+    const process = pty.spawn(shell, ['-l'], {
       name: 'xterm-256color',
       cols: 80,
       rows: 24,

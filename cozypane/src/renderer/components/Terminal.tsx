@@ -47,6 +47,8 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, on
   const isVisibleRef = useRef(isVisible);
   isVisibleRef.current = isVisible;
   const followOutputRef = useRef(true);
+  const scrollCooldownRef = useRef(0); // timestamp until which auto-scroll is suppressed
+  const scrollRafRef = useRef(0); // requestAnimationFrame handle for debounced scroll
 
   const [tuiMode, setTuiMode] = useState(false);
   const [focus, setFocus] = useState<'input' | 'terminal'>('input');
@@ -96,11 +98,8 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, on
       const term = termRef.current;
       fitAddonRef.current.fit();
       window.cozyPane.terminal.resize(id, term.cols, term.rows);
-      if (followOutputRef.current) {
+      if (followOutputRef.current && Date.now() >= scrollCooldownRef.current) {
         term.scrollToBottom();
-        requestAnimationFrame(() => {
-          if (termRef.current) termRef.current.scrollToBottom();
-        });
       }
     } catch {}
   }, []);
@@ -158,6 +157,7 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, on
 
     window.cozyPane.terminal.write(id, command.replace(/\n/g, '\r') + '\r');
     followOutputRef.current = true;
+    scrollCooldownRef.current = 0;
     setScrolledUp(false);
     manualUntilRef.current = 0;
 
@@ -216,24 +216,38 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, on
     termRef.current = term;
     fitAddonRef.current = fitAddon;
 
-    // Intent-based scroll tracking: followOutputRef tracks whether the user
-    // wants to stay at the bottom. We only set it to false on genuine user
-    // scroll-up actions, and set it back to true when they scroll to bottom
-    // or submit a command. This avoids the race conditions of checking
-    // viewportY vs baseY on every onScroll event (which fires for both
-    // programmatic and user scrolls, with unreliable intermediate values).
+    // Scroll tracking: followOutputRef tracks whether the user wants to
+    // stay at the bottom. scrollCooldownRef prevents auto-scroll from
+    // fighting the user during/immediately after manual scrolling.
+    // scrollRafRef deduplicates multiple scroll-to-bottom calls per frame.
+
+    const scheduleScrollToBottom = () => {
+      if (scrollRafRef.current) return; // already scheduled
+      scrollRafRef.current = requestAnimationFrame(() => {
+        scrollRafRef.current = 0;
+        if (!termRef.current) return;
+        if (!followOutputRef.current) return;
+        if (Date.now() < scrollCooldownRef.current) return;
+        termRef.current.scrollToBottom();
+      });
+    };
+
     term.element?.addEventListener('wheel', (e) => {
       if (e.deltaY < 0) {
-        // User scrolling up — stop following output
+        // User scrolling up — stop following output, set cooldown
         followOutputRef.current = false;
+        scrollCooldownRef.current = Date.now() + 150;
         setScrolledUp(true);
       } else if (e.deltaY > 0) {
-        // User scrolling down — check if they reached the bottom
+        // User scrolling down — check if near bottom to resume following.
+        // Use generous threshold (5 lines) so user can catch the bottom
+        // even during rapid streaming where baseY keeps growing.
         requestAnimationFrame(() => {
           if (!termRef.current) return;
           const buf = termRef.current.buffer.active;
-          if (buf.viewportY >= buf.baseY - 1) {
+          if (buf.viewportY >= buf.baseY - 5) {
             followOutputRef.current = true;
+            scrollCooldownRef.current = 0;
             setScrolledUp(false);
           }
         });
@@ -244,24 +258,15 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, on
     term.element?.addEventListener('keydown', (e) => {
       if (e.key === 'PageUp' || (e.key === 'ArrowUp' && e.shiftKey)) {
         followOutputRef.current = false;
+        scrollCooldownRef.current = Date.now() + 150;
         setScrolledUp(true);
       }
       if (e.key === 'End' && e.ctrlKey) {
         followOutputRef.current = true;
+        scrollCooldownRef.current = 0;
         setScrolledUp(false);
       }
     });
-
-    // Periodic auto-scroll: during rapid streaming, scrollToBottom in the
-    // write callback can miss frames. This interval catches up every 80ms.
-    const autoScrollInterval = setInterval(() => {
-      if (followOutputRef.current && termRef.current) {
-        const buf = termRef.current.buffer.active;
-        if (buf.viewportY < buf.baseY) {
-          termRef.current.scrollToBottom();
-        }
-      }
-    }, 80);
 
     term.attachCustomKeyEventHandler((e: KeyboardEvent) => {
       // Copy: Cmd+C (mac) or Ctrl+Shift+C (linux/win) when text is selected
@@ -284,7 +289,7 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, on
 
       term.write(data, () => {
         if (followOutputRef.current) {
-          term.scrollToBottom();
+          scheduleScrollToBottom();
         }
       });
 
@@ -365,7 +370,7 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, on
       removeDataListener();
       removeExitListener();
       resizeObserver.disconnect();
-      clearInterval(autoScrollInterval);
+      if (scrollRafRef.current) cancelAnimationFrame(scrollRafRef.current);
       window.removeEventListener('cozyPane:themeChange', handleThemeChange);
       if (idleTimerRef.current) clearTimeout(idleTimerRef.current);
       term.dispose();
@@ -415,14 +420,9 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, on
   const scrollToBottom = useCallback(() => {
     if (termRef.current) {
       followOutputRef.current = true;
+      scrollCooldownRef.current = 0;
       termRef.current.scrollToBottom();
       setScrolledUp(false);
-      // Re-scroll after any pending writes settle
-      requestAnimationFrame(() => {
-        if (termRef.current) {
-          termRef.current.scrollToBottom();
-        }
-      });
     }
   }, []);
 

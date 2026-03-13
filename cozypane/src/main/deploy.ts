@@ -95,24 +95,33 @@ async function apiFetch(endpoint: string, options: RequestInit = {}): Promise<an
   return response.text();
 }
 
+function detectProjectTypeInDir(dir: string): string | null {
+  if (fs.existsSync(path.join(dir, 'Dockerfile'))) return 'docker';
+  if (fs.existsSync(path.join(dir, 'package.json'))) return 'node';
+  if (fs.existsSync(path.join(dir, 'requirements.txt'))) return 'python';
+  if (fs.existsSync(path.join(dir, 'go.mod'))) return 'go';
+  if (fs.existsSync(path.join(dir, 'index.html'))) return 'static';
+  return null;
+}
+
 function detectProjectType(cwd: string): { type: string; name: string } {
   const name = path.basename(cwd);
 
-  if (fs.existsSync(path.join(cwd, 'Dockerfile'))) {
-    return { type: 'docker', name };
-  }
-  if (fs.existsSync(path.join(cwd, 'package.json'))) {
-    return { type: 'node', name };
-  }
-  if (fs.existsSync(path.join(cwd, 'requirements.txt'))) {
-    return { type: 'python', name };
-  }
-  if (fs.existsSync(path.join(cwd, 'go.mod'))) {
-    return { type: 'go', name };
-  }
-  if (fs.existsSync(path.join(cwd, 'index.html'))) {
-    return { type: 'static', name };
-  }
+  // Check root directory first
+  const rootType = detectProjectTypeInDir(cwd);
+  if (rootType) return { type: rootType, name };
+
+  // Check one level deep for monorepo structures (frontend/, backend/, app/, etc.)
+  try {
+    const entries = fs.readdirSync(cwd, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.isDirectory() && !entry.name.startsWith('.') && entry.name !== 'node_modules') {
+        const subType = detectProjectTypeInDir(path.join(cwd, entry.name));
+        if (subType) return { type: subType, name };
+      }
+    }
+  } catch {}
+
   return { type: 'unknown', name };
 }
 
