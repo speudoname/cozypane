@@ -30,16 +30,19 @@ interface Props {
   onAdd: () => void;
   onToggleSplit: (id: string) => void;
   onRename: (id: string, name: string) => void;
+  onReorder: (fromIndex: number, toIndex: number) => void;
   fontSize?: number;
   onZoomIn?: () => void;
   onZoomOut?: () => void;
   onZoomReset?: () => void;
 }
 
-export default function TerminalTabBar({ tabs, activeId, splitId, onSelect, onClose, onAdd, onToggleSplit, onRename, fontSize, onZoomIn, onZoomOut, onZoomReset }: Props) {
+export default function TerminalTabBar({ tabs, activeId, splitId, onSelect, onClose, onAdd, onToggleSplit, onRename, onReorder, fontSize, onZoomIn, onZoomOut, onZoomReset }: Props) {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editValue, setEditValue] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
+  const dragIndexRef = useRef<number | null>(null);
+  const [dropTargetIndex, setDropTargetIndex] = useState<number | null>(null);
 
   useEffect(() => {
     if (editingId && inputRef.current) {
@@ -57,21 +60,55 @@ export default function TerminalTabBar({ tabs, activeId, splitId, onSelect, onCl
 
   return (
     <div className="terminal-tab-bar">
-      {tabs.map(tab => {
+      {tabs.map((tab, index) => {
         const isActive = tab.id === activeId;
         const isSplit = tab.id === splitId;
         const isRunning = tab.aiAction !== 'idle';
         const isEditing = editingId === tab.id;
+        const isDropTarget = dropTargetIndex === index && dragIndexRef.current !== index;
         return (
           <div
             key={tab.id}
-            className={`terminal-tab ${isActive ? 'active' : ''} ${isSplit ? 'split' : ''}`}
+            className={`terminal-tab ${isActive ? 'active' : ''} ${isSplit ? 'split' : ''} ${isDropTarget ? 'drop-target' : ''}`}
+            draggable={!isEditing}
             onClick={() => onSelect(tab.id)}
             onContextMenu={(e) => { e.preventDefault(); onToggleSplit(tab.id); }}
             onDoubleClick={(e) => {
               e.stopPropagation();
               setEditValue(tab.customLabel || '');
               setEditingId(tab.id);
+            }}
+            onDragStart={(e) => {
+              dragIndexRef.current = index;
+              e.dataTransfer.effectAllowed = 'move';
+              // Make the drag ghost semi-transparent
+              if (e.currentTarget instanceof HTMLElement) {
+                e.currentTarget.style.opacity = '0.5';
+              }
+            }}
+            onDragEnd={(e) => {
+              dragIndexRef.current = null;
+              setDropTargetIndex(null);
+              if (e.currentTarget instanceof HTMLElement) {
+                e.currentTarget.style.opacity = '';
+              }
+            }}
+            onDragOver={(e) => {
+              e.preventDefault();
+              e.dataTransfer.dropEffect = 'move';
+              setDropTargetIndex(index);
+            }}
+            onDragLeave={() => {
+              setDropTargetIndex(prev => prev === index ? null : prev);
+            }}
+            onDrop={(e) => {
+              e.preventDefault();
+              const from = dragIndexRef.current;
+              if (from !== null && from !== index) {
+                onReorder(from, index);
+              }
+              dragIndexRef.current = null;
+              setDropTargetIndex(null);
             }}
           >
             {isRunning && <span className="terminal-tab-dot" />}

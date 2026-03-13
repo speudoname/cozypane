@@ -45,12 +45,29 @@ contextBridge.exposeInMainWorld('cozyPane', {
     set: (data: { provider: string; model: string; apiKey?: string }) => ipcRenderer.invoke('settings:set', data),
     summarize: (changes: { type: string; name: string }[]) => ipcRenderer.invoke('settings:summarize', changes),
   },
+  deploy: {
+    login: () => ipcRenderer.invoke('deploy:login'),
+    logout: () => ipcRenderer.invoke('deploy:logout'),
+    getAuth: () => ipcRenderer.invoke('deploy:getAuth'),
+    detectProject: (cwd: string) => ipcRenderer.invoke('deploy:detectProject', cwd),
+    start: (cwd: string, appName: string, tier?: string) => ipcRenderer.invoke('deploy:start', cwd, appName, tier),
+    list: () => ipcRenderer.invoke('deploy:list'),
+    get: (id: string) => ipcRenderer.invoke('deploy:get', id),
+    logs: (id: string) => ipcRenderer.invoke('deploy:logs', id),
+    delete: (id: string) => ipcRenderer.invoke('deploy:delete', id),
+    redeploy: (id: string) => ipcRenderer.invoke('deploy:redeploy', id),
+    onProtocolCallback: (callback: (url: string) => void) => {
+      const listener = (_event: any, url: string) => callback(url);
+      ipcRenderer.on('deploy:protocol-callback', listener);
+      return () => ipcRenderer.removeListener('deploy:protocol-callback', listener);
+    },
+  },
   onMenuAction: (channel: string, callback: () => void) => {
     const ALLOWED_CHANNELS = new Set([
       'menu:new-tab', 'menu:close-tab', 'menu:toggle-panels', 'menu:toggle-layout',
       'menu:settings', 'menu:clear-terminal', 'menu:split-view',
       'menu:zoom-in', 'menu:zoom-out', 'menu:zoom-reset',
-      'updater:status',
+      'updater:status', 'deploy:auth-success',
     ]);
     if (!ALLOWED_CHANNELS.has(channel)) return () => {};
     const listener = () => callback();

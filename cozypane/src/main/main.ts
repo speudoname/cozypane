@@ -9,6 +9,7 @@ import { registerFsHandlers } from './filesystem';
 import { registerWatcherHandlers, closeWatcher } from './watcher';
 import { registerSettingsHandlers } from './settings';
 import { registerGitHandlers } from './git';
+import { registerDeployHandlers } from './deploy';
 
 // Global error handlers
 process.on('uncaughtException', (err) => {
@@ -233,6 +234,7 @@ registerFsHandlers();
 registerWatcherHandlers(getWindow);
 registerSettingsHandlers();
 registerGitHandlers();
+registerDeployHandlers(getWindow);
 
 // File picker dialog
 ipcMain.handle('fs:pickFile', async () => {
@@ -340,9 +342,22 @@ app.whenReady().then(() => {
     });
   }
 
+  // Register cozypane:// protocol for OAuth callbacks
+  if (!app.isDefaultProtocolClient('cozypane')) {
+    app.setAsDefaultProtocolClient('cozypane');
+  }
+
   buildMenu();
   createWindow();
   setupAutoUpdater();
+});
+
+// Handle cozypane:// protocol URLs on macOS
+app.on('open-url', (event, url) => {
+  event.preventDefault();
+  mainWindow?.webContents.send('deploy:protocol-callback', url);
+  // Also process in main process for token exchange
+  ipcMain.emit('deploy:processProtocolUrl', event, url);
 });
 
 app.on('window-all-closed', () => {

@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { Terminal as XTerm } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
-import { stripAnsi, TUI_ENTER, TUI_EXIT, analyzeFocus, analyzeAction, parseCostInfo, type AiAction, type CostInfo } from '../lib/terminalAnalyzer';
+import { stripAnsi, TUI_ENTER, TUI_EXIT, analyzeFocus, analyzeAction, parseCostInfo, detectChoicePrompt, type AiAction, type CostInfo } from '../lib/terminalAnalyzer';
 import CommandInput from './CommandInput';
 import '@xterm/xterm/css/xterm.css';
 
@@ -59,6 +59,8 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, on
   const [claudeRunning, setClaudeRunning] = useState(false);
   const [scrolledUp, setScrolledUp] = useState(false);
   const [dynamicSlashCommands, setDynamicSlashCommands] = useState<{ cmd: string; desc: string }[]>([]);
+  const [isChoicePrompt, setIsChoicePrompt] = useState(false);
+  const [focusTick, setFocusTick] = useState(0);
 
   const switchFocus = useCallback((to: 'input' | 'terminal', manual = false) => {
     focusRef.current = to;
@@ -238,21 +240,28 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, on
       }
     }, { passive: true });
 
-    // Also detect keyboard scrolling (Shift+PageUp etc.) and scrollbar drags
-    // via onScroll, but only to detect scrolling AWAY from bottom.
-    // We use a suppression timestamp to ignore programmatic scroll events.
-    const suppressScrollUntil = { current: 0 };
-    term.onScroll(() => {
-      if (Date.now() < suppressScrollUntil.current) return;
-      const buf = term.buffer.active;
-      if (buf.viewportY < buf.baseY - 1) {
+    // Detect keyboard-based scrolling (Shift+PageUp, etc.)
+    term.element?.addEventListener('keydown', (e) => {
+      if (e.key === 'PageUp' || (e.key === 'ArrowUp' && e.shiftKey)) {
         followOutputRef.current = false;
         setScrolledUp(true);
-      } else {
+      }
+      if (e.key === 'End' && e.ctrlKey) {
         followOutputRef.current = true;
         setScrolledUp(false);
       }
     });
+
+    // Periodic auto-scroll: during rapid streaming, scrollToBottom in the
+    // write callback can miss frames. This interval catches up every 80ms.
+    const autoScrollInterval = setInterval(() => {
+      if (followOutputRef.current && termRef.current) {
+        const buf = termRef.current.buffer.active;
+        if (buf.viewportY < buf.baseY) {
+          termRef.current.scrollToBottom();
+        }
+      }
+    }, 80);
 
     term.attachCustomKeyEventHandler((e: KeyboardEvent) => {
       // Copy: Cmd+C (mac) or Ctrl+Shift+C (linux/win) when text is selected
@@ -273,8 +282,6 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, on
     const removeDataListener = window.cozyPane.terminal.onData((id: string, data: string) => {
       if (id !== terminalIdRef.current) return;
 
-      // Suppress onScroll during write+scrollToBottom to prevent false positives
-      suppressScrollUntil.current = Date.now() + 150;
       term.write(data, () => {
         if (followOutputRef.current) {
           term.scrollToBottom();
@@ -322,6 +329,7 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, on
         checkCwd();
         const action = analyzeAction(rollingBufferRef.current, activeProcessRef.current === 'claude');
         onActionChangeRef.current?.(action);
+        setIsChoicePrompt(detectChoicePrompt(rollingBufferRef.current));
         if (activeProcessRef.current === 'claude') {
           const cost = parseCostInfo(rollingBufferRef.current);
           onCostChangeRef.current?.(cost);
@@ -357,6 +365,7 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, on
       removeDataListener();
       removeExitListener();
       resizeObserver.disconnect();
+      clearInterval(autoScrollInterval);
       window.removeEventListener('cozyPane:themeChange', handleThemeChange);
       if (idleTimerRef.current) clearTimeout(idleTimerRef.current);
       term.dispose();
@@ -364,12 +373,21 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, on
     };
   }, []);
 
-  // Re-fit when becoming visible
+  // Re-fit and refocus input when becoming visible (tab switch)
+  const prevVisibleRef = useRef(isVisible);
   useEffect(() => {
+    const wasHidden = !prevVisibleRef.current;
+    prevVisibleRef.current = isVisible;
     if (isVisible) {
       requestAnimationFrame(() => fitAndSync());
+      // When switching to this tab, focus the input bar
+      if (wasHidden && !tuiModeRef.current) {
+        switchFocus('input');
+        // Bump focus counter so CommandInput re-focuses the textarea
+        setFocusTick(t => t + 1);
+      }
     }
-  }, [isVisible, fitAndSync]);
+  }, [isVisible, fitAndSync, switchFocus]);
 
   // Update font size when prop changes
   useEffect(() => {
@@ -488,6 +506,8 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, on
           showSlashCommands={true}
           dynamicSlashCommands={dynamicSlashCommands}
           terminalId={terminalIdRef.current || undefined}
+          isChoicePrompt={isChoicePrompt}
+          focusTick={focusTick}
         />
       )}
       {!tuiMode && (

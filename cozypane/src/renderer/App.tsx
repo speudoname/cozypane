@@ -8,7 +8,8 @@ import DiffViewer from './components/DiffViewer';
 import SessionSummary from './components/SessionSummary';
 import Settings from './components/Settings';
 import GitPanel from './components/GitPanel';
-import ToastContainer from './components/Toast';
+import DeployPanel from './components/DeployPanel';
+
 import CommandPalette from './components/CommandPalette';
 import type { PaletteAction } from './components/CommandPalette';
 import TerminalTabBar from './components/TerminalTabBar';
@@ -16,7 +17,7 @@ import type { TerminalTab } from './components/TerminalTabBar';
 import type { AiAction, CostInfo } from './lib/terminalAnalyzer';
 
 type LayoutMode = 'two-col' | 'three-col';
-type RightPanelTab = 'preview' | 'activity' | 'summary' | 'settings' | 'git';
+type RightPanelTab = 'preview' | 'activity' | 'summary' | 'settings' | 'git' | 'deploy';
 
 function loadPersisted<T>(key: string, fallback: T): T {
   try {
@@ -428,6 +429,16 @@ export default function App() {
     return () => cleanups.forEach(fn => fn());
   }, [addTerminalTab, closeTerminalTab, togglePanels, toggleLayout, toggleSplit, adjustZoom]);
 
+  // Listen for /deploy command from CommandInput
+  useEffect(() => {
+    const handler = () => {
+      setPanelsOpen(true);
+      setRightPanelTab('deploy');
+    };
+    window.addEventListener('cozyPane:deploy', handler);
+    return () => window.removeEventListener('cozyPane:deploy', handler);
+  }, []);
+
   const sendTerminalCommand = useCallback((command: string) => {
     const tab = terminalTabsRef.current.find(t => t.id === activeTerminalIdRef.current);
     if (tab?.ptyId) {
@@ -444,6 +455,7 @@ export default function App() {
     { id: 'tab-summary', label: 'Show Session Summary', category: 'Tab', action: () => setRightPanelTab('summary') },
     { id: 'tab-git', label: 'Show Git Panel', category: 'Tab', action: () => setRightPanelTab('git') },
     { id: 'tab-settings', label: 'Show Settings', category: 'Tab', action: () => setRightPanelTab('settings') },
+    { id: 'tab-deploy', label: 'Show Deploy', category: 'Tab', action: () => setRightPanelTab('deploy') },
     { id: 'git-stage-all', label: 'Stage All Changes', category: 'Git', action: () => { sendTerminalCommand('git add -A'); setRightPanelTab('git'); } },
     { id: 'git-commit', label: 'Open Git to Commit', category: 'Git', action: () => setRightPanelTab('git') },
     { id: 'git-push', label: 'Push', category: 'Git', action: () => { sendTerminalCommand('git push'); setRightPanelTab('git'); } },
@@ -503,6 +515,10 @@ export default function App() {
           claudeRunning={aiAction !== 'idle'}
         />
       );
+    }
+
+    if (rightPanelTab === 'deploy') {
+      return <DeployPanel cwd={cwd} />;
     }
 
     // Preview tab — show diff viewer or editor
@@ -576,6 +592,12 @@ export default function App() {
         Git
       </button>
       <button
+        className={`panel-tab ${rightPanelTab === 'deploy' ? 'active' : ''}`}
+        onClick={() => setRightPanelTab('deploy')}
+      >
+        Deploy
+      </button>
+      <button
         className={`panel-tab ${rightPanelTab === 'settings' ? 'active' : ''}`}
         onClick={() => setRightPanelTab('settings')}
       >
@@ -635,6 +657,14 @@ export default function App() {
             onAdd={addTerminalTab}
             onToggleSplit={toggleSplit}
             onRename={(id, name) => updateTab(id, { customLabel: name || undefined })}
+            onReorder={(from, to) => {
+              setTerminalTabs(prev => {
+                const next = [...prev];
+                const [moved] = next.splice(from, 1);
+                next.splice(to, 0, moved);
+                return next;
+              });
+            }}
             fontSize={terminalFontSize}
             onZoomIn={() => setTerminalFontSize(prev => Math.min(28, prev + 1))}
             onZoomOut={() => setTerminalFontSize(prev => Math.max(8, prev - 1))}
@@ -728,7 +758,7 @@ export default function App() {
         costInfo={costInfo}
         gitBranch={gitBranch}
       />
-      <ToastContainer events={activityEvents} />
+
       <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} actions={paletteActions} />
     </div>
   );

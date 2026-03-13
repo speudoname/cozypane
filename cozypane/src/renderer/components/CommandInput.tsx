@@ -15,6 +15,8 @@ interface Props {
   showSlashCommands?: boolean;
   dynamicSlashCommands?: SlashCommand[];
   terminalId?: string;
+  isChoicePrompt?: boolean;
+  focusTick?: number;
 }
 
 const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg', 'ico']);
@@ -27,7 +29,7 @@ function isImageFile(name: string): boolean {
   return IMAGE_EXTS.has(getFileExt(name));
 }
 
-export default function CommandInput({ onSubmit, onRawKey, visible, history, onFocus, isFocused, showSlashCommands, dynamicSlashCommands, terminalId }: Props) {
+export default function CommandInput({ onSubmit, onRawKey, visible, history, onFocus, isFocused, showSlashCommands, dynamicSlashCommands, terminalId, isChoicePrompt, focusTick }: Props) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [value, setValue] = useState('');
   const [historyIndex, setHistoryIndex] = useState(-1);
@@ -52,6 +54,13 @@ export default function CommandInput({ onSubmit, onRawKey, visible, history, onF
       textareaRef.current.focus();
     }
   }, [visible, isFocused]);
+
+  // Re-focus textarea on tab switch (focusTick increments when tab becomes visible)
+  useEffect(() => {
+    if (focusTick && visible && textareaRef.current) {
+      textareaRef.current.focus();
+    }
+  }, [focusTick, visible]);
 
   // Listen for file drops forwarded from terminal area (scoped to this terminal)
   useEffect(() => {
@@ -143,6 +152,31 @@ export default function CommandInput({ onSubmit, onRawKey, visible, history, onF
   }, [insertPaths]);
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    // Choice prompt passthrough: when input is empty and terminal shows numbered choices,
+    // forward number keys, arrow keys, and Enter directly to terminal
+    if (isChoicePrompt && value === '' && !e.metaKey && !e.ctrlKey && !e.altKey) {
+      if (/^[1-9]$/.test(e.key)) {
+        e.preventDefault();
+        onRawKey?.(e.key);
+        return;
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        onRawKey?.('\x1b[A');
+        return;
+      }
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        onRawKey?.('\x1b[B');
+        return;
+      }
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        onRawKey?.('\r');
+        return;
+      }
+    }
+
     // If suggestions visible, handle navigation
     if (suggestions.length > 0) {
       if (e.key === 'Tab' || (e.key === 'ArrowDown' && suggestions.length > 0)) {
@@ -166,9 +200,25 @@ export default function CommandInput({ onSubmit, onRawKey, visible, history, onF
       }
     }
 
+    // Escape (no suggestions open) — forward to terminal as interrupt
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      onRawKey?.('\x1b');
+      return;
+    }
+
     // Enter = submit
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
+      // Intercept /deploy command — open deploy panel instead of sending to PTY
+      if (value.trim() === '/deploy' || value.trim().startsWith('/deploy ')) {
+        window.dispatchEvent(new CustomEvent('cozyPane:deploy'));
+        setValue('');
+        setAttachedPaths([]);
+        setHistoryIndex(-1);
+        setSavedDraft('');
+        return;
+      }
       onSubmit(value);
       setValue('');
       setAttachedPaths([]);
@@ -253,7 +303,7 @@ export default function CommandInput({ onSubmit, onRawKey, visible, history, onF
         }, 0);
       }
     }
-  }, [value, onSubmit, history, historyIndex, savedDraft, suggestions, selectedSuggestion, applySuggestion]);
+  }, [value, onSubmit, onRawKey, history, historyIndex, savedDraft, suggestions, selectedSuggestion, applySuggestion, isChoicePrompt]);
 
   const removeAttached = useCallback((pathToRemove: string) => {
     setAttachedPaths(prev => prev.filter(p => p !== pathToRemove));
@@ -338,7 +388,7 @@ export default function CommandInput({ onSubmit, onRawKey, visible, history, onF
           role="textbox"
           aria-label="Command input"
           aria-multiline="true"
-          placeholder="Type a command... (/ for Claude commands)"
+          placeholder={isChoicePrompt ? "Choice detected — press 1-9 or arrows to answer" : "Type a command... (/ for Claude commands)"}
           rows={1}
           spellCheck={false}
           autoComplete="off"

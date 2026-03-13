@@ -344,6 +344,11 @@ html, body, #root {
   border-bottom: 2px solid var(--info);
 }
 
+.terminal-tab.drop-target {
+  border-left: 2px solid var(--accent);
+  padding-left: 10px;
+}
+
 .terminal-tab-dot {
   width: 6px;
   height: 6px;
@@ -1935,62 +1940,6 @@ html, body, #root {
   font-size: 11px;
 }
 
-/* ============================================
-   Toast Notifications
-   ============================================ */
-.toast-container {
-  position: fixed;
-  bottom: 36px;
-  left: 16px;
-  z-index: 1000;
-  display: flex;
-  flex-direction: column-reverse;
-  gap: 6px;
-  pointer-events: none;
-}
-
-.toast {
-  background: var(--bg-secondary);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 8px 12px;
-  min-width: 180px;
-  max-width: 280px;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
-  animation: toast-in 0.2s ease-out;
-  pointer-events: auto;
-  cursor: pointer;
-}
-
-.toast-file {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 2px 0;
-}
-
-.toast-icon {
-  font-family: var(--font-mono);
-  font-weight: 700;
-  font-size: 12px;
-  width: 14px;
-  text-align: center;
-  flex-shrink: 0;
-}
-
-.toast-name {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  color: var(--text-primary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-@keyframes toast-in {
-  from { opacity: 0; transform: translateY(8px); }
-  to { opacity: 1; transform: translateY(0); }
-}
 
 /* ============================================
    Command Palette

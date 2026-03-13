@@ -44,6 +44,29 @@ declare global {
     status: 'added' | 'modified' | 'deleted' | 'untracked' | 'renamed';
   }
 
+  interface DeployAuth {
+    authenticated: boolean;
+    username?: string;
+    avatarUrl?: string;
+  }
+
+  interface ProjectDetection {
+    type: 'node' | 'python' | 'go' | 'static' | 'docker' | 'unknown';
+    name: string;
+  }
+
+  interface Deployment {
+    id: number;
+    appName: string;
+    subdomain: string;
+    status: 'building' | 'running' | 'stopped' | 'error';
+    projectType: string;
+    tier: string;
+    url: string;
+    createdAt: string;
+    updatedAt: string;
+  }
+
   interface ConversationTurn {
     role: 'user' | 'assistant';
     content: string;
@@ -88,6 +111,19 @@ declare global {
       get: () => Promise<SettingsData>;
       set: (data: { provider: string; model: string; apiKey?: string }) => Promise<{ success?: boolean; error?: string }>;
       summarize: (changes: { type: string; name: string }[]) => Promise<{ summary?: string; error?: string }>;
+    };
+    deploy: {
+      login: () => Promise<void>;
+      logout: () => Promise<void>;
+      getAuth: () => Promise<DeployAuth>;
+      detectProject: (cwd: string) => Promise<ProjectDetection>;
+      start: (cwd: string, appName: string, tier?: string) => Promise<Deployment>;
+      list: () => Promise<Deployment[]>;
+      get: (id: string) => Promise<Deployment>;
+      logs: (id: string) => Promise<string>;
+      delete: (id: string) => Promise<{ success: boolean }>;
+      redeploy: (id: string) => Promise<Deployment>;
+      onProtocolCallback: (callback: (url: string) => void) => () => void;
     };
     onMenuAction: (channel: string, callback: () => void) => () => void;
     git: {

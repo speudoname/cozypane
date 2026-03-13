@@ -40,6 +40,32 @@ const INPUT_PATTERNS = [
 ];
 
 /**
+ * Detect if the terminal is showing a numbered choice prompt (e.g. plan mode).
+ * Looks for patterns like "1. Yes", "2. No", numbered options in recent output.
+ */
+const CHOICE_PATTERNS = [
+  /^\s*\d+[\.\)]\s+\S/,         // "1. Accept" or "1) Accept"
+];
+
+export function detectChoicePrompt(rollingBuffer: string): boolean {
+  const cleaned = stripAnsi(rollingBuffer);
+  const lines = cleaned.split('\n');
+  const recentLines = lines.slice(-20);
+
+  // Count lines that look like numbered options
+  let choiceCount = 0;
+  for (let i = recentLines.length - 1; i >= Math.max(0, recentLines.length - 15); i--) {
+    const line = recentLines[i].trim();
+    for (const p of CHOICE_PATTERNS) {
+      if (p.test(line)) { choiceCount++; break; }
+    }
+  }
+
+  // Need at least 2 numbered options to consider it a choice prompt
+  return choiceCount >= 2;
+}
+
+/**
  * Analyze recent terminal output and determine the desired focus mode.
  * Returns 'terminal' for interactive prompts, 'input' for shell prompts, or null if undetermined.
  */
