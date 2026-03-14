@@ -163,6 +163,10 @@ export default function App() {
     const cached = tabWatcherCache.current.get(activeTerminalId);
     setActivityEvents(cached?.activityEvents ?? []);
     setSummary(cached?.summary ?? null);
+    // Restore preview URLs for the newly active tab
+    const newTab = terminalTabsRef.current.find(t => t.id === activeTerminalId);
+    setPreviewLocalUrl(newTab?.previewLocalUrl || '');
+    setPreviewProdUrl(newTab?.previewProdUrl || '');
     prevActiveTabRef.current = activeTerminalId;
   }, [activeTerminalId]);
 
@@ -519,12 +523,14 @@ export default function App() {
   const openPreview = useCallback((url: string, type?: 'local' | 'production') => {
     if (type === 'production') {
       setPreviewProdUrl(url);
+      updateTab(activeTerminalIdRef.current, { previewProdUrl: url });
     } else {
       setPreviewLocalUrl(url);
+      updateTab(activeTerminalIdRef.current, { previewLocalUrl: url });
     }
     setPreviewUrl(url);
     setPreviewOpen(true);
-  }, []);
+  }, [updateTab]);
 
   // Listen for preview events (from terminal URL detection)
   useEffect(() => {

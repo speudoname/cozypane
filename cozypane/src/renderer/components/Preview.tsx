@@ -17,6 +17,8 @@ interface Props {
 type DeviceMode = 'desktop' | 'tablet' | 'phone';
 type ViewMode = 'local' | 'production' | 'split';
 
+type ServerState = 'idle' | 'detecting' | 'starting' | 'waiting' | 'ready' | 'failed';
+
 const DEVICE_WIDTHS: Record<DeviceMode, number | null> = {
   desktop: null,
   tablet: 768,
@@ -39,7 +41,8 @@ export default function Preview({ localUrl, productionUrl, cwd, onSendToTerminal
   const [manualUrl, setManualUrl] = useState('');
 
   // Smart detection state
-  const [scanning, setScanning] = useState(false);
+  const [serverState, setServerState] = useState<ServerState>('idle');
+  const [statusMessage, setStatusMessage] = useState('');
   const [detectedPorts, setDetectedPorts] = useState<number[]>([]);
   const [projectInfo, setProjectInfo] = useState<{ type: string | null; devCommand: string | null; productionUrl: string | null } | null>(null);
   const [aiAnalysis, setAiAnalysis] = useState<{ devCommand?: string; productionUrl?: string; summary?: string; error?: string } | null>(null);
@@ -48,6 +51,8 @@ export default function Preview({ localUrl, productionUrl, cwd, onSendToTerminal
   const localWebviewRef = useRef<any>(null);
   const prodWebviewRef = useRef<any>(null);
   const autoFixSentRef = useRef(false);
+  const autoStartedForCwdRef = useRef<string>('');
+  const pollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Determine the actual URLs to show
   const effectiveLocalUrl = localUrl || (detectedPorts.length > 0 ? `http://localhost:${detectedPorts[0]}` : manualUrl || null);
@@ -65,20 +70,125 @@ export default function Preview({ localUrl, productionUrl, cwd, onSendToTerminal
     }
   }, [effectiveLocalUrl, effectiveProdUrl]);
 
-  // Scan ports and detect project on mount and when cwd changes
+  // When server becomes ready, stop polling
+  useEffect(() => {
+    if (effectiveLocalUrl && serverState === 'waiting') {
+      setServerState('ready');
+      setStatusMessage('');
+      if (pollIntervalRef.current) {
+        clearInterval(pollIntervalRef.current);
+        pollIntervalRef.current = null;
+      }
+    }
+  }, [effectiveLocalUrl, serverState]);
+
+  // Cleanup poll on unmount
+  useEffect(() => {
+    return () => {
+      if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
+    };
+  }, []);
+
+  // === CORE: Seamless auto-start flow when cwd changes ===
   useEffect(() => {
     if (!cwd) return;
-    scanAndDetect();
-  }, [cwd]);
 
-  // Re-scan periodically when no local URL is detected
-  useEffect(() => {
-    if (effectiveLocalUrl) return;
-    const interval = setInterval(() => {
-      scanPorts();
-    }, 5000);
-    return () => clearInterval(interval);
-  }, [effectiveLocalUrl]);
+    // Reset state for new cwd
+    setDetectedPorts([]);
+    setProjectInfo(null);
+    setAiAnalysis(null);
+    setManualUrl('');
+    setErrors([]);
+    setServerState('detecting');
+    setStatusMessage('Detecting project...');
+    autoStartedForCwdRef.current = '';
+    if (pollIntervalRef.current) {
+      clearInterval(pollIntervalRef.current);
+      pollIntervalRef.current = null;
+    }
+
+    let cancelled = false;
+
+    (async () => {
+      try {
+        // Step 1: Scan ports + detect project in parallel
+        const [portsResult, projectResult] = await Promise.all([
+          window.cozyPane.preview.scanPorts(),
+          window.cozyPane.preview.detectProject(cwd),
+        ]);
+
+        if (cancelled) return;
+
+        const ports = portsResult.ports || [];
+        setDetectedPorts(ports);
+        setProjectInfo(projectResult);
+
+        // Step 2: If a server is already running, we're done
+        if (ports.length > 0 || localUrl) {
+          setServerState('ready');
+          setStatusMessage('');
+          return;
+        }
+
+        // Step 3: We have a dev command — auto-start it
+        const devCommand = projectResult?.devCommand;
+        if (devCommand && autoStartedForCwdRef.current !== cwd) {
+          autoStartedForCwdRef.current = cwd;
+          setServerState('starting');
+          setStatusMessage(`Starting: ${devCommand}`);
+
+          // Send the command to the terminal
+          onSendToTerminal(devCommand);
+
+          // Step 4: Poll for the server to come up
+          setServerState('waiting');
+          setStatusMessage('Waiting for dev server...');
+
+          let attempts = 0;
+          const maxAttempts = 30; // 30 seconds max
+
+          pollIntervalRef.current = setInterval(async () => {
+            attempts++;
+            try {
+              const result = await window.cozyPane.preview.scanPorts();
+              const newPorts = result.ports || [];
+              if (newPorts.length > 0) {
+                setDetectedPorts(newPorts);
+                setServerState('ready');
+                setStatusMessage('');
+                if (pollIntervalRef.current) {
+                  clearInterval(pollIntervalRef.current);
+                  pollIntervalRef.current = null;
+                }
+              } else if (attempts >= maxAttempts) {
+                setServerState('failed');
+                setStatusMessage('Server didn\'t start within 30s');
+                if (pollIntervalRef.current) {
+                  clearInterval(pollIntervalRef.current);
+                  pollIntervalRef.current = null;
+                }
+              }
+            } catch {}
+          }, 1000);
+
+          return;
+        }
+
+        // No dev command detected — just show idle state
+        if (!devCommand) {
+          setServerState('idle');
+          setStatusMessage('');
+        }
+      } catch {
+        if (!cancelled) {
+          setServerState('failed');
+          setStatusMessage('Detection failed');
+        }
+      }
+    })();
+
+    return () => { cancelled = true; };
+  }, [cwd]); // intentionally not including localUrl/onSendToTerminal to avoid re-triggering
 
   const scanPorts = useCallback(async () => {
     try {
@@ -87,35 +197,70 @@ export default function Preview({ localUrl, productionUrl, cwd, onSendToTerminal
     } catch {}
   }, []);
 
-  const scanAndDetect = useCallback(async () => {
-    setScanning(true);
-    try {
-      const [portsResult, projectResult] = await Promise.all([
-        window.cozyPane.preview.scanPorts(),
-        window.cozyPane.preview.detectProject(cwd),
-      ]);
-      setDetectedPorts(portsResult.ports || []);
-      setProjectInfo(projectResult);
-    } catch {}
-    setScanning(false);
-  }, [cwd]);
-
   const runAiAnalysis = useCallback(async () => {
     setAnalyzing(true);
     try {
       const result = await window.cozyPane.preview.aiAnalyze(cwd);
       setAiAnalysis(result);
+      // If AI found a dev command and we haven't auto-started yet, do it now
+      if (result.devCommand && !effectiveLocalUrl && autoStartedForCwdRef.current !== cwd) {
+        autoStartedForCwdRef.current = cwd;
+        onSendToTerminal(result.devCommand);
+        setServerState('waiting');
+        setStatusMessage('Waiting for dev server...');
+        pollIntervalRef.current = setInterval(async () => {
+          try {
+            const portResult = await window.cozyPane.preview.scanPorts();
+            if ((portResult.ports || []).length > 0) {
+              setDetectedPorts(portResult.ports);
+              setServerState('ready');
+              setStatusMessage('');
+              if (pollIntervalRef.current) {
+                clearInterval(pollIntervalRef.current);
+                pollIntervalRef.current = null;
+              }
+            }
+          } catch {}
+        }, 1000);
+      }
     } catch (err: any) {
       setAiAnalysis({ error: err.message });
     }
     setAnalyzing(false);
-  }, [cwd]);
+  }, [cwd, effectiveLocalUrl, onSendToTerminal]);
 
-  const startDevServer = useCallback(() => {
-    if (effectiveDevCommand) {
-      onSendToTerminal(effectiveDevCommand);
-    }
-  }, [effectiveDevCommand, onSendToTerminal]);
+  const retryStartServer = useCallback(() => {
+    const cmd = effectiveDevCommand || aiAnalysis?.devCommand;
+    if (!cmd) return;
+    autoStartedForCwdRef.current = '';
+    onSendToTerminal(cmd);
+    setServerState('waiting');
+    setStatusMessage('Waiting for dev server...');
+
+    let attempts = 0;
+    pollIntervalRef.current = setInterval(async () => {
+      attempts++;
+      try {
+        const result = await window.cozyPane.preview.scanPorts();
+        if ((result.ports || []).length > 0) {
+          setDetectedPorts(result.ports);
+          setServerState('ready');
+          setStatusMessage('');
+          if (pollIntervalRef.current) {
+            clearInterval(pollIntervalRef.current);
+            pollIntervalRef.current = null;
+          }
+        } else if (attempts >= 30) {
+          setServerState('failed');
+          setStatusMessage('Server didn\'t start within 30s');
+          if (pollIntervalRef.current) {
+            clearInterval(pollIntervalRef.current);
+            pollIntervalRef.current = null;
+          }
+        }
+      } catch {}
+    }, 1000);
+  }, [effectiveDevCommand, aiAnalysis, onSendToTerminal]);
 
   // Wire webview events
   const wireWebview = useCallback((wv: any, isLocal: boolean) => {
@@ -234,6 +379,21 @@ export default function Preview({ localUrl, productionUrl, cwd, onSendToTerminal
 
   const deviceWidth = DEVICE_WIDTHS[device];
 
+  // Force webview src update when URL changes (webview is a custom element, React doesn't diff `src`)
+  useEffect(() => {
+    const wv = localWebviewRef.current;
+    if (wv && effectiveLocalUrl && wv.src !== effectiveLocalUrl) {
+      wv.src = effectiveLocalUrl;
+    }
+  }, [effectiveLocalUrl]);
+
+  useEffect(() => {
+    const wv = prodWebviewRef.current;
+    if (wv && effectiveProdUrl && wv.src !== effectiveProdUrl) {
+      wv.src = effectiveProdUrl;
+    }
+  }, [effectiveProdUrl]);
+
   const renderWebview = (url: string, ref: React.RefObject<any>, label: string) => (
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minWidth: 0 }}>
       {viewMode === 'split' && (
@@ -263,12 +423,13 @@ export default function Preview({ localUrl, productionUrl, cwd, onSendToTerminal
           }}
           // @ts-ignore
           allowpopups="true"
+          webpreferences="allowRunningInsecureContent=true"
         />
       </div>
     </div>
   );
 
-  const renderEmptyState = () => (
+  const renderStartingState = () => (
     <div style={{
       display: 'flex',
       flexDirection: 'column',
@@ -279,80 +440,168 @@ export default function Preview({ localUrl, productionUrl, cwd, onSendToTerminal
       gap: '1em',
       padding: '2em',
     }}>
-      {scanning ? (
-        <div style={{ fontSize: '0.9em' }}>Scanning for dev servers...</div>
-      ) : (
-        <>
-          <div style={{ fontSize: '1.2em', color: 'var(--text-primary, #e0e0e0)' }}>
-            No dev server detected
-          </div>
+      {/* Spinner */}
+      <div style={{
+        width: 40, height: 40, borderRadius: '50%',
+        border: '3px solid var(--border, #2a2b3e)',
+        borderTopColor: 'var(--accent, #7c6fe0)',
+        animation: 'spin 1s linear infinite',
+      }} />
+      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
 
-          {projectInfo?.type && (
-            <div style={{ fontSize: '0.85em', color: 'var(--text-secondary, #888)', textAlign: 'center' }}>
-              Detected <strong style={{ color: 'var(--accent, #7c6fe0)' }}>{projectInfo.type}</strong> project
-            </div>
-          )}
+      <div style={{ fontSize: '1em', color: 'var(--text-primary, #e0e0e0)', textAlign: 'center' }}>
+        {serverState === 'detecting' && 'Detecting project...'}
+        {serverState === 'starting' && 'Starting dev server...'}
+        {serverState === 'waiting' && 'Waiting for server to be ready...'}
+      </div>
 
-          {aiAnalysis?.summary && (
-            <div style={{ fontSize: '0.82em', color: 'var(--text-secondary, #888)', textAlign: 'center', maxWidth: 400 }}>
-              {aiAnalysis.summary}
-            </div>
-          )}
-
-          {effectiveDevCommand && (
-            <button onClick={startDevServer} style={actionBtnStyle}>
-              Run: {effectiveDevCommand}
-            </button>
-          )}
-
-          {detectedPorts.length > 0 && (
-            <div style={{ fontSize: '0.82em' }}>
-              <span style={{ color: 'var(--text-secondary, #888)' }}>Active ports: </span>
-              {detectedPorts.map(p => (
-                <button
-                  key={p}
-                  onClick={() => setManualUrl(`http://localhost:${p}`)}
-                  style={{ ...portBtnStyle, marginLeft: '0.3em' }}
-                >
-                  :{p}
-                </button>
-              ))}
-            </div>
-          )}
-
-          <div style={{ display: 'flex', gap: '0.5em', marginTop: '0.5em' }}>
-            <button onClick={scanAndDetect} style={secondaryBtnStyle}>
-              {scanning ? 'Scanning...' : 'Rescan'}
-            </button>
-            <button onClick={runAiAnalysis} style={secondaryBtnStyle} disabled={analyzing}>
-              {analyzing ? 'Analyzing...' : 'AI Analyze'}
-            </button>
-          </div>
-
-          {aiAnalysis?.error && (
-            <div style={{ fontSize: '0.78em', color: '#e74c3c' }}>{aiAnalysis.error}</div>
-          )}
-
-          {/* Manual URL fallback */}
-          <div style={{ display: 'flex', gap: '0.3em', width: '100%', maxWidth: 400, marginTop: '0.5em' }}>
-            <input
-              type="text"
-              value={manualUrl}
-              onChange={e => setManualUrl(e.target.value)}
-              onKeyDown={e => e.key === 'Enter' && setManualUrl(manualUrl.trim())}
-              placeholder="Or enter URL manually..."
-              spellCheck={false}
-              style={urlInputStyle}
-            />
-          </div>
-        </>
+      {statusMessage && (
+        <div style={{ fontSize: '0.82em', color: 'var(--text-secondary, #888)', fontFamily: 'monospace' }}>
+          {statusMessage}
+        </div>
       )}
+
+      {projectInfo?.type && (
+        <div style={{ fontSize: '0.82em', color: 'var(--text-secondary, #888)' }}>
+          Detected <strong style={{ color: 'var(--accent, #7c6fe0)' }}>{projectInfo.type}</strong> project
+        </div>
+      )}
+    </div>
+  );
+
+  const renderFailedState = () => (
+    <div style={{
+      display: 'flex',
+      flexDirection: 'column',
+      alignItems: 'center',
+      justifyContent: 'center',
+      height: '100%',
+      color: 'var(--text-secondary, #888)',
+      gap: '1em',
+      padding: '2em',
+    }}>
+      <div style={{ fontSize: '1.2em', color: '#e74c3c' }}>
+        Server failed to start
+      </div>
+
+      {statusMessage && (
+        <div style={{ fontSize: '0.82em', color: 'var(--text-secondary, #888)' }}>
+          {statusMessage}
+        </div>
+      )}
+
+      <div style={{ display: 'flex', gap: '0.5em' }}>
+        {effectiveDevCommand && (
+          <button onClick={retryStartServer} style={actionBtnStyle}>
+            Retry
+          </button>
+        )}
+        <button onClick={runAiAnalysis} style={secondaryBtnStyle} disabled={analyzing}>
+          {analyzing ? 'Analyzing...' : 'AI Analyze'}
+        </button>
+      </div>
+
+      {detectedPorts.length > 0 && (
+        <div style={{ fontSize: '0.82em' }}>
+          <span style={{ color: 'var(--text-secondary, #888)' }}>Active ports: </span>
+          {detectedPorts.map(p => (
+            <button
+              key={p}
+              onClick={() => { setManualUrl(`http://localhost:${p}`); setServerState('ready'); }}
+              style={{ ...portBtnStyle, marginLeft: '0.3em' }}
+            >
+              :{p}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* Manual URL fallback */}
+      <div style={{ display: 'flex', gap: '0.3em', width: '100%', maxWidth: 400, marginTop: '0.5em' }}>
+        <input
+          type="text"
+          value={manualUrl}
+          onChange={e => setManualUrl(e.target.value)}
+          onKeyDown={e => { if (e.key === 'Enter') { setManualUrl(manualUrl.trim()); setServerState('ready'); } }}
+          placeholder="Or enter URL manually..."
+          spellCheck={false}
+          style={urlInputStyle}
+        />
+      </div>
+    </div>
+  );
+
+  const renderIdleState = () => (
+    <div style={{
+      display: 'flex',
+      flexDirection: 'column',
+      alignItems: 'center',
+      justifyContent: 'center',
+      height: '100%',
+      color: 'var(--text-secondary, #888)',
+      gap: '1em',
+      padding: '2em',
+    }}>
+      <div style={{ fontSize: '1.2em', color: 'var(--text-primary, #e0e0e0)' }}>
+        No dev server detected
+      </div>
+
+      {projectInfo?.type && (
+        <div style={{ fontSize: '0.85em', color: 'var(--text-secondary, #888)', textAlign: 'center' }}>
+          Detected <strong style={{ color: 'var(--accent, #7c6fe0)' }}>{projectInfo.type}</strong> project
+        </div>
+      )}
+
+      {aiAnalysis?.summary && (
+        <div style={{ fontSize: '0.82em', color: 'var(--text-secondary, #888)', textAlign: 'center', maxWidth: 400 }}>
+          {aiAnalysis.summary}
+        </div>
+      )}
+
+      {detectedPorts.length > 0 && (
+        <div style={{ fontSize: '0.82em' }}>
+          <span style={{ color: 'var(--text-secondary, #888)' }}>Active ports: </span>
+          {detectedPorts.map(p => (
+            <button
+              key={p}
+              onClick={() => { setManualUrl(`http://localhost:${p}`); setServerState('ready'); }}
+              style={{ ...portBtnStyle, marginLeft: '0.3em' }}
+            >
+              :{p}
+            </button>
+          ))}
+        </div>
+      )}
+
+      <div style={{ display: 'flex', gap: '0.5em', marginTop: '0.5em' }}>
+        <button onClick={runAiAnalysis} style={secondaryBtnStyle} disabled={analyzing}>
+          {analyzing ? 'Analyzing...' : 'AI Analyze'}
+        </button>
+      </div>
+
+      {aiAnalysis?.error && (
+        <div style={{ fontSize: '0.78em', color: '#e74c3c' }}>{aiAnalysis.error}</div>
+      )}
+
+      {/* Manual URL fallback */}
+      <div style={{ display: 'flex', gap: '0.3em', width: '100%', maxWidth: 400, marginTop: '0.5em' }}>
+        <input
+          type="text"
+          value={manualUrl}
+          onChange={e => setManualUrl(e.target.value)}
+          onKeyDown={e => { if (e.key === 'Enter') { setManualUrl(manualUrl.trim()); setServerState('ready'); } }}
+          placeholder="Or enter URL manually..."
+          spellCheck={false}
+          style={urlInputStyle}
+        />
+      </div>
     </div>
   );
 
   const showLocal = viewMode === 'local' || viewMode === 'split';
   const showProd = viewMode === 'production' || viewMode === 'split';
   const hasContent = (showLocal && effectiveLocalUrl) || (showProd && effectiveProdUrl);
+  const isStarting = serverState === 'detecting' || serverState === 'starting' || serverState === 'waiting';
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
@@ -453,8 +702,12 @@ export default function Preview({ localUrl, productionUrl, cwd, onSendToTerminal
 
       {/* Content area */}
       <div style={{ flex: 1, display: 'flex', overflow: 'hidden', position: 'relative' }}>
-        {!hasContent ? (
-          renderEmptyState()
+        {isStarting && !hasContent ? (
+          renderStartingState()
+        ) : serverState === 'failed' && !hasContent ? (
+          renderFailedState()
+        ) : !hasContent ? (
+          renderIdleState()
         ) : (
           <>
             {showLocal && effectiveLocalUrl && renderWebview(effectiveLocalUrl, localWebviewRef, 'Local')}
@@ -462,7 +715,7 @@ export default function Preview({ localUrl, productionUrl, cwd, onSendToTerminal
               <div style={{ width: 2, backgroundColor: 'var(--border, #2a2b3e)', flexShrink: 0 }} />
             )}
             {showProd && effectiveProdUrl && renderWebview(effectiveProdUrl, prodWebviewRef, 'Production')}
-            {showLocal && !effectiveLocalUrl && renderEmptyState()}
+            {showLocal && !effectiveLocalUrl && renderStartingState()}
             {showProd && !effectiveProdUrl && (
               <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-secondary, #666)' }}>
                 No production URL detected

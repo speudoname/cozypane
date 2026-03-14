@@ -12,6 +12,8 @@ export interface TerminalTab {
   conversationTurns: ConversationTurn[];
   launched: boolean;
   autoCommand?: string;
+  previewLocalUrl?: string;
+  previewProdUrl?: string;
 }
 
 function getDisplayLabel(tab: TerminalTab): string {
