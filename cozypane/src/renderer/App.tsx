@@ -270,9 +270,10 @@ export default function App() {
   }, [updateTab]);
 
   const launchNewTerminal = useCallback(async () => {
-    const home = await window.cozyPane.fs.homedir();
+    const tab = terminalTabsRef.current.find(t => t.id === activeTerminalIdRef.current);
+    const dir = tab?.cwd || await window.cozyPane.fs.homedir();
     updateTab(activeTerminalIdRef.current, {
-      cwd: home,
+      cwd: dir,
       launched: true,
     });
   }, [updateTab]);

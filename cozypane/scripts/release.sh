@@ -22,11 +22,11 @@ npm run build
 # Step 2: Build macOS arm64 and x64
 echo ""
 echo "[2/5] Building macOS arm64..."
-npx electron-builder --mac --arm64
+npx electron-builder --mac --arm64 --publish never
 
 echo ""
 echo "[2/5] Building macOS x64..."
-npx electron-builder --mac --x64
+npx electron-builder --mac --x64 --publish never
 
 # Step 3: Upload versioned binaries to R2
 echo ""

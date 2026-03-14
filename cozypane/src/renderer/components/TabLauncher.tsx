@@ -1,4 +1,5 @@
 import React, { useState, useCallback } from 'react';
+import { isCozyModeEnabled } from '../lib/cozyMode';
 
 interface Props {
   onOpenProject: (cwd: string, cozyMode: boolean) => void;
@@ -20,11 +21,13 @@ export default function TabLauncher({ onOpenProject, onCreateProject, onNewTermi
     try {
       const result = await window.cozyPane.fs.pickDirectory();
       if (result.paths && result.paths.length > 0) {
-        setSelectedDir(result.paths[0]);
-        setStep('style-open');
+        const dir = result.paths[0];
+        // Auto-detect cozy mode from existing CLAUDE.md marker — no need to ask
+        const cozy = await isCozyModeEnabled(dir);
+        onOpenProject(dir, cozy);
       }
     } catch {}
-  }, []);
+  }, [onOpenProject]);
 
   const handleOpenWithStyle = useCallback((cozyMode: boolean) => {
     if (selectedDir) {

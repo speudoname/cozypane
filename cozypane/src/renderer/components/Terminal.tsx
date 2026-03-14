@@ -235,9 +235,13 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, au
 
     term.element?.addEventListener('wheel', (e) => {
       if (e.deltaY < 0) {
-        // User scrolling up — stop following output
+        // User scrolling up — stop following output and cancel any pending scroll-to-bottom
         followOutputRef.current = false;
         setScrolledUp(true);
+        if (scrollRafRef.current) {
+          cancelAnimationFrame(scrollRafRef.current);
+          scrollRafRef.current = 0;
+        }
       } else if (e.deltaY > 0) {
         // User scrolling down — only resume following if truly at the
         // bottom (within 2 lines). A tight threshold prevents accidental
