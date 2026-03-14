@@ -68,6 +68,11 @@ contextBridge.exposeInMainWorld('cozyPane', {
     scanPorts: () => ipcRenderer.invoke('preview:scanPorts'),
     detectProject: (cwd: string) => ipcRenderer.invoke('preview:detectProject', cwd),
     aiAnalyze: (cwd: string) => ipcRenderer.invoke('preview:aiAnalyze', cwd),
+    serveStatic: (cwd: string) => ipcRenderer.invoke('preview:serveStatic', cwd),
+    stopStatic: (cwd: string) => ipcRenderer.invoke('preview:stopStatic', cwd),
+    scanPortsForCwd: (cwd: string) => ipcRenderer.invoke('preview:scanPortsForCwd', cwd),
+    getStoredUrl: (cwd: string) => ipcRenderer.invoke('preview:getStoredUrl', cwd),
+    storeUrl: (cwd: string, data: { productionUrl?: string; lastDevCommand?: string }) => ipcRenderer.invoke('preview:storeUrl', cwd, data),
   },
   onMenuAction: (channel: string, callback: () => void) => {
     const ALLOWED_CHANNELS = new Set([

@@ -7,6 +7,22 @@ interface PreviewError {
   detail?: string;
 }
 
+interface SubProject {
+  path: string;
+  name: string;
+  type: string;
+  devCommand: string | null;
+}
+
+interface ProjectInfo {
+  type: string | null;
+  devCommand: string | null;
+  productionUrl: string | null;
+  serveStatic?: boolean;
+  needsDatabase?: boolean;
+  subProjects?: SubProject[];
+}
+
 interface Props {
   localUrl?: string;
   productionUrl?: string;
@@ -44,18 +60,21 @@ export default function Preview({ localUrl, productionUrl, cwd, onSendToTerminal
   const [serverState, setServerState] = useState<ServerState>('idle');
   const [statusMessage, setStatusMessage] = useState('');
   const [detectedPorts, setDetectedPorts] = useState<number[]>([]);
-  const [projectInfo, setProjectInfo] = useState<{ type: string | null; devCommand: string | null; productionUrl: string | null } | null>(null);
+  const [projectInfo, setProjectInfo] = useState<ProjectInfo | null>(null);
   const [aiAnalysis, setAiAnalysis] = useState<{ devCommand?: string; productionUrl?: string; summary?: string; error?: string } | null>(null);
   const [analyzing, setAnalyzing] = useState(false);
+  const [staticUrl, setStaticUrl] = useState<string | null>(null);
+  const [showSubPicker, setShowSubPicker] = useState(false);
 
   const localWebviewRef = useRef<any>(null);
   const prodWebviewRef = useRef<any>(null);
   const autoFixSentRef = useRef(false);
   const autoStartedForCwdRef = useRef<string>('');
   const pollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const staticCwdRef = useRef<string>('');
 
   // Determine the actual URLs to show
-  const effectiveLocalUrl = localUrl || (detectedPorts.length > 0 ? `http://localhost:${detectedPorts[0]}` : manualUrl || null);
+  const effectiveLocalUrl = localUrl || staticUrl || (detectedPorts.length > 0 ? `http://localhost:${detectedPorts[0]}` : manualUrl || null);
   const effectiveProdUrl = productionUrl || projectInfo?.productionUrl || aiAnalysis?.productionUrl || null;
   const effectiveDevCommand = projectInfo?.devCommand || aiAnalysis?.devCommand || null;
 
@@ -89,9 +108,22 @@ export default function Preview({ localUrl, productionUrl, cwd, onSendToTerminal
     };
   }, []);
 
+  // Persist production URLs when they appear
+  useEffect(() => {
+    if (effectiveProdUrl && cwd) {
+      window.cozyPane.preview.storeUrl(cwd, { productionUrl: effectiveProdUrl }).catch(() => {});
+    }
+  }, [effectiveProdUrl, cwd]);
+
   // === CORE: Seamless auto-start flow when cwd changes ===
   useEffect(() => {
     if (!cwd) return;
+
+    // Stop old static server
+    if (staticCwdRef.current && staticCwdRef.current !== cwd) {
+      window.cozyPane.preview.stopStatic(staticCwdRef.current).catch(() => {});
+      staticCwdRef.current = '';
+    }
 
     // Reset state for new cwd
     setDetectedPorts([]);
@@ -101,6 +133,8 @@ export default function Preview({ localUrl, productionUrl, cwd, onSendToTerminal
     setErrors([]);
     setServerState('detecting');
     setStatusMessage('Detecting project...');
+    setStaticUrl(null);
+    setShowSubPicker(false);
     autoStartedForCwdRef.current = '';
     if (pollIntervalRef.current) {
       clearInterval(pollIntervalRef.current);
@@ -111,10 +145,11 @@ export default function Preview({ localUrl, productionUrl, cwd, onSendToTerminal
 
     (async () => {
       try {
-        // Step 1: Scan ports + detect project in parallel
-        const [portsResult, projectResult] = await Promise.all([
-          window.cozyPane.preview.scanPorts(),
+        // Step 1: Scan ports (cwd-aware) + detect project + check stored URLs in parallel
+        const [portsResult, projectResult, storedUrl] = await Promise.all([
+          window.cozyPane.preview.scanPortsForCwd(cwd),
           window.cozyPane.preview.detectProject(cwd),
+          window.cozyPane.preview.getStoredUrl(cwd),
         ]);
 
         if (cancelled) return;
@@ -123,6 +158,11 @@ export default function Preview({ localUrl, productionUrl, cwd, onSendToTerminal
         setDetectedPorts(ports);
         setProjectInfo(projectResult);
 
+        // Restore stored production URL if not already present
+        if (storedUrl?.productionUrl && !productionUrl && !projectResult?.productionUrl) {
+          setProjectInfo((prev: ProjectInfo | null) => prev ? { ...prev, productionUrl: storedUrl.productionUrl } : prev);
+        }
+
         // Step 2: If a server is already running, we're done
         if (ports.length > 0 || localUrl) {
           setServerState('ready');
@@ -130,27 +170,54 @@ export default function Preview({ localUrl, productionUrl, cwd, onSendToTerminal
           return;
         }
 
-        // Step 3: We have a dev command — auto-start it
+        // Step 3a: Static HTML — use built-in server
+        if (projectResult?.serveStatic) {
+          setServerState('starting');
+          setStatusMessage('Starting static file server...');
+          try {
+            const result = await window.cozyPane.preview.serveStatic(cwd);
+            if (cancelled) return;
+            staticCwdRef.current = cwd;
+            setStaticUrl(`http://localhost:${result.port}`);
+            setServerState('ready');
+            setStatusMessage('');
+          } catch {
+            if (!cancelled) {
+              setServerState('failed');
+              setStatusMessage('Failed to start static server');
+            }
+          }
+          return;
+        }
+
+        // Step 3b: Monorepo with sub-projects but no root dev command
+        if (!projectResult?.devCommand && projectResult?.subProjects?.length) {
+          setShowSubPicker(true);
+          setServerState('idle');
+          setStatusMessage('');
+          return;
+        }
+
+        // Step 3c: We have a dev command — auto-start it
         const devCommand = projectResult?.devCommand;
         if (devCommand && autoStartedForCwdRef.current !== cwd) {
           autoStartedForCwdRef.current = cwd;
           setServerState('starting');
           setStatusMessage(`Starting: ${devCommand}`);
 
-          // Send the command to the terminal
           onSendToTerminal(devCommand);
 
-          // Step 4: Poll for the server to come up
+          // Step 4: Poll for the server to come up (cwd-aware)
           setServerState('waiting');
           setStatusMessage('Waiting for dev server...');
 
           let attempts = 0;
-          const maxAttempts = 30; // 30 seconds max
+          const maxAttempts = 30;
 
           pollIntervalRef.current = setInterval(async () => {
             attempts++;
             try {
-              const result = await window.cozyPane.preview.scanPorts();
+              const result = await window.cozyPane.preview.scanPortsForCwd(cwd);
               const newPorts = result.ports || [];
               if (newPorts.length > 0) {
                 setDetectedPorts(newPorts);
@@ -192,17 +259,16 @@ export default function Preview({ localUrl, productionUrl, cwd, onSendToTerminal
 
   const scanPorts = useCallback(async () => {
     try {
-      const result = await window.cozyPane.preview.scanPorts();
+      const result = await window.cozyPane.preview.scanPortsForCwd(cwd);
       setDetectedPorts(result.ports || []);
     } catch {}
-  }, []);
+  }, [cwd]);
 
   const runAiAnalysis = useCallback(async () => {
     setAnalyzing(true);
     try {
       const result = await window.cozyPane.preview.aiAnalyze(cwd);
       setAiAnalysis(result);
-      // If AI found a dev command and we haven't auto-started yet, do it now
       if (result.devCommand && !effectiveLocalUrl && autoStartedForCwdRef.current !== cwd) {
         autoStartedForCwdRef.current = cwd;
         onSendToTerminal(result.devCommand);
@@ -210,7 +276,7 @@ export default function Preview({ localUrl, productionUrl, cwd, onSendToTerminal
         setStatusMessage('Waiting for dev server...');
         pollIntervalRef.current = setInterval(async () => {
           try {
-            const portResult = await window.cozyPane.preview.scanPorts();
+            const portResult = await window.cozyPane.preview.scanPortsForCwd(cwd);
             if ((portResult.ports || []).length > 0) {
               setDetectedPorts(portResult.ports);
               setServerState('ready');
@@ -241,7 +307,7 @@ export default function Preview({ localUrl, productionUrl, cwd, onSendToTerminal
     pollIntervalRef.current = setInterval(async () => {
       attempts++;
       try {
-        const result = await window.cozyPane.preview.scanPorts();
+        const result = await window.cozyPane.preview.scanPortsForCwd(cwd);
         if ((result.ports || []).length > 0) {
           setDetectedPorts(result.ports);
           setServerState('ready');
@@ -260,7 +326,45 @@ export default function Preview({ localUrl, productionUrl, cwd, onSendToTerminal
         }
       } catch {}
     }, 1000);
-  }, [effectiveDevCommand, aiAnalysis, onSendToTerminal]);
+  }, [cwd, effectiveDevCommand, aiAnalysis, onSendToTerminal]);
+
+  const startSubProject = useCallback((sub: SubProject) => {
+    setShowSubPicker(false);
+    if (sub.devCommand) {
+      autoStartedForCwdRef.current = cwd;
+      setServerState('starting');
+      setStatusMessage(`Starting: cd ${sub.name} && ${sub.devCommand}`);
+      onSendToTerminal(`cd ${sub.path} && ${sub.devCommand}`);
+
+      setServerState('waiting');
+      setStatusMessage('Waiting for dev server...');
+
+      let attempts = 0;
+      pollIntervalRef.current = setInterval(async () => {
+        attempts++;
+        try {
+          const result = await window.cozyPane.preview.scanPortsForCwd(sub.path);
+          const newPorts = result.ports || [];
+          if (newPorts.length > 0) {
+            setDetectedPorts(newPorts);
+            setServerState('ready');
+            setStatusMessage('');
+            if (pollIntervalRef.current) {
+              clearInterval(pollIntervalRef.current);
+              pollIntervalRef.current = null;
+            }
+          } else if (attempts >= 30) {
+            setServerState('failed');
+            setStatusMessage('Server didn\'t start within 30s');
+            if (pollIntervalRef.current) {
+              clearInterval(pollIntervalRef.current);
+              pollIntervalRef.current = null;
+            }
+          }
+        } catch {}
+      }, 1000);
+    }
+  }, [cwd, onSendToTerminal]);
 
   // Wire webview events
   const wireWebview = useCallback((wv: any, isLocal: boolean) => {
@@ -379,7 +483,7 @@ export default function Preview({ localUrl, productionUrl, cwd, onSendToTerminal
 
   const deviceWidth = DEVICE_WIDTHS[device];
 
-  // Force webview src update when URL changes (webview is a custom element, React doesn't diff `src`)
+  // Force webview src update when URL changes
   useEffect(() => {
     const wv = localWebviewRef.current;
     if (wv && effectiveLocalUrl && wv.src !== effectiveLocalUrl) {
@@ -490,6 +594,22 @@ export default function Preview({ localUrl, productionUrl, cwd, onSendToTerminal
         </div>
       )}
 
+      {/* Database hint */}
+      {projectInfo?.needsDatabase && (
+        <div style={{
+          fontSize: '0.85em',
+          color: '#e6b800',
+          backgroundColor: '#e6b80010',
+          border: '1px solid #e6b80030',
+          borderRadius: 6,
+          padding: '0.6em 1em',
+          maxWidth: 400,
+          textAlign: 'center',
+        }}>
+          This app requires a database. Make sure your database server (PostgreSQL, MongoDB, etc.) is running and configured.
+        </div>
+      )}
+
       <div style={{ display: 'flex', gap: '0.5em' }}>
         {effectiveDevCommand && (
           <button onClick={retryStartServer} style={actionBtnStyle}>
@@ -523,6 +643,71 @@ export default function Preview({ localUrl, productionUrl, cwd, onSendToTerminal
           value={manualUrl}
           onChange={e => setManualUrl(e.target.value)}
           onKeyDown={e => { if (e.key === 'Enter') { setManualUrl(manualUrl.trim()); setServerState('ready'); } }}
+          placeholder="Or enter URL manually..."
+          spellCheck={false}
+          style={urlInputStyle}
+        />
+      </div>
+    </div>
+  );
+
+  const renderSubProjectPicker = () => (
+    <div style={{
+      display: 'flex',
+      flexDirection: 'column',
+      alignItems: 'center',
+      justifyContent: 'center',
+      height: '100%',
+      color: 'var(--text-secondary, #888)',
+      gap: '1em',
+      padding: '2em',
+    }}>
+      <div style={{ fontSize: '1.1em', color: 'var(--text-primary, #e0e0e0)' }}>
+        Multiple services detected
+      </div>
+      <div style={{ fontSize: '0.82em', color: 'var(--text-secondary, #888)' }}>
+        Choose which service to preview:
+      </div>
+
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5em', width: '100%', maxWidth: 350 }}>
+        {(projectInfo?.subProjects || []).map(sub => (
+          <button
+            key={sub.path}
+            onClick={() => startSubProject(sub)}
+            style={{
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              padding: '0.6em 1em',
+              borderRadius: 6,
+              border: '1px solid var(--border, #3a3b4e)',
+              backgroundColor: 'var(--bg-primary, #1a1b2e)',
+              color: 'var(--text-primary, #e0e0e0)',
+              fontSize: '0.88em',
+              cursor: 'pointer',
+              textAlign: 'left',
+            }}
+          >
+            <span>
+              <strong>{sub.name}/</strong>
+              <span style={{ color: 'var(--text-secondary, #888)', marginLeft: '0.5em', fontSize: '0.9em' }}>{sub.type}</span>
+            </span>
+            {sub.devCommand && (
+              <span style={{ fontSize: '0.78em', color: 'var(--accent, #7c6fe0)', fontFamily: 'monospace' }}>
+                {sub.devCommand}
+              </span>
+            )}
+          </button>
+        ))}
+      </div>
+
+      {/* Manual URL fallback */}
+      <div style={{ display: 'flex', gap: '0.3em', width: '100%', maxWidth: 400, marginTop: '0.5em' }}>
+        <input
+          type="text"
+          value={manualUrl}
+          onChange={e => setManualUrl(e.target.value)}
+          onKeyDown={e => { if (e.key === 'Enter') { setManualUrl(manualUrl.trim()); setServerState('ready'); setShowSubPicker(false); } }}
           placeholder="Or enter URL manually..."
           spellCheck={false}
           style={urlInputStyle}
@@ -690,6 +875,7 @@ export default function Preview({ localUrl, productionUrl, cwd, onSendToTerminal
         }}>
           <span style={{ ...dotStyle('#5ce0a8'), position: 'relative', top: 0 }} />
           <span style={{ fontFamily: 'monospace' }}>{effectiveLocalUrl}</span>
+          {staticUrl && <span style={{ fontSize: '0.9em', color: 'var(--text-secondary, #666)' }}>(static)</span>}
           {effectiveProdUrl && (
             <>
               <span style={{ margin: '0 0.3em', color: 'var(--border, #3a3b4e)' }}>|</span>
@@ -702,7 +888,9 @@ export default function Preview({ localUrl, productionUrl, cwd, onSendToTerminal
 
       {/* Content area */}
       <div style={{ flex: 1, display: 'flex', overflow: 'hidden', position: 'relative' }}>
-        {isStarting && !hasContent ? (
+        {showSubPicker && !hasContent ? (
+          renderSubProjectPicker()
+        ) : isStarting && !hasContent ? (
           renderStartingState()
         ) : serverState === 'failed' && !hasContent ? (
           renderFailedState()
