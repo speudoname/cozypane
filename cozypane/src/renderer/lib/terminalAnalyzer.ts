@@ -163,3 +163,14 @@ export function parseCostInfo(rollingBuffer: string): CostInfo {
 
   return { cost, tokens };
 }
+
+/**
+ * Detect a deployed CozyPane URL in terminal output.
+ * Returns the URL if found, null otherwise.
+ */
+export function detectDeployUrl(rollingBuffer: string): string | null {
+  const cleaned = stripAnsi(rollingBuffer);
+  // Match https://appname-username.cozypane.com (at least two segments before .cozypane.com)
+  const match = cleaned.match(/https:\/\/[a-z0-9][a-z0-9-]*[a-z0-9]\.cozypane\.com\b/i);
+  return match ? match[0] : null;
+}

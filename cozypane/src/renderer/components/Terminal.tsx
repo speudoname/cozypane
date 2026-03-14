@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { Terminal as XTerm } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
-import { stripAnsi, TUI_ENTER, TUI_EXIT, analyzeFocus, analyzeAction, parseCostInfo, detectChoicePrompt, type AiAction, type CostInfo } from '../lib/terminalAnalyzer';
+import { stripAnsi, TUI_ENTER, TUI_EXIT, analyzeFocus, analyzeAction, parseCostInfo, detectChoicePrompt, detectDeployUrl, type AiAction, type CostInfo } from '../lib/terminalAnalyzer';
 import CommandInput from './CommandInput';
 import '@xterm/xterm/css/xterm.css';
 
@@ -32,6 +32,7 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, au
   const manualUntilRef = useRef(0);
   const idleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const rollingBufferRef = useRef('');
+  const lastDeployUrlRef = useRef('');
   const activeProcessRef = useRef('');
   const onCwdChangeRef = useRef(onCwdChange);
   onCwdChangeRef.current = onCwdChange;
@@ -333,6 +334,13 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, au
         if (activeProcessRef.current === 'claude') {
           const cost = parseCostInfo(rollingBufferRef.current);
           onCostChangeRef.current?.(cost);
+
+          // Detect deployed CozyPane URLs and auto-open preview
+          const deployUrl = detectDeployUrl(rollingBufferRef.current);
+          if (deployUrl && deployUrl !== lastDeployUrlRef.current) {
+            lastDeployUrlRef.current = deployUrl;
+            window.dispatchEvent(new CustomEvent('cozyPane:openPreview', { detail: { url: deployUrl } }));
+          }
         }
       }, 400);
     });

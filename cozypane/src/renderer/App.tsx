@@ -9,6 +9,7 @@ import SessionSummary from './components/SessionSummary';
 import Settings from './components/Settings';
 import GitPanel from './components/GitPanel';
 import DeployPanel from './components/DeployPanel';
+import Preview from './components/Preview';
 import TabLauncher from './components/TabLauncher';
 import { enableCozyMode } from './lib/cozyMode';
 
@@ -19,7 +20,7 @@ import type { TerminalTab } from './components/TerminalTabBar';
 import type { AiAction, CostInfo } from './lib/terminalAnalyzer';
 
 type LayoutMode = 'two-col' | 'three-col';
-type RightPanelTab = 'preview' | 'activity' | 'summary' | 'settings' | 'git' | 'deploy';
+type RightPanelTab = 'preview' | 'activity' | 'summary' | 'settings' | 'git' | 'deploy' | 'browser';
 
 function loadPersisted<T>(key: string, fallback: T): T {
   try {
@@ -70,6 +71,7 @@ export default function App() {
   }
   const tabWatcherCache = useRef(new Map<string, TabWatcherState>());
   const [rightPanelTab, setRightPanelTab] = useState<RightPanelTab>(() => loadPersisted('rightPanelTab', 'preview'));
+  const [previewUrl, setPreviewUrl] = useState<string>('');
   const [diffState, setDiffState] = useState<DiffState | null>(null);
   const [summary, setSummary] = useState<string | null>(null);
   const [summarizing, setSummarizing] = useState(false);
@@ -472,6 +474,21 @@ export default function App() {
     return () => window.removeEventListener('cozyPane:deploy', handler);
   }, []);
 
+  const openPreview = useCallback((url: string) => {
+    setPreviewUrl(url);
+    setRightPanelTab('browser');
+    setPanelsOpen(true);
+  }, []);
+
+  // Listen for deploy:preview event (sent when cozydeploy completes)
+  useEffect(() => {
+    const handler = (e: CustomEvent) => {
+      if (e.detail?.url) openPreview(e.detail.url);
+    };
+    window.addEventListener('cozyPane:openPreview', handler as any);
+    return () => window.removeEventListener('cozyPane:openPreview', handler as any);
+  }, [openPreview]);
+
   const sendTerminalCommand = useCallback((command: string) => {
     const tab = terminalTabsRef.current.find(t => t.id === activeTerminalIdRef.current);
     if (tab?.ptyId) {
@@ -489,6 +506,7 @@ export default function App() {
     { id: 'tab-git', label: 'Show Git Panel', category: 'Tab', action: () => setRightPanelTab('git') },
     { id: 'tab-settings', label: 'Show Settings', category: 'Tab', action: () => setRightPanelTab('settings') },
     { id: 'tab-deploy', label: 'Show Deploy', category: 'Tab', action: () => setRightPanelTab('deploy') },
+    { id: 'tab-browser', label: 'Show Browser Preview', category: 'Tab', action: () => setRightPanelTab('browser') },
     { id: 'git-stage-all', label: 'Stage All Changes', category: 'Git', action: () => { sendTerminalCommand('git add -A'); setRightPanelTab('git'); } },
     { id: 'git-commit', label: 'Open Git to Commit', category: 'Git', action: () => setRightPanelTab('git') },
     { id: 'git-push', label: 'Push', category: 'Git', action: () => { sendTerminalCommand('git push'); setRightPanelTab('git'); } },
@@ -552,6 +570,16 @@ export default function App() {
 
     if (rightPanelTab === 'deploy') {
       return <DeployPanel cwd={cwd} onTerminalCommand={sendTerminalCommand} claudeRunning={aiAction !== 'idle'} />;
+    }
+
+    if (rightPanelTab === 'browser') {
+      return (
+        <Preview
+          url={previewUrl}
+          onSendToTerminal={sendTerminalCommand}
+          onClose={() => setRightPanelTab('preview')}
+        />
+      );
     }
 
     // Preview tab — show diff viewer or editor
@@ -629,6 +657,12 @@ export default function App() {
         onClick={() => setRightPanelTab('deploy')}
       >
         Deploy
+      </button>
+      <button
+        className={`panel-tab ${rightPanelTab === 'browser' ? 'active' : ''}`}
+        onClick={() => setRightPanelTab('browser')}
+      >
+        Preview
       </button>
       <button
         className={`panel-tab ${rightPanelTab === 'settings' ? 'active' : ''}`}
@@ -761,7 +795,7 @@ export default function App() {
             />
 
             {layoutMode === 'two-col' ? (
-              <div className="right-panel" style={{ width: panelWidth }}>
+              <div className="right-panel" style={{ width: rightPanelTab === 'browser' ? '66%' : panelWidth }}>
                 <div className="panel-section" style={{ flex: sidebarRatio, fontSize: sidebarFontSize }}
                   onMouseEnter={() => { hoverZoneRef.current = 'sidebar'; }}
                 >
