@@ -71,6 +71,7 @@ export default function Preview({ localUrl, productionUrl, cwd, onSendToTerminal
   // Deployment matching state
   const [matchedDeployments, setMatchedDeployments] = useState<Deployment[]>([]);
   const [selectedDeploymentUrl, setSelectedDeploymentUrl] = useState<string | null>(null);
+  const [storedProdUrl, setStoredProdUrl] = useState<string | null>(null);
 
   const localWebviewRef = useRef<any>(null);
   const prodWebviewRef = useRef<any>(null);
@@ -82,8 +83,8 @@ export default function Preview({ localUrl, productionUrl, cwd, onSendToTerminal
   // Determine the actual URLs to show
   // selectedPort is validated (HTML-serving), so it takes priority over raw terminal-detected localUrl
   const effectiveLocalUrl = (selectedPort ? `http://localhost:${selectedPort}` : null) || staticUrl || localUrl || (detectedPorts.length > 0 ? `http://localhost:${detectedPorts[0]}` : null) || manualUrl || null;
-  // Prefer deployment-matched URLs, then locally-detected, then prop
-  const effectiveProdUrl = selectedDeploymentUrl || projectInfo?.productionUrl || aiAnalysis?.productionUrl || productionUrl || null;
+  // Prefer deployment-matched URLs, then stored (from deploy), then locally-detected, then prop
+  const effectiveProdUrl = selectedDeploymentUrl || storedProdUrl || projectInfo?.productionUrl || aiAnalysis?.productionUrl || productionUrl || null;
   const effectiveDevCommand = projectInfo?.devCommand || aiAnalysis?.devCommand || null;
 
   // Auto-switch view mode based on available URLs
@@ -132,11 +133,10 @@ export default function Preview({ localUrl, productionUrl, cwd, onSendToTerminal
           setServerState('ready');
           setStatusMessage('');
         } else {
-          // Terminal detected a URL but it serves JSON — update ports list but don't auto-load
-          setDetectedPorts(prev => prev.includes(port) ? prev : [...prev, port]);
-          if (serverState === 'idle') {
-            setStatusMessage('Only API servers detected');
-          }
+          // Terminal detected a URL — load it even if it's an API/JSON server
+          setSelectedPort(port);
+          setServerState('ready');
+          setStatusMessage('');
         }
       } catch {}
     })();
@@ -167,6 +167,15 @@ export default function Preview({ localUrl, productionUrl, cwd, onSendToTerminal
     const frontend = matched.find(d => !/(api|backend|server)/.test(d.appName));
     setSelectedDeploymentUrl((frontend || matched[0])?.url || null);
   }, [cwd, deployments]);
+
+  // Load stored production URL (written by MCP deploy tool) when cwd changes
+  useEffect(() => {
+    if (!cwd) return;
+    setStoredProdUrl(null);
+    window.cozyPane.preview.getStoredUrl(cwd).then((data: { productionUrl?: string } | null) => {
+      if (data?.productionUrl) setStoredProdUrl(data.productionUrl);
+    }).catch(() => {});
+  }, [cwd]);
 
   // === CORE: Seamless auto-start flow when cwd changes ===
   useEffect(() => {
@@ -222,7 +231,7 @@ export default function Preview({ localUrl, productionUrl, cwd, onSendToTerminal
             } catch {}
           }
 
-          // Validate: prefer HTML-serving ports, skip API-only ports
+          // Validate: prefer HTML-serving ports, fall back to any open port
           const best = await window.cozyPane.preview.selectBestPort(allPorts);
           if (cancelled) return;
 
@@ -231,9 +240,10 @@ export default function Preview({ localUrl, productionUrl, cwd, onSendToTerminal
             setServerState('ready');
             setStatusMessage('');
           } else if (allPorts.length > 0) {
-            // Only API/non-HTML ports found — don't auto-load JSON
-            setServerState('idle');
-            setStatusMessage('Only API servers detected');
+            // No HTML port found, but something is running — show it anyway
+            setSelectedPort(allPorts[0]);
+            setServerState('ready');
+            setStatusMessage('');
           } else {
             setServerState('ready');
             setStatusMessage('');
@@ -888,7 +898,8 @@ export default function Preview({ localUrl, productionUrl, cwd, onSendToTerminal
               if (e.key === 'Enter') {
                 const url = manualUrl.trim();
                 if (isProdView) {
-                  // Treat as production URL — nothing to set locally
+                  setStoredProdUrl(url);
+                  if (cwd) window.cozyPane.preview.storeUrl(cwd, { productionUrl: url }).catch(() => {});
                 } else {
                   setManualUrl(url);
                   setServerState('ready');
@@ -1073,10 +1084,9 @@ export default function Preview({ localUrl, productionUrl, cwd, onSendToTerminal
                     onChange={e => setManualUrl(e.target.value)}
                     onKeyDown={e => {
                       if (e.key === 'Enter' && manualUrl.trim()) {
-                        // User entered a production URL — there's no setter for prod URL from here,
-                        // so treat it as manual local URL for now
-                        setManualUrl(manualUrl.trim());
-                        setServerState('ready');
+                        const url = manualUrl.trim();
+                        setStoredProdUrl(url);
+                        if (cwd) window.cozyPane.preview.storeUrl(cwd, { productionUrl: url }).catch(() => {});
                       }
                     }}
                     placeholder="Enter production URL..."

@@ -105,10 +105,11 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, au
     try {
       fitAddonRef.current.fit();
       window.cozyPane.terminal.resize(id, termRef.current.cols, termRef.current.rows);
-      // Never scroll here — fitAndSync is called by ResizeObserver (which
-      // fires on every layout change including CommandInput auto-resize).
-      // Scrolling is handled exclusively by data writes and explicit user
-      // actions to avoid fighting the user's scroll position.
+      // After fit(), xterm rewraps lines which shifts viewportY. Re-anchor to
+      // the bottom if we were following so the user doesn't see a jump.
+      if (followOutputRef.current && termRef.current) {
+        termRef.current.scrollToBottom();
+      }
     } catch {}
   }, []);
 
@@ -248,20 +249,26 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, au
           cancelAnimationFrame(scrollRafRef.current);
           scrollRafRef.current = 0;
         }
-      } else if (e.deltaY > 0) {
-        // User scrolling down — only resume following if truly at the
-        // bottom (within 2 lines). A tight threshold prevents accidental
-        // re-follow during rapid streaming where baseY keeps growing.
-        requestAnimationFrame(() => {
-          if (!termRef.current) return;
-          const buf = termRef.current.buffer.active;
-          if (buf.viewportY >= buf.baseY - 2) {
-            followOutputRef.current = true;
-            setScrolledUp(false);
-          }
-        });
       }
+      // Scroll-down re-engagement is handled by onScroll below, which fires
+      // synchronously and avoids the RAF race with fast-streaming baseY growth.
     }, { passive: true });
+
+    // Re-engage follow mode when the viewport reaches near the bottom.
+    // onScroll fires synchronously (no RAF delay), so viewportY and baseY are
+    // consistent — the RAF-based wheel-down approach had a race where baseY
+    // grew between the wheel event and the deferred check, making re-engagement
+    // impossible during fast streaming.
+    term.onScroll((viewportY: number) => {
+      if (followOutputRef.current) return; // already following
+      const buf = term.buffer.active;
+      // Within 15 lines of the current bottom → re-engage auto-scroll.
+      // Generous threshold ensures the user can re-engage even during streaming.
+      if (viewportY >= buf.baseY - 15) {
+        followOutputRef.current = true;
+        setScrolledUp(false);
+      }
+    });
 
     // Detect keyboard-based scrolling (Shift+PageUp, etc.)
     term.element?.addEventListener('keydown', (e) => {

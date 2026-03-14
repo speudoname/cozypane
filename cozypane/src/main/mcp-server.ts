@@ -201,6 +201,26 @@ Note: DATABASE_URL is automatically injected when needsDatabase is set.`,
       timeoutMs: 300000, // 5 minutes — Docker builds can be slow
     });
 
+    // Store the production URL so the Preview panel can find it
+    const deployedUrl = (result as any)?.url;
+    if (deployedUrl) {
+      try {
+        let userDataDir: string;
+        if (process.platform === 'darwin') {
+          userDataDir = path.join(os.homedir(), 'Library', 'Application Support', 'cozypane');
+        } else if (process.platform === 'win32') {
+          userDataDir = path.join(process.env.APPDATA || os.homedir(), 'cozypane');
+        } else {
+          userDataDir = path.join(os.homedir(), '.config', 'cozypane');
+        }
+        const previewUrlsPath = path.join(userDataDir, 'preview-urls.json');
+        let stored: Record<string, any> = {};
+        try { stored = JSON.parse(fs.readFileSync(previewUrlsPath, 'utf-8')); } catch {}
+        stored[directory] = { ...stored[directory], productionUrl: deployedUrl };
+        fs.writeFileSync(previewUrlsPath, JSON.stringify(stored, null, 2));
+      } catch {}
+    }
+
     return {
       content: [{
         type: 'text' as const,
