@@ -397,8 +397,9 @@ Respond ONLY with valid JSON (no markdown):
  * Probe multiple ports and prefer the one serving HTML (frontend) over JSON (API).
  */
 async function selectBestPort(ports: number[]): Promise<number> {
-  if (ports.length <= 1) return ports[0] || 0;
+  if (ports.length === 0) return 0;
 
+  // Always validate — even a single port might be an API server serving JSON
   const results = await Promise.all(ports.map(port =>
     new Promise<{ port: number; isHtml: boolean }>(resolve => {
       const req = http.get(`http://127.0.0.1:${port}/`, { timeout: 2000 }, res => {
@@ -413,7 +414,7 @@ async function selectBestPort(ports: number[]): Promise<number> {
 
   const htmlPorts = results.filter(r => r.isHtml);
   if (htmlPorts.length > 0) return htmlPorts[0].port;
-  return ports[0];
+  return 0; // No HTML-serving (frontend) port found — don't auto-load API ports
 }
 
 export function registerPreviewHandlers() {

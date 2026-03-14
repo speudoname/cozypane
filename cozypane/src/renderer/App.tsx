@@ -738,6 +738,10 @@ export default function App() {
       </div>
 
       <div className="main-content">
+        {/* Overlay prevents webview from stealing mouse events during resize */}
+        {(isResizing || isResizingPreview) && (
+          <div style={{ position: 'fixed', inset: 0, zIndex: 9999, cursor: 'col-resize' }} />
+        )}
         <div className={`terminal-pane ${splitTerminalId ? 'split' : ''}`}
           onMouseEnter={() => { hoverZoneRef.current = 'terminal'; }}
         >
@@ -880,6 +884,7 @@ export default function App() {
             />
             <div className="right-panel preview-panel" style={{ width: previewWidth }}>
               <Preview
+                key={activeTerminalId}
                 localUrl={previewLocalUrl}
                 productionUrl={previewProdUrl}
                 cwd={cwd}

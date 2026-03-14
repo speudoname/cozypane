@@ -80,7 +80,8 @@ export default function Preview({ localUrl, productionUrl, cwd, onSendToTerminal
   const staticCwdRef = useRef<string>('');
 
   // Determine the actual URLs to show
-  const effectiveLocalUrl = localUrl || staticUrl || (selectedPort ? `http://localhost:${selectedPort}` : (detectedPorts.length > 0 ? `http://localhost:${detectedPorts[0]}` : null)) || manualUrl || null;
+  // selectedPort is validated (HTML-serving), so it takes priority over raw terminal-detected localUrl
+  const effectiveLocalUrl = (selectedPort ? `http://localhost:${selectedPort}` : null) || staticUrl || localUrl || (detectedPorts.length > 0 ? `http://localhost:${detectedPorts[0]}` : null) || manualUrl || null;
   // Prefer deployment-matched URLs, then locally-detected, then prop
   const effectiveProdUrl = selectedDeploymentUrl || projectInfo?.productionUrl || aiAnalysis?.productionUrl || productionUrl || null;
   const effectiveDevCommand = projectInfo?.devCommand || aiAnalysis?.devCommand || null;
@@ -114,6 +115,39 @@ export default function Preview({ localUrl, productionUrl, cwd, onSendToTerminal
       if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
     };
   }, []);
+
+  // When terminal detects a new URL (localUrl prop changes), validate and auto-connect
+  // This handles the case where dev server starts AFTER initial detection
+  useEffect(() => {
+    if (!localUrl || serverState === 'ready') return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const port = parseInt(new URL(localUrl).port);
+        if (!port) return;
+        const best = await window.cozyPane.preview.selectBestPort([port]);
+        if (cancelled) return;
+        if (best > 0) {
+          setSelectedPort(best);
+          setServerState('ready');
+          setStatusMessage('');
+        } else {
+          // Terminal detected a URL but it serves JSON — update ports list but don't auto-load
+          setDetectedPorts(prev => prev.includes(port) ? prev : [...prev, port]);
+          if (serverState === 'idle') {
+            setStatusMessage('Only API servers detected');
+          }
+        }
+      } catch {}
+    })();
+    return () => { cancelled = true; };
+  }, [localUrl]);
+
+  // When a production URL arrives (from terminal deploy output), auto-switch to show it
+  useEffect(() => {
+    if (!productionUrl) return;
+    if (serverState !== 'ready') setServerState('ready');
+  }, [productionUrl]);
 
   // Match deployments to current folder name
   useEffect(() => {
@@ -177,18 +211,33 @@ export default function Preview({ localUrl, productionUrl, cwd, onSendToTerminal
         setDetectedPorts(ports);
         setProjectInfo(projectResult);
 
-        // Step 2: If a server is already running, we're done
+        // Step 2: If a server is already running, check if it serves HTML
         if (ports.length > 0 || localUrl) {
-          // Smart port selection: prefer HTML-serving ports over API ports
-          if (ports.length > 1) {
-            window.cozyPane.preview.selectBestPort(ports).then((best: number) => {
-              if (!cancelled && best) setSelectedPort(best);
-            });
-          } else if (ports.length === 1) {
-            setSelectedPort(ports[0]);
+          // Combine terminal-detected URL port with scanned ports
+          const allPorts = [...ports];
+          if (localUrl) {
+            try {
+              const urlPort = parseInt(new URL(localUrl).port);
+              if (urlPort && !allPorts.includes(urlPort)) allPorts.push(urlPort);
+            } catch {}
           }
-          setServerState('ready');
-          setStatusMessage('');
+
+          // Validate: prefer HTML-serving ports, skip API-only ports
+          const best = await window.cozyPane.preview.selectBestPort(allPorts);
+          if (cancelled) return;
+
+          if (best > 0) {
+            setSelectedPort(best);
+            setServerState('ready');
+            setStatusMessage('');
+          } else if (allPorts.length > 0) {
+            // Only API/non-HTML ports found — don't auto-load JSON
+            setServerState('idle');
+            setStatusMessage('Only API servers detected');
+          } else {
+            setServerState('ready');
+            setStatusMessage('');
+          }
           return;
         }
 
@@ -243,15 +292,20 @@ export default function Preview({ localUrl, productionUrl, cwd, onSendToTerminal
               const newPorts = result.ports || [];
               if (newPorts.length > 0) {
                 setDetectedPorts(newPorts);
-                if (newPorts.length > 1) {
-                  window.cozyPane.preview.selectBestPort(newPorts).then((best: number) => {
-                    if (best) setSelectedPort(best);
-                  });
-                } else {
+                const best = await window.cozyPane.preview.selectBestPort(newPorts);
+                if (best > 0) {
+                  setSelectedPort(best);
+                  setServerState('ready');
+                  setStatusMessage('');
+                } else if (newPorts.length === 1) {
+                  // Single port, not HTML — still show it but user can decide
                   setSelectedPort(newPorts[0]);
+                  setServerState('ready');
+                  setStatusMessage('');
+                } else {
+                  setServerState('idle');
+                  setStatusMessage('Only API servers detected');
                 }
-                setServerState('ready');
-                setStatusMessage('');
                 if (pollIntervalRef.current) {
                   clearInterval(pollIntervalRef.current);
                   pollIntervalRef.current = null;
@@ -306,8 +360,12 @@ export default function Preview({ localUrl, productionUrl, cwd, onSendToTerminal
         pollIntervalRef.current = setInterval(async () => {
           try {
             const portResult = await window.cozyPane.preview.scanPortsForCwd(cwd);
-            if ((portResult.ports || []).length > 0) {
-              setDetectedPorts(portResult.ports);
+            const newPorts = portResult.ports || [];
+            if (newPorts.length > 0) {
+              setDetectedPorts(newPorts);
+              const best = await window.cozyPane.preview.selectBestPort(newPorts);
+              if (best > 0) setSelectedPort(best);
+              else if (newPorts.length === 1) setSelectedPort(newPorts[0]);
               setServerState('ready');
               setStatusMessage('');
               if (pollIntervalRef.current) {
@@ -337,8 +395,12 @@ export default function Preview({ localUrl, productionUrl, cwd, onSendToTerminal
       attempts++;
       try {
         const result = await window.cozyPane.preview.scanPortsForCwd(cwd);
-        if ((result.ports || []).length > 0) {
-          setDetectedPorts(result.ports);
+        const newPorts = result.ports || [];
+        if (newPorts.length > 0) {
+          setDetectedPorts(newPorts);
+          const best = await window.cozyPane.preview.selectBestPort(newPorts);
+          if (best > 0) setSelectedPort(best);
+          else if (newPorts.length === 1) setSelectedPort(newPorts[0]);
           setServerState('ready');
           setStatusMessage('');
           if (pollIntervalRef.current) {
@@ -376,6 +438,9 @@ export default function Preview({ localUrl, productionUrl, cwd, onSendToTerminal
           const newPorts = result.ports || [];
           if (newPorts.length > 0) {
             setDetectedPorts(newPorts);
+            const best = await window.cozyPane.preview.selectBestPort(newPorts);
+            if (best > 0) setSelectedPort(best);
+            else if (newPorts.length === 1) setSelectedPort(newPorts[0]);
             setServerState('ready');
             setStatusMessage('');
             if (pollIntervalRef.current) {
@@ -745,76 +810,104 @@ export default function Preview({ localUrl, productionUrl, cwd, onSendToTerminal
     </div>
   );
 
-  const renderIdleState = () => (
-    <div style={{
-      display: 'flex',
-      flexDirection: 'column',
-      alignItems: 'center',
-      justifyContent: 'center',
-      height: '100%',
-      color: 'var(--text-secondary, #888)',
-      gap: '1em',
-      padding: '2em',
-    }}>
-      <div style={{ fontSize: '1.2em', color: 'var(--text-primary, #e0e0e0)' }}>
-        No dev server detected
-      </div>
+  const renderIdleState = () => {
+    // Show different message for production vs local view
+    const isProdView = viewMode === 'production';
 
-      {projectInfo?.type && (
-        <div style={{ fontSize: '0.85em', color: 'var(--text-secondary, #888)', textAlign: 'center' }}>
-          Detected <strong style={{ color: 'var(--accent, #7c6fe0)' }}>{projectInfo.type}</strong> project
+    return (
+      <div style={{
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        justifyContent: 'center',
+        height: '100%',
+        color: 'var(--text-secondary, #888)',
+        gap: '1em',
+        padding: '2em',
+      }}>
+        <div style={{ fontSize: '1.2em', color: 'var(--text-primary, #e0e0e0)' }}>
+          {isProdView ? 'No production URL configured' : statusMessage === 'Only API servers detected' ? 'Only API servers detected' : 'No dev server detected'}
         </div>
-      )}
 
-      {aiAnalysis?.summary && (
-        <div style={{ fontSize: '0.82em', color: 'var(--text-secondary, #888)', textAlign: 'center', maxWidth: 400 }}>
-          {aiAnalysis.summary}
+        {!isProdView && statusMessage === 'Only API servers detected' && (
+          <div style={{ fontSize: '0.82em', color: 'var(--text-secondary, #888)', textAlign: 'center', maxWidth: 400 }}>
+            The detected ports serve API responses (JSON), not a web frontend. You can click a port below to view it anyway.
+          </div>
+        )}
+
+        {isProdView && (
+          <div style={{ fontSize: '0.82em', color: 'var(--text-secondary, #888)', textAlign: 'center', maxWidth: 400 }}>
+            Enter your production URL below, or use AI Analyze to detect it from package.json / README.
+          </div>
+        )}
+
+        {projectInfo?.type && (
+          <div style={{ fontSize: '0.85em', color: 'var(--text-secondary, #888)', textAlign: 'center' }}>
+            Detected <strong style={{ color: 'var(--accent, #7c6fe0)' }}>{projectInfo.type}</strong> project
+          </div>
+        )}
+
+        {aiAnalysis?.summary && (
+          <div style={{ fontSize: '0.82em', color: 'var(--text-secondary, #888)', textAlign: 'center', maxWidth: 400 }}>
+            {aiAnalysis.summary}
+          </div>
+        )}
+
+        {!isProdView && detectedPorts.length > 0 && (
+          <div style={{ fontSize: '0.82em' }}>
+            <span style={{ color: 'var(--text-secondary, #888)' }}>Active ports: </span>
+            {detectedPorts.map(p => (
+              <button
+                key={p}
+                onClick={() => { setSelectedPort(p); setServerState('ready'); }}
+                style={{ ...portBtnStyle, marginLeft: '0.3em' }}
+              >
+                :{p}
+              </button>
+            ))}
+          </div>
+        )}
+
+        <div style={{ display: 'flex', gap: '0.5em', marginTop: '0.5em' }}>
+          <button onClick={runAiAnalysis} style={secondaryBtnStyle} disabled={analyzing}>
+            {analyzing ? 'Analyzing...' : 'AI Analyze'}
+          </button>
         </div>
-      )}
 
-      {detectedPorts.length > 0 && (
-        <div style={{ fontSize: '0.82em' }}>
-          <span style={{ color: 'var(--text-secondary, #888)' }}>Active ports: </span>
-          {detectedPorts.map(p => (
-            <button
-              key={p}
-              onClick={() => { setManualUrl(`http://localhost:${p}`); setServerState('ready'); }}
-              style={{ ...portBtnStyle, marginLeft: '0.3em' }}
-            >
-              :{p}
-            </button>
-          ))}
+        {aiAnalysis?.error && (
+          <div style={{ fontSize: '0.78em', color: '#e74c3c' }}>{aiAnalysis.error}</div>
+        )}
+
+        {/* Manual URL fallback */}
+        <div style={{ display: 'flex', gap: '0.3em', width: '100%', maxWidth: 400, marginTop: '0.5em' }}>
+          <input
+            type="text"
+            value={manualUrl}
+            onChange={e => setManualUrl(e.target.value)}
+            onKeyDown={e => {
+              if (e.key === 'Enter') {
+                const url = manualUrl.trim();
+                if (isProdView) {
+                  // Treat as production URL — nothing to set locally
+                } else {
+                  setManualUrl(url);
+                  setServerState('ready');
+                }
+              }
+            }}
+            placeholder={isProdView ? 'Enter production URL...' : 'Enter URL manually...'}
+            spellCheck={false}
+            style={urlInputStyle}
+          />
         </div>
-      )}
-
-      <div style={{ display: 'flex', gap: '0.5em', marginTop: '0.5em' }}>
-        <button onClick={runAiAnalysis} style={secondaryBtnStyle} disabled={analyzing}>
-          {analyzing ? 'Analyzing...' : 'AI Analyze'}
-        </button>
       </div>
-
-      {aiAnalysis?.error && (
-        <div style={{ fontSize: '0.78em', color: '#e74c3c' }}>{aiAnalysis.error}</div>
-      )}
-
-      {/* Manual URL fallback */}
-      <div style={{ display: 'flex', gap: '0.3em', width: '100%', maxWidth: 400, marginTop: '0.5em' }}>
-        <input
-          type="text"
-          value={manualUrl}
-          onChange={e => setManualUrl(e.target.value)}
-          onKeyDown={e => { if (e.key === 'Enter') { setManualUrl(manualUrl.trim()); setServerState('ready'); } }}
-          placeholder="Or enter URL manually..."
-          spellCheck={false}
-          style={urlInputStyle}
-        />
-      </div>
-    </div>
-  );
+    );
+  };
 
   const showLocal = viewMode === 'local' || viewMode === 'split';
   const showProd = viewMode === 'production' || viewMode === 'split';
-  const hasContent = (showLocal && effectiveLocalUrl) || (showProd && effectiveProdUrl);
+  // Only show webview content when server is confirmed ready (not idle/detecting/failed)
+  const hasContent = serverState === 'ready' && ((showLocal && effectiveLocalUrl) || (showProd && effectiveProdUrl));
   const isStarting = serverState === 'detecting' || serverState === 'starting' || serverState === 'waiting';
 
   return (
@@ -971,8 +1064,29 @@ export default function Preview({ localUrl, productionUrl, cwd, onSendToTerminal
             {showProd && effectiveProdUrl && renderWebview(effectiveProdUrl, prodWebviewRef, 'Production')}
             {showLocal && !effectiveLocalUrl && renderStartingState()}
             {showProd && !effectiveProdUrl && (
-              <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-secondary, #666)' }}>
-                No production URL detected
+              <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', color: 'var(--text-secondary, #666)', gap: '0.8em', padding: '2em' }}>
+                <div>No production URL configured</div>
+                <div style={{ display: 'flex', gap: '0.3em', width: '100%', maxWidth: 350 }}>
+                  <input
+                    type="text"
+                    value={manualUrl}
+                    onChange={e => setManualUrl(e.target.value)}
+                    onKeyDown={e => {
+                      if (e.key === 'Enter' && manualUrl.trim()) {
+                        // User entered a production URL — there's no setter for prod URL from here,
+                        // so treat it as manual local URL for now
+                        setManualUrl(manualUrl.trim());
+                        setServerState('ready');
+                      }
+                    }}
+                    placeholder="Enter production URL..."
+                    spellCheck={false}
+                    style={urlInputStyle}
+                  />
+                </div>
+                <button onClick={runAiAnalysis} style={secondaryBtnStyle} disabled={analyzing}>
+                  {analyzing ? 'Analyzing...' : 'AI Analyze'}
+                </button>
               </div>
             )}
           </>
