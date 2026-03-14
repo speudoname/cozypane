@@ -279,6 +279,12 @@ html, body, #root {
   padding: 2px 8px;
 }
 
+.titlebar-btn-active {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+
 /* Main Content — horizontal flex */
 .main-content {
   display: flex;

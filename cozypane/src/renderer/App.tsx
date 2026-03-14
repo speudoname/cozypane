@@ -20,7 +20,7 @@ import type { TerminalTab } from './components/TerminalTabBar';
 import type { AiAction, CostInfo } from './lib/terminalAnalyzer';
 
 type LayoutMode = 'two-col' | 'three-col';
-type RightPanelTab = 'preview' | 'activity' | 'summary' | 'settings' | 'git' | 'deploy' | 'browser';
+type RightPanelTab = 'preview' | 'activity' | 'summary' | 'settings' | 'git' | 'deploy';
 
 function loadPersisted<T>(key: string, fallback: T): T {
   try {
@@ -70,8 +70,18 @@ export default function App() {
     summary: string | null;
   }
   const tabWatcherCache = useRef(new Map<string, TabWatcherState>());
-  const [rightPanelTab, setRightPanelTab] = useState<RightPanelTab>(() => loadPersisted('rightPanelTab', 'preview'));
+  const [rightPanelTab, setRightPanelTab] = useState<RightPanelTab>(() => {
+    const saved = loadPersisted<string>('rightPanelTab', 'preview');
+    // Migrate: 'browser' tab was removed, fall back to 'preview' (editor)
+    const valid: RightPanelTab[] = ['preview', 'activity', 'summary', 'settings', 'git', 'deploy'];
+    return valid.includes(saved as RightPanelTab) ? (saved as RightPanelTab) : 'preview';
+  });
   const [previewUrl, setPreviewUrl] = useState<string>('');
+  const [previewLocalUrl, setPreviewLocalUrl] = useState<string>('');
+  const [previewProdUrl, setPreviewProdUrl] = useState<string>('');
+  const [previewOpen, setPreviewOpen] = useState(() => loadPersisted('previewOpen', false));
+  const [previewWidth, setPreviewWidth] = useState(() => loadPersisted('previewWidth', 500));
+  const [isResizingPreview, setIsResizingPreview] = useState(false);
   const [diffState, setDiffState] = useState<DiffState | null>(null);
   const [summary, setSummary] = useState<string | null>(null);
   const [summarizing, setSummarizing] = useState(false);
@@ -130,6 +140,8 @@ export default function App() {
   useEffect(() => { savePersisted('editorFontSize', editorFontSize); }, [editorFontSize]);
   useEffect(() => { savePersisted('sidebarFontSize', sidebarFontSize); }, [sidebarFontSize]);
   useEffect(() => { savePersisted('panelFontSize', panelFontSize); }, [panelFontSize]);
+  useEffect(() => { savePersisted('previewOpen', previewOpen); }, [previewOpen]);
+  useEffect(() => { if (!isResizingPreview) savePersisted('previewWidth', previewWidth); }, [previewWidth, isResizingPreview]);
 
   // Refs for per-tab watcher save/restore
   const activityEventsRef = useRef(activityEvents);
@@ -369,10 +381,40 @@ export default function App() {
     document.addEventListener('mouseup', cleanup);
   }, []);
 
+  const previewWidthRef = useRef(previewWidth);
+  previewWidthRef.current = previewWidth;
+  const previewResizeCleanupRef = useRef<(() => void) | null>(null);
+
+  const handlePreviewResizeStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    setIsResizingPreview(true);
+    const startX = e.clientX;
+    const startWidth = previewWidthRef.current;
+
+    const onMouseMove = (e: MouseEvent) => {
+      const delta = startX - e.clientX;
+      const newWidth = Math.max(250, Math.min(startWidth + delta, window.innerWidth * 0.6));
+      setPreviewWidth(newWidth);
+    };
+
+    const cleanup = () => {
+      setIsResizingPreview(false);
+      document.removeEventListener('mousemove', onMouseMove);
+      document.removeEventListener('mouseup', cleanup);
+      previewResizeCleanupRef.current = null;
+    };
+
+    previewResizeCleanupRef.current?.();
+    previewResizeCleanupRef.current = cleanup;
+    document.addEventListener('mousemove', onMouseMove);
+    document.addEventListener('mouseup', cleanup);
+  }, []);
+
   useEffect(() => {
     return () => {
       resizeCleanupRef.current?.();
       splitCleanupRef.current?.();
+      previewResizeCleanupRef.current?.();
     };
   }, []);
 
@@ -474,16 +516,20 @@ export default function App() {
     return () => window.removeEventListener('cozyPane:deploy', handler);
   }, []);
 
-  const openPreview = useCallback((url: string) => {
+  const openPreview = useCallback((url: string, type?: 'local' | 'production') => {
+    if (type === 'production') {
+      setPreviewProdUrl(url);
+    } else {
+      setPreviewLocalUrl(url);
+    }
     setPreviewUrl(url);
-    setRightPanelTab('browser');
-    setPanelsOpen(true);
+    setPreviewOpen(true);
   }, []);
 
-  // Listen for deploy:preview event (sent when cozydeploy completes)
+  // Listen for preview events (from terminal URL detection)
   useEffect(() => {
     const handler = (e: CustomEvent) => {
-      if (e.detail?.url) openPreview(e.detail.url);
+      if (e.detail?.url) openPreview(e.detail.url, e.detail.type);
     };
     window.addEventListener('cozyPane:openPreview', handler as any);
     return () => window.removeEventListener('cozyPane:openPreview', handler as any);
@@ -506,7 +552,7 @@ export default function App() {
     { id: 'tab-git', label: 'Show Git Panel', category: 'Tab', action: () => setRightPanelTab('git') },
     { id: 'tab-settings', label: 'Show Settings', category: 'Tab', action: () => setRightPanelTab('settings') },
     { id: 'tab-deploy', label: 'Show Deploy', category: 'Tab', action: () => setRightPanelTab('deploy') },
-    { id: 'tab-browser', label: 'Show Browser Preview', category: 'Tab', action: () => setRightPanelTab('browser') },
+    { id: 'toggle-preview', label: 'Toggle Preview Panel', category: 'View', action: () => setPreviewOpen(p => !p) },
     { id: 'git-stage-all', label: 'Stage All Changes', category: 'Git', action: () => { sendTerminalCommand('git add -A'); setRightPanelTab('git'); } },
     { id: 'git-commit', label: 'Open Git to Commit', category: 'Git', action: () => setRightPanelTab('git') },
     { id: 'git-push', label: 'Push', category: 'Git', action: () => { sendTerminalCommand('git push'); setRightPanelTab('git'); } },
@@ -570,16 +616,6 @@ export default function App() {
 
     if (rightPanelTab === 'deploy') {
       return <DeployPanel cwd={cwd} onTerminalCommand={sendTerminalCommand} claudeRunning={aiAction !== 'idle'} />;
-    }
-
-    if (rightPanelTab === 'browser') {
-      return (
-        <Preview
-          url={previewUrl}
-          onSendToTerminal={sendTerminalCommand}
-          onClose={() => setRightPanelTab('preview')}
-        />
-      );
     }
 
     // Preview tab — show diff viewer or editor
@@ -659,12 +695,6 @@ export default function App() {
         Deploy
       </button>
       <button
-        className={`panel-tab ${rightPanelTab === 'browser' ? 'active' : ''}`}
-        onClick={() => setRightPanelTab('browser')}
-      >
-        Preview
-      </button>
-      <button
         className={`panel-tab ${rightPanelTab === 'settings' ? 'active' : ''}`}
         onClick={() => setRightPanelTab('settings')}
       >
@@ -702,6 +732,14 @@ export default function App() {
         <div className="titlebar-actions">
           <button className="btn titlebar-btn" onClick={togglePanels} title="Toggle panels" aria-label="Toggle panels">
             {panelsOpen ? '>' : '<'}
+          </button>
+          <button
+            className={`btn titlebar-btn ${previewOpen ? 'titlebar-btn-active' : ''}`}
+            onClick={() => setPreviewOpen(p => !p)}
+            title="Toggle preview"
+            aria-label="Toggle preview"
+          >
+            {previewOpen ? '\u{1F5A5}\u2009x' : '\u{1F5A5}'}
           </button>
           {panelsOpen && (
             <button className="btn titlebar-btn" onClick={toggleLayout} title="Toggle layout" aria-label="Toggle layout">
@@ -795,7 +833,7 @@ export default function App() {
             />
 
             {layoutMode === 'two-col' ? (
-              <div className="right-panel" style={{ width: rightPanelTab === 'browser' ? '66%' : panelWidth }}>
+              <div className="right-panel" style={{ width: panelWidth }}>
                 <div className="panel-section" style={{ flex: sidebarRatio, fontSize: sidebarFontSize }}
                   onMouseEnter={() => { hoverZoneRef.current = 'sidebar'; }}
                 >
@@ -828,6 +866,24 @@ export default function App() {
                 </div>
               </>
             )}
+          </>
+        )}
+
+        {/* Preview Panel — independent, rightmost column */}
+        {previewOpen && (
+          <>
+            <div
+              className={`resize-handle ${isResizingPreview ? 'active' : ''}`}
+              onMouseDown={handlePreviewResizeStart}
+            />
+            <div className="right-panel preview-panel" style={{ width: previewWidth }}>
+              <Preview
+                localUrl={previewLocalUrl}
+                productionUrl={previewProdUrl}
+                cwd={cwd}
+                onSendToTerminal={sendTerminalCommand}
+              />
+            </div>
           </>
         )}
       </div>

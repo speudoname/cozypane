@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { Terminal as XTerm } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
-import { stripAnsi, TUI_ENTER, TUI_EXIT, analyzeFocus, analyzeAction, parseCostInfo, detectChoicePrompt, detectDeployUrl, type AiAction, type CostInfo } from '../lib/terminalAnalyzer';
+import { stripAnsi, TUI_ENTER, TUI_EXIT, analyzeFocus, analyzeAction, parseCostInfo, detectChoicePrompt, detectDeployUrl, detectLocalUrl, type AiAction, type CostInfo } from '../lib/terminalAnalyzer';
 import CommandInput from './CommandInput';
 import '@xterm/xterm/css/xterm.css';
 
@@ -33,6 +33,7 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, au
   const idleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const rollingBufferRef = useRef('');
   const lastDeployUrlRef = useRef('');
+  const lastLocalUrlRef = useRef('');
   const activeProcessRef = useRef('');
   const onCwdChangeRef = useRef(onCwdChange);
   onCwdChangeRef.current = onCwdChange;
@@ -339,8 +340,15 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, au
           const deployUrl = detectDeployUrl(rollingBufferRef.current);
           if (deployUrl && deployUrl !== lastDeployUrlRef.current) {
             lastDeployUrlRef.current = deployUrl;
-            window.dispatchEvent(new CustomEvent('cozyPane:openPreview', { detail: { url: deployUrl } }));
+            window.dispatchEvent(new CustomEvent('cozyPane:openPreview', { detail: { url: deployUrl, type: 'production' } }));
           }
+        }
+
+        // Detect localhost dev server URLs (always, not just during Claude)
+        const localUrl = detectLocalUrl(rollingBufferRef.current);
+        if (localUrl && localUrl !== lastLocalUrlRef.current) {
+          lastLocalUrlRef.current = localUrl;
+          window.dispatchEvent(new CustomEvent('cozyPane:openPreview', { detail: { url: localUrl, type: 'local' } }));
         }
       }, 400);
     });

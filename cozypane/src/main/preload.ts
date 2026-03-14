@@ -64,6 +64,11 @@ contextBridge.exposeInMainWorld('cozyPane', {
       return () => ipcRenderer.removeListener('deploy:protocol-callback', listener);
     },
   },
+  preview: {
+    scanPorts: () => ipcRenderer.invoke('preview:scanPorts'),
+    detectProject: (cwd: string) => ipcRenderer.invoke('preview:detectProject', cwd),
+    aiAnalyze: (cwd: string) => ipcRenderer.invoke('preview:aiAnalyze', cwd),
+  },
   onMenuAction: (channel: string, callback: () => void) => {
     const ALLOWED_CHANNELS = new Set([
       'menu:new-tab', 'menu:close-tab', 'menu:toggle-panels', 'menu:toggle-layout',

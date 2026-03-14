@@ -10,6 +10,7 @@ import { registerWatcherHandlers, closeWatcher } from './watcher';
 import { registerSettingsHandlers } from './settings';
 import { registerGitHandlers } from './git';
 import { registerDeployHandlers } from './deploy';
+import { registerPreviewHandlers } from './preview';
 
 // Global error handlers
 process.on('uncaughtException', (err) => {
@@ -258,6 +259,7 @@ registerWatcherHandlers(getWindow);
 registerSettingsHandlers();
 registerGitHandlers();
 registerDeployHandlers(getWindow);
+registerPreviewHandlers();
 
 // File picker dialog
 ipcMain.handle('fs:pickFile', async () => {

@@ -174,3 +174,38 @@ export function detectDeployUrl(rollingBuffer: string): string | null {
   const match = cleaned.match(/https:\/\/[a-z0-9][a-z0-9-]*[a-z0-9]\.cozypane\.com\b/i);
   return match ? match[0] : null;
 }
+
+/**
+ * Detect localhost/dev server URLs in terminal output.
+ * Catches Vite, Next.js, webpack-dev-server, Django, Flask, Rails, etc.
+ * Returns the most recently detected URL, or null.
+ */
+export function detectLocalUrl(rollingBuffer: string): string | null {
+  const cleaned = stripAnsi(rollingBuffer);
+  // Match http://localhost:PORT, http://127.0.0.1:PORT, http://0.0.0.0:PORT
+  // Also match "Local:" lines from Vite/Next (e.g. "Local:   http://localhost:5173/")
+  const patterns = [
+    /https?:\/\/localhost:\d{2,5}\b[^\s)}\]]*/gi,
+    /https?:\/\/127\.0\.0\.1:\d{2,5}\b[^\s)}\]]*/gi,
+    /https?:\/\/0\.0\.0\.0:\d{2,5}\b[^\s)}\]]*/gi,
+    /https?:\/\/\[::\]:\d{2,5}\b[^\s)}\]]*/gi,
+  ];
+
+  let lastMatch: string | null = null;
+  for (const pattern of patterns) {
+    const matches = cleaned.match(pattern);
+    if (matches) {
+      lastMatch = matches[matches.length - 1];
+    }
+  }
+
+  // Normalize 0.0.0.0 and [::] to localhost for webview access
+  if (lastMatch) {
+    lastMatch = lastMatch.replace(/\/\/0\.0\.0\.0:/, '//localhost:');
+    lastMatch = lastMatch.replace(/\/\/\[::\]:/, '//localhost:');
+    // Remove trailing slash if it's the only path
+    lastMatch = lastMatch.replace(/\/+$/, '');
+  }
+
+  return lastMatch;
+}
