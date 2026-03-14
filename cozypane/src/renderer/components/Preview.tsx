@@ -75,7 +75,8 @@ export default function Preview({ localUrl, productionUrl, cwd, onSendToTerminal
 
   // Determine the actual URLs to show
   const effectiveLocalUrl = localUrl || staticUrl || (detectedPorts.length > 0 ? `http://localhost:${detectedPorts[0]}` : manualUrl || null);
-  const effectiveProdUrl = productionUrl || projectInfo?.productionUrl || aiAnalysis?.productionUrl || null;
+  // Prefer locally-detected production URLs over the prop (which may be stale from a tab switch)
+  const effectiveProdUrl = projectInfo?.productionUrl || aiAnalysis?.productionUrl || productionUrl || null;
   const effectiveDevCommand = projectInfo?.devCommand || aiAnalysis?.devCommand || null;
 
   // Auto-switch view mode based on available URLs
@@ -108,12 +109,15 @@ export default function Preview({ localUrl, productionUrl, cwd, onSendToTerminal
     };
   }, []);
 
-  // Persist production URLs when they appear
+  // Persist production URLs when they appear — only persist URLs that were
+  // actually detected for THIS cwd (from projectInfo or aiAnalysis), never
+  // the prop which may be stale from a previous tab during transitions.
   useEffect(() => {
-    if (effectiveProdUrl && cwd) {
-      window.cozyPane.preview.storeUrl(cwd, { productionUrl: effectiveProdUrl }).catch(() => {});
+    const detectedProdUrl = projectInfo?.productionUrl || aiAnalysis?.productionUrl;
+    if (detectedProdUrl && cwd) {
+      window.cozyPane.preview.storeUrl(cwd, { productionUrl: detectedProdUrl }).catch(() => {});
     }
-  }, [effectiveProdUrl, cwd]);
+  }, [projectInfo?.productionUrl, aiAnalysis?.productionUrl, cwd]);
 
   // === CORE: Seamless auto-start flow when cwd changes ===
   useEffect(() => {

@@ -536,7 +536,11 @@ export default function App() {
   // Listen for preview events (from terminal URL detection)
   useEffect(() => {
     const handler = (e: CustomEvent) => {
-      if (e.detail?.url) openPreview(e.detail.url, e.detail.type);
+      if (!e.detail?.url) return;
+      // Only accept events from the active terminal to prevent cross-tab URL bleed
+      const activeTab = terminalTabsRef.current.find(t => t.id === activeTerminalIdRef.current);
+      if (e.detail.ptyId && activeTab?.ptyId && e.detail.ptyId !== activeTab.ptyId) return;
+      openPreview(e.detail.url, e.detail.type);
     };
     window.addEventListener('cozyPane:openPreview', handler as any);
     return () => window.removeEventListener('cozyPane:openPreview', handler as any);

@@ -344,7 +344,7 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, au
           const deployUrl = detectDeployUrl(rollingBufferRef.current);
           if (deployUrl && deployUrl !== lastDeployUrlRef.current) {
             lastDeployUrlRef.current = deployUrl;
-            window.dispatchEvent(new CustomEvent('cozyPane:openPreview', { detail: { url: deployUrl, type: 'production' } }));
+            window.dispatchEvent(new CustomEvent('cozyPane:openPreview', { detail: { url: deployUrl, type: 'production', ptyId: terminalIdRef.current } }));
           }
         }
 
@@ -352,7 +352,7 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, au
         const localUrl = detectLocalUrl(rollingBufferRef.current);
         if (localUrl && localUrl !== lastLocalUrlRef.current) {
           lastLocalUrlRef.current = localUrl;
-          window.dispatchEvent(new CustomEvent('cozyPane:openPreview', { detail: { url: localUrl, type: 'local' } }));
+          window.dispatchEvent(new CustomEvent('cozyPane:openPreview', { detail: { url: localUrl, type: 'local', ptyId: terminalIdRef.current } }));
         }
       }, 400);
     });
