@@ -11,6 +11,7 @@ interface Props {
   cwd: string;
   isVisible: boolean;
   fontSize?: number;
+  autoCommand?: string;
   onCwdChange?: (newCwd: string) => void;
   onActionChange?: (action: AiAction) => void;
   onCostChange?: (cost: CostInfo) => void;
@@ -18,7 +19,7 @@ interface Props {
   onTerminalReady?: (id: string) => void;
 }
 
-export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, onCwdChange, onActionChange, onCostChange, onConversationUpdate, onTerminalReady }: Props) {
+export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, autoCommand, onCwdChange, onActionChange, onCostChange, onConversationUpdate, onTerminalReady }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<XTerm | null>(null);
   const [termDragOver, setTermDragOver] = useState(false);
@@ -47,7 +48,6 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, on
   const isVisibleRef = useRef(isVisible);
   isVisibleRef.current = isVisible;
   const followOutputRef = useRef(true);
-  const scrollCooldownRef = useRef(0); // timestamp until which auto-scroll is suppressed
   const scrollRafRef = useRef(0); // requestAnimationFrame handle for debounced scroll
 
   const [tuiMode, setTuiMode] = useState(false);
@@ -95,12 +95,12 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, on
     const id = terminalIdRef.current;
     if (!fitAddonRef.current || !termRef.current || !id) return;
     try {
-      const term = termRef.current;
       fitAddonRef.current.fit();
-      window.cozyPane.terminal.resize(id, term.cols, term.rows);
-      if (followOutputRef.current && Date.now() >= scrollCooldownRef.current) {
-        term.scrollToBottom();
-      }
+      window.cozyPane.terminal.resize(id, termRef.current.cols, termRef.current.rows);
+      // Never scroll here — fitAndSync is called by ResizeObserver (which
+      // fires on every layout change including CommandInput auto-resize).
+      // Scrolling is handled exclusively by data writes and explicit user
+      // actions to avoid fighting the user's scroll position.
     } catch {}
   }, []);
 
@@ -157,7 +157,6 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, on
 
     window.cozyPane.terminal.write(id, command.replace(/\n/g, '\r') + '\r');
     followOutputRef.current = true;
-    scrollCooldownRef.current = 0;
     setScrolledUp(false);
     manualUntilRef.current = 0;
 
@@ -216,38 +215,36 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, on
     termRef.current = term;
     fitAddonRef.current = fitAddon;
 
-    // Scroll tracking: followOutputRef tracks whether the user wants to
-    // stay at the bottom. scrollCooldownRef prevents auto-scroll from
-    // fighting the user during/immediately after manual scrolling.
-    // scrollRafRef deduplicates multiple scroll-to-bottom calls per frame.
+    // Scroll tracking: followOutputRef is the single source of truth for
+    // whether the terminal should auto-scroll on new data. It is set to
+    // false only by explicit user scroll-up actions, and back to true only
+    // by explicit user actions (scroll down to bottom, submit command,
+    // click scroll-to-bottom button). No timers, cooldowns, or resize
+    // events touch scrolling — this eliminates all scroll-fighting bugs.
 
     const scheduleScrollToBottom = () => {
       if (scrollRafRef.current) return; // already scheduled
       scrollRafRef.current = requestAnimationFrame(() => {
         scrollRafRef.current = 0;
-        if (!termRef.current) return;
-        if (!followOutputRef.current) return;
-        if (Date.now() < scrollCooldownRef.current) return;
+        if (!termRef.current || !followOutputRef.current) return;
         termRef.current.scrollToBottom();
       });
     };
 
     term.element?.addEventListener('wheel', (e) => {
       if (e.deltaY < 0) {
-        // User scrolling up — stop following output, set cooldown
+        // User scrolling up — stop following output
         followOutputRef.current = false;
-        scrollCooldownRef.current = Date.now() + 150;
         setScrolledUp(true);
       } else if (e.deltaY > 0) {
-        // User scrolling down — check if near bottom to resume following.
-        // Use generous threshold (5 lines) so user can catch the bottom
-        // even during rapid streaming where baseY keeps growing.
+        // User scrolling down — only resume following if truly at the
+        // bottom (within 2 lines). A tight threshold prevents accidental
+        // re-follow during rapid streaming where baseY keeps growing.
         requestAnimationFrame(() => {
           if (!termRef.current) return;
           const buf = termRef.current.buffer.active;
-          if (buf.viewportY >= buf.baseY - 5) {
+          if (buf.viewportY >= buf.baseY - 2) {
             followOutputRef.current = true;
-            scrollCooldownRef.current = 0;
             setScrolledUp(false);
           }
         });
@@ -258,12 +255,10 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, on
     term.element?.addEventListener('keydown', (e) => {
       if (e.key === 'PageUp' || (e.key === 'ArrowUp' && e.shiftKey)) {
         followOutputRef.current = false;
-        scrollCooldownRef.current = Date.now() + 150;
         setScrolledUp(true);
       }
       if (e.key === 'End' && e.ctrlKey) {
         followOutputRef.current = true;
-        scrollCooldownRef.current = 0;
         setScrolledUp(false);
       }
     });
@@ -414,13 +409,18 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, on
       terminalIdRef.current = result.id;
       onTerminalReadyRef.current?.(result.id);
       fitAndSync();
+      // Auto-run command if specified (e.g. claude --dangerously-skip-permissions)
+      if (autoCommand) {
+        setTimeout(() => {
+          window.cozyPane.terminal.write(result.id, autoCommand + '\n');
+        }, 300);
+      }
     }).catch((err: any) => console.error('Failed to create PTY:', err));
   }, [cwd]);
 
   const scrollToBottom = useCallback(() => {
     if (termRef.current) {
       followOutputRef.current = true;
-      scrollCooldownRef.current = 0;
       termRef.current.scrollToBottom();
       setScrolledUp(false);
     }

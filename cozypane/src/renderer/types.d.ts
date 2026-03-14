@@ -59,10 +59,11 @@ declare global {
     id: number;
     appName: string;
     subdomain: string;
-    status: 'building' | 'running' | 'stopped' | 'error';
+    status: 'building' | 'running' | 'stopped' | 'error' | 'failed';
     projectType: string;
     tier: string;
     url: string;
+    hasDatabase?: boolean;
     createdAt: string;
     updatedAt: string;
   }
@@ -97,6 +98,8 @@ declare global {
       writefile: (filePath: string, content: string) => Promise<{ success?: boolean; error?: string }>;
       homedir: () => Promise<string>;
       pickFile: () => Promise<{ paths: string[] }>;
+      pickDirectory: () => Promise<{ paths: string[] }>;
+      mkdir: (dirPath: string) => Promise<{ success?: boolean; error?: string }>;
       saveClipboardImage: () => Promise<{ path: string | null }>;
       clipboardFilePaths: () => Promise<{ paths: string[] }>;
       getSlashCommands: (cwd?: string) => Promise<{ cmd: string; desc: string; source: string }[]>;

@@ -64,7 +64,7 @@ export function getToken(): string {
   return decryptToken(auth.encryptedToken);
 }
 
-async function apiFetch(endpoint: string, options: RequestInit = {}): Promise<any> {
+async function apiFetch(endpoint: string, options: RequestInit & { timeoutMs?: number } = {}): Promise<any> {
   const token = getToken();
   const headers: Record<string, string> = {
     ...(options.headers as Record<string, string> || {}),
@@ -72,15 +72,17 @@ async function apiFetch(endpoint: string, options: RequestInit = {}): Promise<an
   if (token) {
     headers['Authorization'] = `Bearer ${token}`;
   }
-  // Don't set Content-Type for FormData (fetch sets it with boundary)
-  if (!(options.body instanceof FormData) && !headers['Content-Type']) {
+  // Only set Content-Type for requests that actually have a body
+  // (Fastify rejects empty bodies when Content-Type is application/json)
+  if (options.body && !(options.body instanceof FormData) && !headers['Content-Type']) {
     headers['Content-Type'] = 'application/json';
   }
 
+  const timeout = options.timeoutMs || 60000;
   const response = await fetch(`${API_BASE}${endpoint}`, {
     ...options,
     headers,
-    signal: AbortSignal.timeout(60000),
+    signal: AbortSignal.timeout(timeout),
   });
 
   if (!response.ok) {
@@ -214,19 +216,20 @@ export function registerDeployHandlers(getWindow: () => BrowserWindow | null) {
       // Clean up temp file
       try { fs.unlinkSync(tarPath); } catch {}
 
-      // Upload as multipart
+      // Upload as multipart — text fields MUST come before the file field.
+      // Fastify's multipart parser only exposes fields that appear before the file stream.
       const blob = new Blob([tarBuffer], { type: 'application/gzip' });
+      const project = detectProjectType(cwd);
       const formData = new FormData();
-      formData.append('file', blob, 'deploy.tar.gz');
       formData.append('appName', appName);
       if (tier) formData.append('tier', tier);
-
-      const project = detectProjectType(cwd);
       formData.append('projectType', project.type);
+      formData.append('file', blob, 'deploy.tar.gz');
 
       const result = await apiFetch('/deploy', {
         method: 'POST',
         body: formData,
+        timeoutMs: 300000, // 5 minutes — Docker builds can be slow
       });
 
       return result;

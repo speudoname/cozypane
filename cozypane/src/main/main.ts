@@ -27,6 +27,28 @@ let mainWindow: BrowserWindow | null = null;
 let forceQuit = false;
 const isDev = !app.isPackaged;
 
+// Single instance lock — needed for Windows/Linux protocol handler (second-instance event)
+const gotTheLock = app.requestSingleInstanceLock();
+if (!gotTheLock) {
+  app.quit();
+}
+
+// Windows/Linux: protocol URLs arrive via argv in second instance
+app.on('second-instance', (_event, argv) => {
+  // Focus existing window
+  if (mainWindow) {
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.focus();
+  }
+
+  // Find cozypane:// URL in argv (last arg on Windows, varies on Linux)
+  const protocolUrl = argv.find(arg => arg.startsWith('cozypane://'));
+  if (protocolUrl) {
+    mainWindow?.webContents.send('deploy:protocol-callback', protocolUrl);
+    ipcMain.emit('deploy:processProtocolUrl', {} as any, protocolUrl);
+  }
+});
+
 function getWindow() { return mainWindow; }
 
 function createWindow() {
@@ -246,6 +268,27 @@ ipcMain.handle('fs:pickFile', async () => {
   return { paths: result.canceled ? [] : result.filePaths };
 });
 
+// Directory picker dialog
+ipcMain.handle('fs:pickDirectory', async () => {
+  if (!mainWindow) return { paths: [] };
+  const result = await dialog.showOpenDialog(mainWindow, {
+    properties: ['openDirectory'],
+    title: 'Open Project',
+  });
+  return { paths: result.canceled ? [] : result.filePaths };
+});
+
+// Create directory
+ipcMain.handle('fs:mkdir', async (_event, dirPath: string) => {
+  const fs = await import('fs');
+  try {
+    fs.mkdirSync(dirPath, { recursive: true });
+    return { success: true };
+  } catch (err: any) {
+    return { error: err.message };
+  }
+});
+
 // Save clipboard image to temp file
 ipcMain.handle('fs:saveClipboardImage', async () => {
   const img = clipboard.readImage();
@@ -325,9 +368,22 @@ function setupAutoUpdater() {
 // Register MCP server config in ~/.claude.json so Claude Code discovers CozyPane tools
 function registerMcpConfig() {
   try {
-    const mcpServerPath = isDev
-      ? path.join(__dirname, 'mcp-server.js')
-      : path.join(process.resourcesPath!, 'app.asar', 'dist', 'main', 'mcp-server.js');
+    let mcpServerPath: string;
+
+    if (isDev) {
+      mcpServerPath = path.join(__dirname, 'mcp-server.js');
+    } else {
+      // Node.js can't require files from inside an asar archive directly.
+      // Extract the MCP server to a real path on disk so Claude Code can run it.
+      const asarSource = path.join(process.resourcesPath!, 'app.asar', 'dist', 'main', 'mcp-server.js');
+      const extractDir = path.join(app.getPath('userData'), 'mcp');
+      const extractPath = path.join(extractDir, 'mcp-server.js');
+
+      if (!fs.existsSync(extractDir)) fs.mkdirSync(extractDir, { recursive: true });
+      // Always overwrite to keep in sync with app version
+      fs.copyFileSync(asarSource, extractPath);
+      mcpServerPath = extractPath;
+    }
 
     const claudeConfigPath = path.join(os.homedir(), '.claude.json');
     let config: Record<string, any> = {};

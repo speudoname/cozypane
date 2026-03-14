@@ -10,6 +10,8 @@ export interface TerminalTab {
   aiAction: AiAction;
   costInfo: CostInfo;
   conversationTurns: ConversationTurn[];
+  launched: boolean;
+  autoCommand?: string;
 }
 
 function getDisplayLabel(tab: TerminalTab): string {

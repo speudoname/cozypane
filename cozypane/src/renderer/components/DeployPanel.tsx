@@ -1,7 +1,10 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { isCozyModeEnabled, enableCozyMode, disableCozyMode } from '../lib/cozyMode';
 
 interface Props {
   cwd: string;
+  onTerminalCommand: (command: string) => void;
+  claudeRunning: boolean;
 }
 
 const STATUS_COLORS: Record<string, string> = {
@@ -12,22 +15,41 @@ const STATUS_COLORS: Record<string, string> = {
   failed: '#e74c3c',
 };
 
-function sanitizeAppName(name: string): string {
-  return name.toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/^-+|-+$/g, '').slice(0, 63);
-}
-
-export default function DeployPanel({ cwd }: Props) {
+export default function DeployPanel({ cwd, onTerminalCommand, claudeRunning }: Props) {
   const [auth, setAuth] = useState<DeployAuth>({ authenticated: false });
   const [loading, setLoading] = useState(true);
-  const [project, setProject] = useState<ProjectDetection | null>(null);
-  const [appName, setAppName] = useState('');
   const [deployments, setDeployments] = useState<Deployment[]>([]);
-  const [deploying, setDeploying] = useState(false);
   const [deployError, setDeployError] = useState<string | null>(null);
   const [logViewId, setLogViewId] = useState<string | null>(null);
   const [logs, setLogs] = useState<string>('');
   const [logsLoading, setLogsLoading] = useState(false);
+  const [cozyMode, setCozyMode] = useState(false);
+  const [cozyModeLoading, setCozyModeLoading] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Check cozy mode state when cwd changes
+  useEffect(() => {
+    if (cwd) {
+      isCozyModeEnabled(cwd).then(setCozyMode);
+    }
+  }, [cwd]);
+
+  const handleCozyModeToggle = useCallback(async () => {
+    setCozyModeLoading(true);
+    try {
+      if (cozyMode) {
+        await disableCozyMode(cwd);
+        setCozyMode(false);
+      } else {
+        await enableCozyMode(cwd);
+        setCozyMode(true);
+      }
+    } catch (err: any) {
+      setDeployError(err.message || 'Failed to toggle Cozy Mode');
+    } finally {
+      setCozyModeLoading(false);
+    }
+  }, [cwd, cozyMode]);
 
   // Check auth on mount
   useEffect(() => {
@@ -53,15 +75,6 @@ export default function DeployPanel({ cwd }: Props) {
     });
     return cleanup;
   }, []);
-
-  // Detect project when cwd changes
-  useEffect(() => {
-    if (!cwd) return;
-    window.cozyPane.deploy.detectProject(cwd).then(p => {
-      setProject(p);
-      setAppName(sanitizeAppName(p.name));
-    }).catch(() => setProject(null));
-  }, [cwd]);
 
   // Load deployments when authenticated
   const loadDeployments = useCallback(() => {
@@ -99,28 +112,11 @@ export default function DeployPanel({ cwd }: Props) {
     setDeployments([]);
   }, []);
 
-  const handleDeploy = useCallback(async () => {
-    if (!project || deploying || !appName) return;
-    setDeploying(true);
-    setDeployError(null);
-    try {
-      const result = await window.cozyPane.deploy.start(cwd, appName);
-      setDeployments(prev => {
-        // Replace if same appName, otherwise prepend
-        const existing = prev.findIndex(d => d.appName === result.appName);
-        if (existing >= 0) {
-          const next = [...prev];
-          next[existing] = result;
-          return next;
-        }
-        return [result, ...prev];
-      });
-    } catch (err: any) {
-      setDeployError(err.message || 'Deploy failed');
-    } finally {
-      setDeploying(false);
-    }
-  }, [cwd, project, deploying, appName]);
+  const handleDeploy = useCallback(() => {
+    // Send "cozydeploy" command to Claude Code in the terminal.
+    // Claude picks this up and uses the cozypane_deploy MCP tool.
+    onTerminalCommand(`cozydeploy ${cwd}`);
+  }, [cwd, onTerminalCommand]);
 
   const handleRedeploy = useCallback(async (id: string) => {
     try {
@@ -190,9 +186,6 @@ export default function DeployPanel({ cwd }: Props) {
     );
   }
 
-  const subdomain = appName ? `${appName}-${auth.username}` : '';
-  const canDeploy = !deploying && project && project.type !== 'unknown' && appName.length >= 2;
-
   return (
     <div className="deploy-panel" style={panelStyle}>
       {/* User info */}
@@ -209,40 +202,79 @@ export default function DeployPanel({ cwd }: Props) {
       {/* Deploy current project */}
       <div style={sectionStyle}>
         <div style={{ fontSize: '0.8em', color: 'var(--text-secondary, #888)', marginBottom: '0.4em' }}>
-          Current project {project ? `(${project.type})` : ''}
+          Current project
+        </div>
+        <div style={{ fontSize: '0.88em', marginBottom: '0.5em', color: 'var(--text-primary, #e0e0e0)' }}>
+          {cwd.split('/').pop() || cwd}
         </div>
 
-        {/* Editable app name */}
-        <div style={{ marginBottom: '0.5em' }}>
-          <input
-            type="text"
-            value={appName}
-            onChange={e => setAppName(sanitizeAppName(e.target.value))}
-            placeholder="app-name"
-            spellCheck={false}
-            style={inputStyle}
-          />
-        </div>
-
-        {/* Subdomain preview */}
-        {subdomain && (
-          <div style={{ fontSize: '0.78em', color: 'var(--text-secondary, #888)', marginBottom: '0.5em' }}>
-            {subdomain}.cozypane.com
+        {/* Cozy Mode toggle */}
+        <div style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          marginBottom: '0.6em',
+          padding: '0.4em 0.5em',
+          borderRadius: 6,
+          border: `1px solid ${cozyMode ? 'var(--accent, #7c6fe0)44' : 'var(--border, #2a2b3e)'}`,
+          backgroundColor: cozyMode ? 'var(--accent, #7c6fe0)11' : 'transparent',
+        }}>
+          <div>
+            <div style={{ fontSize: '0.84em', fontWeight: 600, color: 'var(--text-primary, #e0e0e0)' }}>
+              Cozy Mode
+            </div>
+            <div style={{ fontSize: '0.72em', color: 'var(--text-secondary, #777)', marginTop: '0.1em' }}>
+              {cozyMode ? 'Claude builds deployment-ready' : 'Claude works freely'}
+            </div>
           </div>
-        )}
+          <button
+            onClick={handleCozyModeToggle}
+            disabled={cozyModeLoading}
+            style={{
+              width: 38,
+              height: 20,
+              borderRadius: 10,
+              border: 'none',
+              backgroundColor: cozyMode ? 'var(--accent, #7c6fe0)' : 'var(--border, #3a3b4e)',
+              cursor: cozyModeLoading ? 'wait' : 'pointer',
+              position: 'relative',
+              transition: 'background-color 0.2s',
+              flexShrink: 0,
+            }}
+          >
+            <div style={{
+              width: 16,
+              height: 16,
+              borderRadius: '50%',
+              backgroundColor: '#fff',
+              position: 'absolute',
+              top: 2,
+              left: cozyMode ? 20 : 2,
+              transition: 'left 0.2s',
+            }} />
+          </button>
+        </div>
 
         <button
           onClick={handleDeploy}
-          disabled={!canDeploy}
+          disabled={claudeRunning}
           style={{
             ...primaryBtnStyle,
-            opacity: canDeploy ? 1 : 0.5,
-            cursor: canDeploy ? 'pointer' : 'not-allowed',
+            opacity: claudeRunning ? 0.5 : 1,
+            cursor: claudeRunning ? 'not-allowed' : 'pointer',
             width: '100%',
           }}
         >
-          {deploying ? 'Deploying...' : 'Deploy'}
+          {claudeRunning ? 'Claude is busy...' : 'CozyDeploy'}
         </button>
+        {claudeRunning && (
+          <div style={{ fontSize: '0.78em', color: 'var(--text-secondary, #888)', marginTop: '0.3em', textAlign: 'center' }}>
+            Wait for Claude to finish, or open a new terminal tab
+          </div>
+        )}
+        <div style={{ fontSize: '0.78em', color: 'var(--text-secondary, #666)', marginTop: '0.3em', textAlign: 'center' }}>
+          Claude will analyze your project and deploy it
+        </div>
         {deployError && (
           <div style={{ color: '#e74c3c', fontSize: '0.82em', marginTop: '0.4em' }}>{deployError}</div>
         )}
@@ -250,11 +282,14 @@ export default function DeployPanel({ cwd }: Props) {
 
       {/* Deployments list */}
       <div style={{ flex: 1, overflowY: 'auto' }}>
-        {deployments.length > 0 && (
-          <div style={{ fontSize: '0.8em', color: 'var(--text-secondary, #888)', padding: '0.5em 0.75em 0.25em' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0.5em 0.75em 0.25em' }}>
+          <span style={{ fontSize: '0.8em', color: 'var(--text-secondary, #888)' }}>
             Your deployments
-          </div>
-        )}
+          </span>
+          <button onClick={loadDeployments} style={tinyBtnStyle} title="Refresh">
+            Refresh
+          </button>
+        </div>
         {deployments.length === 0 && (
           <div style={{ color: 'var(--text-secondary, #666)', fontSize: '0.85em', textAlign: 'center', padding: '1.5em 0' }}>
             No deployments yet
@@ -292,9 +327,22 @@ export default function DeployPanel({ cwd }: Props) {
                 </a>
               )}
 
-              {/* Tier + type */}
+              {/* Tier + type + database */}
               <div style={{ fontSize: '0.75em', color: 'var(--text-secondary, #777)', marginBottom: '0.4em' }}>
                 {dep.projectType} &middot; {dep.tier}
+                {dep.hasDatabase && (
+                  <span style={{
+                    marginLeft: '0.4em',
+                    padding: '1px 5px',
+                    borderRadius: 3,
+                    backgroundColor: '#3b82f622',
+                    color: '#3b82f6',
+                    fontSize: '0.92em',
+                    fontWeight: 600,
+                  }}>
+                    PostgreSQL
+                  </span>
+                )}
               </div>
 
               {/* Actions */}
@@ -324,6 +372,33 @@ export default function DeployPanel({ cwd }: Props) {
             </div>
           ))}
         </div>
+
+        {/* Databases section */}
+        {deployments.some(d => d.hasDatabase) && (
+          <>
+            <div style={{ padding: '0.5em 0.75em 0.25em' }}>
+              <span style={{ fontSize: '0.8em', color: 'var(--text-secondary, #888)' }}>
+                Your databases
+              </span>
+            </div>
+            <div style={{ padding: '0 0.75em 0.5em' }}>
+              {deployments.filter(d => d.hasDatabase).map(dep => (
+                <div key={`db-${dep.id}`} style={{
+                  ...deploymentCardStyle,
+                  borderLeft: '3px solid #3b82f6',
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.4em', marginBottom: '0.2em' }}>
+                    <span style={{ fontSize: '0.78em', color: '#3b82f6', fontWeight: 600 }}>PostgreSQL</span>
+                    <span style={{ fontSize: '0.78em', color: 'var(--text-secondary, #777)' }}>&middot; {dep.appName}</span>
+                  </div>
+                  <div style={{ fontSize: '0.75em', color: 'var(--text-secondary, #666)' }}>
+                    Managed by CozyPane &middot; Auto-provisioned with deployment
+                  </div>
+                </div>
+              ))}
+            </div>
+          </>
+        )}
       </div>
     </div>
   );
@@ -354,19 +429,6 @@ const headerStyle: React.CSSProperties = {
 const sectionStyle: React.CSSProperties = {
   padding: '0.75em',
   borderBottom: '1px solid var(--border, #2a2b3e)',
-};
-
-const inputStyle: React.CSSProperties = {
-  width: '100%',
-  padding: '0.4em 0.6em',
-  borderRadius: 4,
-  border: '1px solid var(--border, #2a2b3e)',
-  backgroundColor: 'var(--bg-primary, #1a1b2e)',
-  color: 'var(--text-primary, #e0e0e0)',
-  fontSize: '0.88em',
-  fontFamily: 'inherit',
-  outline: 'none',
-  boxSizing: 'border-box',
 };
 
 const primaryBtnStyle: React.CSSProperties = {

@@ -9,6 +9,8 @@ import SessionSummary from './components/SessionSummary';
 import Settings from './components/Settings';
 import GitPanel from './components/GitPanel';
 import DeployPanel from './components/DeployPanel';
+import TabLauncher from './components/TabLauncher';
+import { enableCozyMode } from './lib/cozyMode';
 
 import CommandPalette from './components/CommandPalette';
 import type { PaletteAction } from './components/CommandPalette';
@@ -42,10 +44,10 @@ interface DiffState {
   after: string;
 }
 
-function makeTerminalTab(cwd: string, counter: number): TerminalTab {
+function makeTerminalTab(cwd: string, counter: number, launched = false): TerminalTab {
   const id = `tab-${Date.now()}-${counter}`;
   const label = `Terminal ${counter}`;
-  return { id, ptyId: null, label, cwd, aiAction: 'idle', costInfo: { cost: null, tokens: null }, conversationTurns: [] };
+  return { id, ptyId: null, label, cwd, aiAction: 'idle', costInfo: { cost: null, tokens: null }, conversationTurns: [], launched };
 }
 
 export default function App() {
@@ -83,8 +85,7 @@ export default function App() {
 
   // Multi-terminal state
   const [terminalTabs, setTerminalTabs] = useState<TerminalTab[]>(() => {
-    const savedCwd = loadPersisted<string>('cwd', '');
-    return [makeTerminalTab(savedCwd, terminalCounterRef.current++)];
+    return [makeTerminalTab('', terminalCounterRef.current++)];
   });
   const [activeTerminalId, setActiveTerminalId] = useState(terminalTabs[0].id);
   const [splitTerminalId, setSplitTerminalId] = useState<string | null>(null);
@@ -225,6 +226,38 @@ export default function App() {
       return id;
     });
   }, []);
+
+  // Launcher handlers — called when user picks an option on the new tab launcher
+  const launchOpenProject = useCallback(async (cwd: string, cozyMode: boolean) => {
+    if (cozyMode) {
+      await enableCozyMode(cwd);
+    }
+    updateTab(activeTerminalIdRef.current, {
+      cwd,
+      launched: true,
+      autoCommand: 'claude --dangerously-skip-permissions',
+    });
+  }, [updateTab]);
+
+  const launchCreateProject = useCallback(async (fullPath: string, _projectName: string, cozyMode: boolean) => {
+    await window.cozyPane.fs.mkdir(fullPath);
+    if (cozyMode) {
+      await enableCozyMode(fullPath);
+    }
+    updateTab(activeTerminalIdRef.current, {
+      cwd: fullPath,
+      launched: true,
+      autoCommand: 'claude --dangerously-skip-permissions',
+    });
+  }, [updateTab]);
+
+  const launchNewTerminal = useCallback(async () => {
+    const home = await window.cozyPane.fs.homedir();
+    updateTab(activeTerminalIdRef.current, {
+      cwd: home,
+      launched: true,
+    });
+  }, [updateTab]);
 
   const handleFileSelect = useCallback((filePath: string, fileName: string) => {
     setDiffState(null);
@@ -518,7 +551,7 @@ export default function App() {
     }
 
     if (rightPanelTab === 'deploy') {
-      return <DeployPanel cwd={cwd} />;
+      return <DeployPanel cwd={cwd} onTerminalCommand={sendTerminalCommand} claudeRunning={aiAction !== 'idle'} />;
     }
 
     // Preview tab — show diff viewer or editor
@@ -675,6 +708,22 @@ export default function App() {
               const isActive = tab.id === activeTerminalId;
               const isSplit = tab.id === splitTerminalId;
               const visible = isActive || isSplit;
+
+              // Show launcher for unlaunched tabs
+              if (!tab.launched && isActive) {
+                return (
+                  <div key={tab.id} className="terminal-instance" style={{ display: 'flex', flex: 1 }}>
+                    <TabLauncher
+                      onOpenProject={launchOpenProject}
+                      onCreateProject={launchCreateProject}
+                      onNewTerminal={launchNewTerminal}
+                    />
+                  </div>
+                );
+              }
+
+              if (!tab.launched) return null;
+
               return (
                 <div
                   key={tab.id}
@@ -691,6 +740,7 @@ export default function App() {
                     cwd={tab.cwd}
                     isVisible={visible}
                     fontSize={terminalFontSize}
+                    autoCommand={tab.autoCommand}
                     onTerminalReady={(ptyId) => updateTab(tab.id, { ptyId })}
                     onCwdChange={(newCwd) => updateTab(tab.id, { cwd: newCwd })}
                     onActionChange={(action) => updateTab(tab.id, { aiAction: action })}

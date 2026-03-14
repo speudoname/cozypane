@@ -26,6 +26,8 @@ contextBridge.exposeInMainWorld('cozyPane', {
     readBinary: (filePath: string) => ipcRenderer.invoke('fs:readBinary', filePath),
     homedir: () => ipcRenderer.invoke('fs:homedir'),
     pickFile: () => ipcRenderer.invoke('fs:pickFile'),
+    pickDirectory: () => ipcRenderer.invoke('fs:pickDirectory'),
+    mkdir: (dirPath: string) => ipcRenderer.invoke('fs:mkdir', dirPath),
     saveClipboardImage: () => ipcRenderer.invoke('fs:saveClipboardImage'),
     clipboardFilePaths: () => ipcRenderer.invoke('fs:clipboardFilePaths'),
     getSlashCommands: (cwd?: string) => ipcRenderer.invoke('fs:getSlashCommands', cwd),
