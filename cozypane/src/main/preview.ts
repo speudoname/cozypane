@@ -393,6 +393,29 @@ Respond ONLY with valid JSON (no markdown):
   }
 }
 
+/**
+ * Probe multiple ports and prefer the one serving HTML (frontend) over JSON (API).
+ */
+async function selectBestPort(ports: number[]): Promise<number> {
+  if (ports.length <= 1) return ports[0] || 0;
+
+  const results = await Promise.all(ports.map(port =>
+    new Promise<{ port: number; isHtml: boolean }>(resolve => {
+      const req = http.get(`http://127.0.0.1:${port}/`, { timeout: 2000 }, res => {
+        const ct = res.headers['content-type'] || '';
+        res.destroy();
+        resolve({ port, isHtml: ct.includes('text/html') });
+      });
+      req.on('error', () => resolve({ port, isHtml: false }));
+      req.on('timeout', () => { req.destroy(); resolve({ port, isHtml: false }); });
+    })
+  ));
+
+  const htmlPorts = results.filter(r => r.isHtml);
+  if (htmlPorts.length > 0) return htmlPorts[0].port;
+  return ports[0];
+}
+
 export function registerPreviewHandlers() {
   ipcMain.handle('preview:scanPorts', async () => {
     const ports = await scanDevPorts();
@@ -420,6 +443,11 @@ export function registerPreviewHandlers() {
   ipcMain.handle('preview:scanPortsForCwd', async (_event, cwd: string) => {
     const ports = await scanPortsForCwd(cwd);
     return { ports };
+  });
+
+  // Smart port selection (prefer HTML-serving ports)
+  ipcMain.handle('preview:selectBestPort', async (_event, ports: number[]) => {
+    return await selectBestPort(ports);
   });
 
   // URL persistence

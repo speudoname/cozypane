@@ -76,7 +76,6 @@ export default function App() {
     const valid: RightPanelTab[] = ['preview', 'activity', 'summary', 'settings', 'git', 'deploy'];
     return valid.includes(saved as RightPanelTab) ? (saved as RightPanelTab) : 'preview';
   });
-  const [previewUrl, setPreviewUrl] = useState<string>('');
   const [previewLocalUrl, setPreviewLocalUrl] = useState<string>('');
   const [previewProdUrl, setPreviewProdUrl] = useState<string>('');
   const [previewOpen, setPreviewOpen] = useState(() => loadPersisted('previewOpen', false));
@@ -87,6 +86,7 @@ export default function App() {
   const [summarizing, setSummarizing] = useState(false);
   const [gitBranch, setGitBranch] = useState('');
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const [deployments, setDeployments] = useState<Deployment[]>([]);
 
   // Per-panel zoom levels (font sizes)
   const [terminalFontSize, setTerminalFontSize] = useState(() => loadPersisted('terminalFontSize', 13));
@@ -521,30 +521,7 @@ export default function App() {
     return () => window.removeEventListener('cozyPane:deploy', handler);
   }, []);
 
-  const openPreview = useCallback((url: string, type?: 'local' | 'production') => {
-    if (type === 'production') {
-      setPreviewProdUrl(url);
-      updateTab(activeTerminalIdRef.current, { previewProdUrl: url });
-    } else {
-      setPreviewLocalUrl(url);
-      updateTab(activeTerminalIdRef.current, { previewLocalUrl: url });
-    }
-    setPreviewUrl(url);
-    setPreviewOpen(true);
-  }, [updateTab]);
-
-  // Listen for preview events (from terminal URL detection)
-  useEffect(() => {
-    const handler = (e: CustomEvent) => {
-      if (!e.detail?.url) return;
-      // Only accept events from the active terminal to prevent cross-tab URL bleed
-      const activeTab = terminalTabsRef.current.find(t => t.id === activeTerminalIdRef.current);
-      if (e.detail.ptyId && activeTab?.ptyId && e.detail.ptyId !== activeTab.ptyId) return;
-      openPreview(e.detail.url, e.detail.type);
-    };
-    window.addEventListener('cozyPane:openPreview', handler as any);
-    return () => window.removeEventListener('cozyPane:openPreview', handler as any);
-  }, [openPreview]);
+  // openPreview removed — URL detection now goes through Terminal callbacks directly
 
   const sendTerminalCommand = useCallback((command: string) => {
     const tab = terminalTabsRef.current.find(t => t.id === activeTerminalIdRef.current);
@@ -626,7 +603,7 @@ export default function App() {
     }
 
     if (rightPanelTab === 'deploy') {
-      return <DeployPanel cwd={cwd} onTerminalCommand={sendTerminalCommand} claudeRunning={aiAction !== 'idle'} />;
+      return <DeployPanel cwd={cwd} onTerminalCommand={sendTerminalCommand} claudeRunning={aiAction !== 'idle'} onDeploymentsLoaded={setDeployments} />;
     }
 
     // Preview tab — show diff viewer or editor
@@ -829,6 +806,20 @@ export default function App() {
                     onActionChange={(action) => updateTab(tab.id, { aiAction: action })}
                     onCostChange={(cost) => updateTab(tab.id, { costInfo: cost })}
                     onConversationUpdate={(turns) => updateTab(tab.id, { conversationTurns: turns })}
+                    onLocalUrlDetected={(url) => {
+                      updateTab(tab.id, { previewLocalUrl: url });
+                      if (tab.id === activeTerminalIdRef.current) {
+                        setPreviewLocalUrl(url);
+                        setPreviewOpen(true);
+                      }
+                    }}
+                    onProdUrlDetected={(url) => {
+                      updateTab(tab.id, { previewProdUrl: url });
+                      if (tab.id === activeTerminalIdRef.current) {
+                        setPreviewProdUrl(url);
+                        setPreviewOpen(true);
+                      }
+                    }}
                   />
                 </div>
               );
@@ -893,6 +884,7 @@ export default function App() {
                 productionUrl={previewProdUrl}
                 cwd={cwd}
                 onSendToTerminal={sendTerminalCommand}
+                deployments={deployments}
               />
             </div>
           </>

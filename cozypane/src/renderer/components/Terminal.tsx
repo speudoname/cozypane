@@ -17,9 +17,11 @@ interface Props {
   onCostChange?: (cost: CostInfo) => void;
   onConversationUpdate?: (turns: ConversationTurn[]) => void;
   onTerminalReady?: (id: string) => void;
+  onLocalUrlDetected?: (url: string) => void;
+  onProdUrlDetected?: (url: string) => void;
 }
 
-export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, autoCommand, onCwdChange, onActionChange, onCostChange, onConversationUpdate, onTerminalReady }: Props) {
+export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, autoCommand, onCwdChange, onActionChange, onCostChange, onConversationUpdate, onTerminalReady, onLocalUrlDetected, onProdUrlDetected }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<XTerm | null>(null);
   const [termDragOver, setTermDragOver] = useState(false);
@@ -45,6 +47,10 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, au
   onConversationUpdateRef.current = onConversationUpdate;
   const onTerminalReadyRef = useRef(onTerminalReady);
   onTerminalReadyRef.current = onTerminalReady;
+  const onLocalUrlDetectedRef = useRef(onLocalUrlDetected);
+  onLocalUrlDetectedRef.current = onLocalUrlDetected;
+  const onProdUrlDetectedRef = useRef(onProdUrlDetected);
+  onProdUrlDetectedRef.current = onProdUrlDetected;
   const conversationRef = useRef<ConversationTurn[]>([]);
   const assistantBufferRef = useRef('');
   const isVisibleRef = useRef(isVisible);
@@ -344,7 +350,7 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, au
           const deployUrl = detectDeployUrl(rollingBufferRef.current);
           if (deployUrl && deployUrl !== lastDeployUrlRef.current) {
             lastDeployUrlRef.current = deployUrl;
-            window.dispatchEvent(new CustomEvent('cozyPane:openPreview', { detail: { url: deployUrl, type: 'production', ptyId: terminalIdRef.current } }));
+            onProdUrlDetectedRef.current?.(deployUrl);
           }
         }
 
@@ -352,7 +358,7 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, au
         const localUrl = detectLocalUrl(rollingBufferRef.current);
         if (localUrl && localUrl !== lastLocalUrlRef.current) {
           lastLocalUrlRef.current = localUrl;
-          window.dispatchEvent(new CustomEvent('cozyPane:openPreview', { detail: { url: localUrl, type: 'local', ptyId: terminalIdRef.current } }));
+          onLocalUrlDetectedRef.current?.(localUrl);
         }
       }, 400);
     });

@@ -71,6 +71,7 @@ contextBridge.exposeInMainWorld('cozyPane', {
     serveStatic: (cwd: string) => ipcRenderer.invoke('preview:serveStatic', cwd),
     stopStatic: (cwd: string) => ipcRenderer.invoke('preview:stopStatic', cwd),
     scanPortsForCwd: (cwd: string) => ipcRenderer.invoke('preview:scanPortsForCwd', cwd),
+    selectBestPort: (ports: number[]) => ipcRenderer.invoke('preview:selectBestPort', ports),
     getStoredUrl: (cwd: string) => ipcRenderer.invoke('preview:getStoredUrl', cwd),
     storeUrl: (cwd: string, data: { productionUrl?: string; lastDevCommand?: string }) => ipcRenderer.invoke('preview:storeUrl', cwd, data),
   },

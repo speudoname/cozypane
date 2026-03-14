@@ -5,6 +5,7 @@ interface Props {
   cwd: string;
   onTerminalCommand: (command: string) => void;
   claudeRunning: boolean;
+  onDeploymentsLoaded?: (deployments: Deployment[]) => void;
 }
 
 const STATUS_COLORS: Record<string, string> = {
@@ -15,7 +16,7 @@ const STATUS_COLORS: Record<string, string> = {
   failed: '#e74c3c',
 };
 
-export default function DeployPanel({ cwd, onTerminalCommand, claudeRunning }: Props) {
+export default function DeployPanel({ cwd, onTerminalCommand, claudeRunning, onDeploymentsLoaded }: Props) {
   const [auth, setAuth] = useState<DeployAuth>({ authenticated: false });
   const [loading, setLoading] = useState(true);
   const [deployments, setDeployments] = useState<Deployment[]>([]);
@@ -77,10 +78,17 @@ export default function DeployPanel({ cwd, onTerminalCommand, claudeRunning }: P
   }, []);
 
   // Load deployments when authenticated
+  const onDeploymentsLoadedRef = useRef(onDeploymentsLoaded);
+  onDeploymentsLoadedRef.current = onDeploymentsLoaded;
+
   const loadDeployments = useCallback(() => {
     if (!auth.authenticated) return;
     window.cozyPane.deploy.list()
-      .then((list: Deployment[]) => setDeployments(Array.isArray(list) ? list : []))
+      .then((list: Deployment[]) => {
+        const deployments = Array.isArray(list) ? list : [];
+        setDeployments(deployments);
+        onDeploymentsLoadedRef.current?.(deployments);
+      })
       .catch(() => setDeployments([]));
   }, [auth.authenticated]);
 

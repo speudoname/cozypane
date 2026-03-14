@@ -28,6 +28,7 @@ interface Props {
   productionUrl?: string;
   cwd: string;
   onSendToTerminal: (command: string) => void;
+  deployments?: Deployment[];
 }
 
 type DeviceMode = 'desktop' | 'tablet' | 'phone';
@@ -47,7 +48,7 @@ declare global {
   }
 }
 
-export default function Preview({ localUrl, productionUrl, cwd, onSendToTerminal }: Props) {
+export default function Preview({ localUrl, productionUrl, cwd, onSendToTerminal, deployments = [] }: Props) {
   const [device, setDevice] = useState<DeviceMode>('desktop');
   const [autoFix, setAutoFix] = useState(false);
   const [errors, setErrors] = useState<PreviewError[]>([]);
@@ -65,6 +66,11 @@ export default function Preview({ localUrl, productionUrl, cwd, onSendToTerminal
   const [analyzing, setAnalyzing] = useState(false);
   const [staticUrl, setStaticUrl] = useState<string | null>(null);
   const [showSubPicker, setShowSubPicker] = useState(false);
+  const [selectedPort, setSelectedPort] = useState<number | null>(null);
+
+  // Deployment matching state
+  const [matchedDeployments, setMatchedDeployments] = useState<Deployment[]>([]);
+  const [selectedDeploymentUrl, setSelectedDeploymentUrl] = useState<string | null>(null);
 
   const localWebviewRef = useRef<any>(null);
   const prodWebviewRef = useRef<any>(null);
@@ -74,9 +80,9 @@ export default function Preview({ localUrl, productionUrl, cwd, onSendToTerminal
   const staticCwdRef = useRef<string>('');
 
   // Determine the actual URLs to show
-  const effectiveLocalUrl = localUrl || staticUrl || (detectedPorts.length > 0 ? `http://localhost:${detectedPorts[0]}` : manualUrl || null);
-  // Prefer locally-detected production URLs over the prop (which may be stale from a tab switch)
-  const effectiveProdUrl = projectInfo?.productionUrl || aiAnalysis?.productionUrl || productionUrl || null;
+  const effectiveLocalUrl = localUrl || staticUrl || (selectedPort ? `http://localhost:${selectedPort}` : (detectedPorts.length > 0 ? `http://localhost:${detectedPorts[0]}` : null)) || manualUrl || null;
+  // Prefer deployment-matched URLs, then locally-detected, then prop
+  const effectiveProdUrl = selectedDeploymentUrl || projectInfo?.productionUrl || aiAnalysis?.productionUrl || productionUrl || null;
   const effectiveDevCommand = projectInfo?.devCommand || aiAnalysis?.devCommand || null;
 
   // Auto-switch view mode based on available URLs
@@ -109,15 +115,24 @@ export default function Preview({ localUrl, productionUrl, cwd, onSendToTerminal
     };
   }, []);
 
-  // Persist production URLs when they appear — only persist URLs that were
-  // actually detected for THIS cwd (from projectInfo or aiAnalysis), never
-  // the prop which may be stale from a previous tab during transitions.
+  // Match deployments to current folder name
   useEffect(() => {
-    const detectedProdUrl = projectInfo?.productionUrl || aiAnalysis?.productionUrl;
-    if (detectedProdUrl && cwd) {
-      window.cozyPane.preview.storeUrl(cwd, { productionUrl: detectedProdUrl }).catch(() => {});
+    if (!cwd || deployments.length === 0) {
+      setMatchedDeployments([]);
+      setSelectedDeploymentUrl(null);
+      return;
     }
-  }, [projectInfo?.productionUrl, aiAnalysis?.productionUrl, cwd]);
+    const folderName = cwd.split('/').pop()?.toLowerCase() || '';
+    const running = deployments.filter(d => d.status === 'running');
+    const matched = running.filter(d =>
+      d.appName.toLowerCase().includes(folderName) ||
+      folderName.includes(d.appName.toLowerCase().split('-')[0])
+    );
+    setMatchedDeployments(matched);
+    // Auto-select: prefer frontend-looking ones (no "api", "backend", "server" in name)
+    const frontend = matched.find(d => !/(api|backend|server)/.test(d.appName));
+    setSelectedDeploymentUrl((frontend || matched[0])?.url || null);
+  }, [cwd, deployments]);
 
   // === CORE: Seamless auto-start flow when cwd changes ===
   useEffect(() => {
@@ -139,6 +154,7 @@ export default function Preview({ localUrl, productionUrl, cwd, onSendToTerminal
     setStatusMessage('Detecting project...');
     setStaticUrl(null);
     setShowSubPicker(false);
+    setSelectedPort(null);
     autoStartedForCwdRef.current = '';
     if (pollIntervalRef.current) {
       clearInterval(pollIntervalRef.current);
@@ -149,11 +165,10 @@ export default function Preview({ localUrl, productionUrl, cwd, onSendToTerminal
 
     (async () => {
       try {
-        // Step 1: Scan ports (cwd-aware) + detect project + check stored URLs in parallel
-        const [portsResult, projectResult, storedUrl] = await Promise.all([
+        // Step 1: Scan ports (cwd-aware) + detect project in parallel
+        const [portsResult, projectResult] = await Promise.all([
           window.cozyPane.preview.scanPortsForCwd(cwd),
           window.cozyPane.preview.detectProject(cwd),
-          window.cozyPane.preview.getStoredUrl(cwd),
         ]);
 
         if (cancelled) return;
@@ -162,13 +177,16 @@ export default function Preview({ localUrl, productionUrl, cwd, onSendToTerminal
         setDetectedPorts(ports);
         setProjectInfo(projectResult);
 
-        // Restore stored production URL if not already present
-        if (storedUrl?.productionUrl && !productionUrl && !projectResult?.productionUrl) {
-          setProjectInfo((prev: ProjectInfo | null) => prev ? { ...prev, productionUrl: storedUrl.productionUrl } : prev);
-        }
-
         // Step 2: If a server is already running, we're done
         if (ports.length > 0 || localUrl) {
+          // Smart port selection: prefer HTML-serving ports over API ports
+          if (ports.length > 1) {
+            window.cozyPane.preview.selectBestPort(ports).then((best: number) => {
+              if (!cancelled && best) setSelectedPort(best);
+            });
+          } else if (ports.length === 1) {
+            setSelectedPort(ports[0]);
+          }
           setServerState('ready');
           setStatusMessage('');
           return;
@@ -225,6 +243,13 @@ export default function Preview({ localUrl, productionUrl, cwd, onSendToTerminal
               const newPorts = result.ports || [];
               if (newPorts.length > 0) {
                 setDetectedPorts(newPorts);
+                if (newPorts.length > 1) {
+                  window.cozyPane.preview.selectBestPort(newPorts).then((best: number) => {
+                    if (best) setSelectedPort(best);
+                  });
+                } else {
+                  setSelectedPort(newPorts[0]);
+                }
                 setServerState('ready');
                 setStatusMessage('');
                 if (pollIntervalRef.current) {
@@ -812,6 +837,27 @@ export default function Preview({ localUrl, productionUrl, cwd, onSendToTerminal
             Prod
             {effectiveProdUrl && <span style={dotStyle('#5cb8f0')} />}
           </button>
+          {matchedDeployments.length > 1 && (
+            <select
+              value={selectedDeploymentUrl || ''}
+              onChange={e => setSelectedDeploymentUrl(e.target.value)}
+              style={{
+                padding: '0.15em 0.3em',
+                borderRadius: 3,
+                border: '1px solid var(--border, #2a2b3e)',
+                backgroundColor: 'var(--bg-primary, #1a1b2e)',
+                color: 'var(--text-secondary, #aaa)',
+                fontSize: '0.72em',
+                cursor: 'pointer',
+                maxWidth: 140,
+              }}
+              title="Switch deployment"
+            >
+              {matchedDeployments.map(d => (
+                <option key={d.id} value={d.url}>{d.appName}</option>
+              ))}
+            </select>
+          )}
           <button
             onClick={() => setViewMode('split')}
             style={{ ...modeBtnStyle, ...(viewMode === 'split' ? modeActiveStyle : {}) }}
@@ -880,6 +926,22 @@ export default function Preview({ localUrl, productionUrl, cwd, onSendToTerminal
           <span style={{ ...dotStyle('#5ce0a8'), position: 'relative', top: 0 }} />
           <span style={{ fontFamily: 'monospace' }}>{effectiveLocalUrl}</span>
           {staticUrl && <span style={{ fontSize: '0.9em', color: 'var(--text-secondary, #666)' }}>(static)</span>}
+          {detectedPorts.length > 1 && detectedPorts.map(p => (
+            <button
+              key={p}
+              onClick={() => setSelectedPort(p)}
+              style={{
+                ...portBtnStyle,
+                marginLeft: '0.2em',
+                padding: '0 4px',
+                fontSize: '0.85em',
+                backgroundColor: selectedPort === p ? 'var(--accent, #7c6fe0)' : 'transparent',
+                color: selectedPort === p ? '#fff' : 'var(--accent, #7c6fe0)',
+              }}
+            >
+              :{p}
+            </button>
+          ))}
           {effectiveProdUrl && (
             <>
               <span style={{ margin: '0 0.3em', color: 'var(--border, #3a3b4e)' }}>|</span>
