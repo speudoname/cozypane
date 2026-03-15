@@ -9,11 +9,11 @@ interface Props {
 }
 
 const STATUS_COLORS: Record<string, string> = {
-  building: '#e6b800',
-  running: '#4caf50',
-  stopped: '#e74c3c',
-  error: '#e74c3c',
-  failed: '#e74c3c',
+  building: 'var(--warning, #e6b800)',
+  running: 'var(--success, #4caf50)',
+  stopped: 'var(--danger, #e74c3c)',
+  error: 'var(--danger, #e74c3c)',
+  failed: 'var(--danger, #e74c3c)',
 };
 
 export default function DeployPanel({ cwd, onTerminalCommand, claudeRunning, onDeploymentsLoaded }: Props) {
@@ -64,7 +64,7 @@ export default function DeployPanel({ cwd, onTerminalCommand, claudeRunning, onD
   // Listen for protocol callback auth success
   useEffect(() => {
     const cleanup = window.cozyPane.deploy.onProtocolCallback(() => {
-      window.cozyPane.deploy.getAuth().then(setAuth);
+      window.cozyPane.deploy.getAuth().then(setAuth).catch(() => {});
     });
     return cleanup;
   }, []);
@@ -72,7 +72,15 @@ export default function DeployPanel({ cwd, onTerminalCommand, claudeRunning, onD
   // Listen for auth success from protocol handler
   useEffect(() => {
     const cleanup = window.cozyPane.onMenuAction('deploy:auth-success', () => {
-      window.cozyPane.deploy.getAuth().then(setAuth);
+      window.cozyPane.deploy.getAuth().then(setAuth).catch(() => {});
+    });
+    return cleanup;
+  }, []);
+
+  // Listen for auth error from protocol handler
+  useEffect(() => {
+    const cleanup = window.cozyPane.onMenuAction('deploy:auth-error', () => {
+      setDeployError('Authentication failed. Please try again.');
     });
     return cleanup;
   }, []);
@@ -84,7 +92,8 @@ export default function DeployPanel({ cwd, onTerminalCommand, claudeRunning, onD
   const loadDeployments = useCallback(() => {
     if (!auth.authenticated) return;
     window.cozyPane.deploy.list()
-      .then((list: Deployment[]) => {
+      .then((list: any) => {
+        if (list?.error) { setDeployments([]); return; }
         const deployments = Array.isArray(list) ? list : [];
         setDeployments(deployments);
         onDeploymentsLoadedRef.current?.(deployments);
@@ -167,6 +176,37 @@ export default function DeployPanel({ cwd, onTerminalCommand, claudeRunning, onD
     return (
       <div className="deploy-panel" style={panelStyle}>
         <div style={centerStyle}>Loading...</div>
+      </div>
+    );
+  }
+
+  // Show Cozy Mode prompt when deploy features are not enabled
+  if (!cozyMode) {
+    return (
+      <div className="deploy-panel" style={panelStyle}>
+        <div style={headerStyle}>
+          <span style={{ fontWeight: 600, fontSize: '0.95em' }}>Deploy</span>
+        </div>
+        <div style={centerStyle}>
+          <div style={{ textAlign: 'center', padding: '2em 1em', maxWidth: 340 }}>
+            <p style={{ color: 'var(--text-primary, #e0e0e0)', marginBottom: '0.5em', fontSize: '0.95em', fontWeight: 600 }}>
+              Enable Cozy Mode to deploy
+            </p>
+            <p style={{ color: 'var(--text-secondary, #888)', marginBottom: '1.2em', fontSize: '0.82em', lineHeight: 1.5 }}>
+              Cozy Mode adds deployment guidelines to your project so Claude builds deploy-ready code and can use CozyPane Cloud.
+            </p>
+            <button
+              onClick={handleCozyModeToggle}
+              disabled={cozyModeLoading}
+              style={primaryBtnStyle}
+            >
+              {cozyModeLoading ? 'Enabling...' : 'Enable Cozy Mode'}
+            </button>
+            {deployError && (
+              <div style={{ color: '#e74c3c', fontSize: '0.82em', marginTop: '0.6em' }}>{deployError}</div>
+            )}
+          </div>
+        </div>
       </div>
     );
   }

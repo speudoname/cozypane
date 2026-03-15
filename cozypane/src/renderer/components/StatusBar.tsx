@@ -1,5 +1,5 @@
 import React from 'react';
-import type { AiAction, CostInfo } from '../lib/terminalAnalyzer';
+import type { AiAction } from '../lib/terminalAnalyzer';
 
 interface Props {
   cwd: string;
@@ -8,7 +8,6 @@ interface Props {
   panelsOpen: boolean;
   onTogglePanels: () => void;
   aiAction: AiAction;
-  costInfo: CostInfo;
   gitBranch?: string;
 }
 
@@ -22,7 +21,7 @@ function getActionDisplay(action: AiAction) {
   }
 }
 
-export default function StatusBar({ cwd, layoutMode, onToggleLayout, panelsOpen, onTogglePanels, aiAction, costInfo, gitBranch }: Props) {
+export default function StatusBar({ cwd, layoutMode, onToggleLayout, panelsOpen, onTogglePanels, aiAction, gitBranch }: Props) {
   const { label, dotClass } = getActionDisplay(aiAction);
 
   return (
@@ -38,12 +37,6 @@ export default function StatusBar({ cwd, layoutMode, onToggleLayout, panelsOpen,
         <div className="status-item status-branch">
           <span>*</span>
           <span>{gitBranch}</span>
-        </div>
-      )}
-      {(costInfo.cost || costInfo.tokens) && (
-        <div className="status-item status-cost">
-          {costInfo.cost && <span>{costInfo.cost}</span>}
-          {costInfo.tokens && <span>{costInfo.tokens}</span>}
         </div>
       )}
       <div style={{ flex: 1 }} />

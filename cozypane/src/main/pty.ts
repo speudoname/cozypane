@@ -1,13 +1,16 @@
 import { ipcMain, BrowserWindow } from 'electron';
-import { exec } from 'child_process';
+import { exec, execFile } from 'child_process';
+import { promisify } from 'util';
 import os from 'os';
 import fs from 'fs';
-import { getToken, API_BASE } from './deploy';
+
+const execFileAsync = promisify(execFile);
 
 const pty = require('node-pty');
 
 const ptyMap = new Map<string, { process: any; cwd: string }>();
 let nextId = 1;
+let getDeployEnv: () => Record<string, string> = () => ({});
 
 function getShell(): string {
   if (process.platform === 'win32') {
@@ -33,8 +36,7 @@ function createPty(getWindow: () => BrowserWindow | null, cwd?: string): { id: s
         TERM: 'xterm-256color',
         COLORTERM: 'truecolor',
         CLAUDECODE: '',
-        COZYPANE_DEPLOY_TOKEN: getToken(),
-        COZYPANE_API_URL: API_BASE,
+        ...getDeployEnv(),
       },
     });
 
@@ -77,32 +79,34 @@ function lsofCwd(targetPid: string): Promise<string | null> {
   });
 }
 
-function getCwdForPid(pid: number): Promise<string | null> {
+async function getCwdForPid(pid: number): Promise<string | null> {
   if (process.platform === 'linux') {
     return fs.promises.readlink(`/proc/${pid}/cwd`).catch(() => null);
   }
 
   // macOS: find the foreground shell process and get its cwd
-  return new Promise<string | null>((resolve) => {
-    exec(`/bin/ps -o pid= -ax -o ppid= | awk '$2 == ${pid} { print $1 }'`, { timeout: 3000 }, async (err, childOut) => {
-      const childPids = (childOut || '').trim().split('\n').filter(Boolean);
-      const targetPid = childPids.length > 0 ? childPids[childPids.length - 1].trim() : String(pid);
+  try {
+    const { stdout: childOut } = await execFileAsync('/bin/ps', ['-o', 'pid=', '-ax', '-o', 'ppid='], { timeout: 3000 });
+    const pidStr = String(pid);
+    const childPids = (childOut || '').trim().split('\n')
+      .map(line => line.trim().split(/\s+/))
+      .filter(parts => parts[1] === pidStr)
+      .map(parts => parts[0]);
+    const targetPid = childPids.length > 0 ? childPids[childPids.length - 1] : pidStr;
 
-      if (!/^\d+$/.test(targetPid)) { resolve(null); return; }
+    if (!/^\d+$/.test(targetPid)) return null;
 
-      const cwd = await lsofCwd(targetPid);
-      if (cwd) { resolve(cwd); return; }
-      // Fallback to parent pid if child lookup failed
-      if (targetPid !== String(pid)) {
-        resolve(await lsofCwd(String(pid)));
-      } else {
-        resolve(null);
-      }
-    });
-  });
+    const cwd = await lsofCwd(targetPid);
+    if (cwd) return cwd;
+    if (targetPid !== pidStr) return lsofCwd(pidStr);
+    return null;
+  } catch {
+    return null;
+  }
 }
 
-export function registerPtyHandlers(getWindow: () => BrowserWindow | null) {
+export function registerPtyHandlers(getWindow: () => BrowserWindow | null, envGetter?: () => Record<string, string>) {
+  if (envGetter) getDeployEnv = envGetter;
   ipcMain.on('terminal:write', (_event, id: string, data: string) => {
     const entry = ptyMap.get(id);
     if (entry) {

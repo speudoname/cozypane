@@ -3,9 +3,7 @@ import Sidebar from './components/Sidebar';
 import FilePreview from './components/FilePreview';
 import Terminal from './components/Terminal';
 import StatusBar from './components/StatusBar';
-import ActivityFeed from './components/ActivityFeed';
 import DiffViewer from './components/DiffViewer';
-import SessionSummary from './components/SessionSummary';
 import Settings from './components/Settings';
 import GitPanel from './components/GitPanel';
 import DeployPanel from './components/DeployPanel';
@@ -17,10 +15,10 @@ import CommandPalette from './components/CommandPalette';
 import type { PaletteAction } from './components/CommandPalette';
 import TerminalTabBar from './components/TerminalTabBar';
 import type { TerminalTab } from './components/TerminalTabBar';
-import type { AiAction, CostInfo } from './lib/terminalAnalyzer';
+import type { AiAction } from './lib/terminalAnalyzer';
 
 type LayoutMode = 'two-col' | 'three-col';
-type RightPanelTab = 'preview' | 'activity' | 'summary' | 'settings' | 'git' | 'deploy';
+type RightPanelTab = 'preview' | 'settings' | 'git' | 'deploy';
 
 function loadPersisted<T>(key: string, fallback: T): T {
   try {
@@ -48,7 +46,7 @@ interface DiffState {
 function makeTerminalTab(cwd: string, counter: number, launched = false): TerminalTab {
   const id = `tab-${Date.now()}-${counter}`;
   const label = `Terminal ${counter}`;
-  return { id, ptyId: null, label, cwd, aiAction: 'idle', costInfo: { cost: null, tokens: null }, conversationTurns: [], launched };
+  return { id, ptyId: null, label, cwd, aiAction: 'idle', launched };
 }
 
 export default function App() {
@@ -67,13 +65,11 @@ export default function App() {
   // Per-tab watcher state cache
   interface TabWatcherState {
     activityEvents: FileChangeEvent[];
-    summary: string | null;
   }
   const tabWatcherCache = useRef(new Map<string, TabWatcherState>());
   const [rightPanelTab, setRightPanelTab] = useState<RightPanelTab>(() => {
     const saved = loadPersisted<string>('rightPanelTab', 'preview');
-    // Migrate: 'browser' tab was removed, fall back to 'preview' (editor)
-    const valid: RightPanelTab[] = ['preview', 'activity', 'summary', 'settings', 'git', 'deploy'];
+    const valid: RightPanelTab[] = ['preview', 'settings', 'git', 'deploy'];
     return valid.includes(saved as RightPanelTab) ? (saved as RightPanelTab) : 'preview';
   });
   const [previewLocalUrl, setPreviewLocalUrl] = useState<string>('');
@@ -82,8 +78,6 @@ export default function App() {
   const [previewWidth, setPreviewWidth] = useState(() => loadPersisted('previewWidth', 500));
   const [isResizingPreview, setIsResizingPreview] = useState(false);
   const [diffState, setDiffState] = useState<DiffState | null>(null);
-  const [summary, setSummary] = useState<string | null>(null);
-  const [summarizing, setSummarizing] = useState(false);
   const [gitBranch, setGitBranch] = useState('');
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [deployments, setDeployments] = useState<Deployment[]>([]);
@@ -112,8 +106,6 @@ export default function App() {
   const activeTerminal = terminalTabs.find(t => t.id === activeTerminalId) || terminalTabs[0];
   const cwd = activeTerminal.cwd;
   const aiAction = activeTerminal.aiAction;
-  const costInfo = activeTerminal.costInfo;
-  const conversationTurns = activeTerminal.conversationTurns;
 
   const updateTab = useCallback((tabId: string, updates: Partial<TerminalTab>) => {
     setTerminalTabs(prev => prev.map(t => t.id === tabId ? { ...t, ...updates } : t));
@@ -124,7 +116,7 @@ export default function App() {
     if (terminalTabs[0]?.cwd) return;
     window.cozyPane.fs.homedir().then(home => {
       setTerminalTabs(p => p.map((t, i) => i === 0 && !t.cwd ? { ...t, cwd: home } : t));
-    });
+    }).catch(() => {});
   }, []);
 
   // Persist key state to localStorage
@@ -146,8 +138,6 @@ export default function App() {
   // Refs for per-tab watcher save/restore
   const activityEventsRef = useRef(activityEvents);
   activityEventsRef.current = activityEvents;
-  const summaryRef = useRef(summary);
-  summaryRef.current = summary;
   const prevActiveTabRef = useRef(activeTerminalId);
 
   // Save/restore watcher state on tab switch
@@ -157,12 +147,10 @@ export default function App() {
     // Save leaving tab
     tabWatcherCache.current.set(prevId, {
       activityEvents: activityEventsRef.current,
-      summary: summaryRef.current,
     });
     // Restore or init new tab
     const cached = tabWatcherCache.current.get(activeTerminalId);
     setActivityEvents(cached?.activityEvents ?? []);
-    setSummary(cached?.summary ?? null);
     // Restore preview URLs for the newly active tab
     const newTab = terminalTabsRef.current.find(t => t.id === activeTerminalId);
     setPreviewLocalUrl(newTab?.previewLocalUrl || '');
@@ -305,19 +293,6 @@ export default function App() {
     setDiffState({ filePath, before, after });
     setRightPanelTab('preview');
   }, []);
-
-  const handleSummarize = useCallback(async () => {
-    if (activityEvents.length === 0) return;
-    setSummarizing(true);
-    const changes = activityEvents.slice(0, 50).map(e => ({ type: e.type, name: e.name }));
-    const result = await window.cozyPane.settings.summarize(changes);
-    if (result.summary) {
-      setSummary(result.summary);
-    } else {
-      setSummary(result.error || 'Could not generate summary');
-    }
-    setSummarizing(false);
-  }, [activityEvents]);
 
   const openTabsRef = useRef(openTabs);
   openTabsRef.current = openTabs;
@@ -530,13 +505,17 @@ export default function App() {
     }
   }, []);
 
+  const applyTheme = useCallback((themeId: string) => {
+    document.documentElement.setAttribute('data-theme', themeId);
+    try { localStorage.setItem('cozyPane:theme', themeId); } catch {}
+    window.dispatchEvent(new CustomEvent('cozyPane:themeChange', { detail: themeId }));
+  }, []);
+
   const paletteActions: PaletteAction[] = useMemo(() => [
     { id: 'toggle-panels', label: 'Toggle Panels', category: 'View', shortcut: '', action: () => setPanelsOpen(p => !p) },
     { id: 'toggle-layout', label: 'Switch Layout Mode', category: 'View', action: () => setLayoutMode(p => p === 'two-col' ? 'three-col' : 'two-col') },
     { id: 'new-terminal', label: 'New Terminal Tab', category: 'Terminal', shortcut: 'Cmd+T', action: addTerminalTab },
     { id: 'tab-editor', label: 'Show Editor', category: 'Tab', action: () => setRightPanelTab('preview') },
-    { id: 'tab-activity', label: 'Show Activity Feed', category: 'Tab', action: () => setRightPanelTab('activity') },
-    { id: 'tab-summary', label: 'Show Session Summary', category: 'Tab', action: () => setRightPanelTab('summary') },
     { id: 'tab-git', label: 'Show Git Panel', category: 'Tab', action: () => setRightPanelTab('git') },
     { id: 'tab-settings', label: 'Show Settings', category: 'Tab', action: () => setRightPanelTab('settings') },
     { id: 'tab-deploy', label: 'Show Deploy', category: 'Tab', action: () => setRightPanelTab('deploy') },
@@ -549,13 +528,7 @@ export default function App() {
     { id: 'theme-ocean', label: 'Theme: Ocean', category: 'Theme', action: () => applyTheme('ocean') },
     { id: 'theme-forest', label: 'Theme: Forest', category: 'Theme', action: () => applyTheme('forest') },
     { id: 'theme-light', label: 'Theme: Light', category: 'Theme', action: () => applyTheme('cozy-light') },
-  ], [addTerminalTab, sendTerminalCommand]);
-
-  const applyTheme = useCallback((themeId: string) => {
-    document.documentElement.setAttribute('data-theme', themeId);
-    try { localStorage.setItem('cozyPane:theme', themeId); } catch {}
-    window.dispatchEvent(new CustomEvent('cozyPane:themeChange', { detail: themeId }));
-  }, []);
+  ], [addTerminalTab, sendTerminalCommand, applyTheme]);
 
   const handleDirtyChange = useCallback((filePath: string, isDirty: boolean) => {
     setOpenTabs(prev => prev.map(t =>
@@ -568,23 +541,6 @@ export default function App() {
   }, [updateTab]);
 
   const renderBottomPanel = () => {
-    if (rightPanelTab === 'activity') {
-      return (
-        <ActivityFeed
-          events={activityEvents}
-          onFileClick={handleFileSelect}
-          onDiffClick={handleDiffClick}
-          summary={summary}
-          onSummarize={handleSummarize}
-          summarizing={summarizing}
-        />
-      );
-    }
-
-    if (rightPanelTab === 'summary') {
-      return <SessionSummary turns={conversationTurns} aiAction={aiAction} activityEvents={activityEvents} />;
-    }
-
     if (rightPanelTab === 'settings') {
       return <Settings />;
     }
@@ -656,21 +612,6 @@ export default function App() {
         Editor
       </button>
       <button
-        className={`panel-tab ${rightPanelTab === 'activity' ? 'active' : ''}`}
-        onClick={() => setRightPanelTab('activity')}
-      >
-        Activity
-        {activityEvents.length > 0 && (
-          <span className="panel-tab-badge">{activityEvents.length}</span>
-        )}
-      </button>
-      <button
-        className={`panel-tab ${rightPanelTab === 'summary' ? 'active' : ''}`}
-        onClick={() => setRightPanelTab('summary')}
-      >
-        Summary
-      </button>
-      <button
         className={`panel-tab ${rightPanelTab === 'git' ? 'active' : ''}`}
         onClick={() => setRightPanelTab('git')}
       >
@@ -702,6 +643,7 @@ export default function App() {
     isOpen: true as const,
     onToggle: togglePanels,
     onFileSelect: handleFileSelect,
+    onDiffClick: handleDiffClick,
     activeFile: activeTab,
     onCwdChange: setCwd,
     cwd,
@@ -808,8 +750,6 @@ export default function App() {
                     onTerminalReady={(ptyId) => updateTab(tab.id, { ptyId })}
                     onCwdChange={(newCwd) => updateTab(tab.id, { cwd: newCwd })}
                     onActionChange={(action) => updateTab(tab.id, { aiAction: action })}
-                    onCostChange={(cost) => updateTab(tab.id, { costInfo: cost })}
-                    onConversationUpdate={(turns) => updateTab(tab.id, { conversationTurns: turns })}
                     onLocalUrlDetected={(url) => {
                       updateTab(tab.id, { previewLocalUrl: url });
                       if (tab.id === activeTerminalIdRef.current) {
@@ -890,6 +830,7 @@ export default function App() {
                 cwd={cwd}
                 onSendToTerminal={sendTerminalCommand}
                 deployments={deployments}
+                claudeRunning={aiAction !== 'idle'}
               />
             </div>
           </>
@@ -903,7 +844,6 @@ export default function App() {
         panelsOpen={panelsOpen}
         onTogglePanels={togglePanels}
         aiAction={aiAction}
-        costInfo={costInfo}
         gitBranch={gitBranch}
       />
 

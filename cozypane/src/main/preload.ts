@@ -45,7 +45,6 @@ contextBridge.exposeInMainWorld('cozyPane', {
   settings: {
     get: () => ipcRenderer.invoke('settings:get'),
     set: (data: { provider: string; model: string; apiKey?: string }) => ipcRenderer.invoke('settings:set', data),
-    summarize: (changes: { type: string; name: string }[]) => ipcRenderer.invoke('settings:summarize', changes),
   },
   deploy: {
     login: () => ipcRenderer.invoke('deploy:login'),
@@ -65,22 +64,20 @@ contextBridge.exposeInMainWorld('cozyPane', {
     },
   },
   preview: {
-    scanPorts: () => ipcRenderer.invoke('preview:scanPorts'),
     detectProject: (cwd: string) => ipcRenderer.invoke('preview:detectProject', cwd),
-    aiAnalyze: (cwd: string) => ipcRenderer.invoke('preview:aiAnalyze', cwd),
     serveStatic: (cwd: string) => ipcRenderer.invoke('preview:serveStatic', cwd),
     stopStatic: (cwd: string) => ipcRenderer.invoke('preview:stopStatic', cwd),
-    scanPortsForCwd: (cwd: string) => ipcRenderer.invoke('preview:scanPortsForCwd', cwd),
-    selectBestPort: (ports: number[]) => ipcRenderer.invoke('preview:selectBestPort', ports),
     getStoredUrl: (cwd: string) => ipcRenderer.invoke('preview:getStoredUrl', cwd),
     storeUrl: (cwd: string, data: { productionUrl?: string; lastDevCommand?: string }) => ipcRenderer.invoke('preview:storeUrl', cwd, data),
+    writeDevToolsData: (data: object) => ipcRenderer.invoke('preview:writeDevToolsData', data),
+    captureScreenshot: (base64Png: string) => ipcRenderer.invoke('preview:captureScreenshot', base64Png),
   },
   onMenuAction: (channel: string, callback: () => void) => {
     const ALLOWED_CHANNELS = new Set([
       'menu:new-tab', 'menu:close-tab', 'menu:toggle-panels', 'menu:toggle-layout',
       'menu:settings', 'menu:clear-terminal', 'menu:split-view',
       'menu:zoom-in', 'menu:zoom-out', 'menu:zoom-reset',
-      'updater:status', 'deploy:auth-success',
+      'updater:status', 'deploy:auth-success', 'deploy:auth-error',
     ]);
     if (!ALLOWED_CHANNELS.has(channel)) return () => {};
     const listener = () => callback();

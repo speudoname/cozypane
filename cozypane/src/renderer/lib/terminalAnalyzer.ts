@@ -47,8 +47,8 @@ const CHOICE_PATTERNS = [
   /^\s*\d+[\.\)]\s+\S/,         // "1. Accept" or "1) Accept"
 ];
 
-export function detectChoicePrompt(rollingBuffer: string): boolean {
-  const cleaned = stripAnsi(rollingBuffer);
+export function detectChoicePrompt(rollingBuffer: string, preStripped = false): boolean {
+  const cleaned = preStripped ? rollingBuffer : stripAnsi(rollingBuffer);
   const lines = cleaned.split('\n');
   const recentLines = lines.slice(-20);
 
@@ -89,10 +89,10 @@ const EXEC_PATTERNS = [
   /\bBash /,
 ];
 
-export function analyzeAction(rollingBuffer: string, claudeRunning: boolean): AiAction {
+export function analyzeAction(rollingBuffer: string, claudeRunning: boolean, preStripped = false): AiAction {
   if (!claudeRunning) return 'idle';
 
-  const cleaned = stripAnsi(rollingBuffer);
+  const cleaned = preStripped ? rollingBuffer : stripAnsi(rollingBuffer);
   const lines = cleaned.split('\n');
   const recentLines = lines.slice(-30);
 
@@ -112,8 +112,8 @@ export function analyzeAction(rollingBuffer: string, claudeRunning: boolean): Ai
   return 'thinking';
 }
 
-export function analyzeFocus(rollingBuffer: string): 'input' | 'terminal' | null {
-  const cleaned = stripAnsi(rollingBuffer);
+export function analyzeFocus(rollingBuffer: string, preStripped?: string): 'input' | 'terminal' | null {
+  const cleaned = preStripped || stripAnsi(rollingBuffer);
   const lines = cleaned.split('\n').filter(l => l.trim());
   const recentLines = lines.slice(-15);
   const recentText = recentLines.join('\n');
@@ -139,37 +139,12 @@ export function analyzeFocus(rollingBuffer: string): 'input' | 'terminal' | null
   return null;
 }
 
-export interface CostInfo {
-  cost: string | null;    // e.g. "$0.42"
-  tokens: string | null;  // e.g. "12.5K tokens"
-}
-
-// Best-effort parsing of Claude Code's cost/token output from terminal buffer
-export function parseCostInfo(rollingBuffer: string): CostInfo {
-  const cleaned = stripAnsi(rollingBuffer);
-  const lines = cleaned.split('\n').slice(-50);
-  const text = lines.join('\n');
-
-  let cost: string | null = null;
-  let tokens: string | null = null;
-
-  // Look for dollar amounts like "$0.42" or "$1.23" — take the last one found (most recent)
-  const costMatches = text.match(/\$\d+\.\d{2}/g);
-  if (costMatches) cost = costMatches[costMatches.length - 1];
-
-  // Look for token counts like "12K tokens" or "1,234 tokens" or "input: 5.2K"
-  const tokenMatch = text.match(/(\d[\d,.]*K?\s*tokens)/i);
-  if (tokenMatch) tokens = tokenMatch[1];
-
-  return { cost, tokens };
-}
-
 /**
  * Detect a deployed CozyPane URL in terminal output.
  * Returns the URL if found, null otherwise.
  */
-export function detectDeployUrl(rollingBuffer: string): string | null {
-  const cleaned = stripAnsi(rollingBuffer);
+export function detectDeployUrl(rollingBuffer: string, preStripped = false): string | null {
+  const cleaned = preStripped ? rollingBuffer : stripAnsi(rollingBuffer);
   // Match https://appname-username.cozypane.com (at least two segments before .cozypane.com)
   const match = cleaned.match(/https:\/\/[a-z0-9][a-z0-9-]*[a-z0-9]\.cozypane\.com\b/i);
   return match ? match[0] : null;
@@ -180,8 +155,8 @@ export function detectDeployUrl(rollingBuffer: string): string | null {
  * Catches Vite, Next.js, webpack-dev-server, Django, Flask, Rails, etc.
  * Returns the most recently detected URL, or null.
  */
-export function detectLocalUrl(rollingBuffer: string): string | null {
-  const cleaned = stripAnsi(rollingBuffer);
+export function detectLocalUrl(rollingBuffer: string, preStripped = false): string | null {
+  const cleaned = preStripped ? rollingBuffer : stripAnsi(rollingBuffer);
   // Match http://localhost:PORT, http://127.0.0.1:PORT, http://0.0.0.0:PORT
   // Also match "Local:" lines from Vite/Next (e.g. "Local:   http://localhost:5173/")
   const patterns = [

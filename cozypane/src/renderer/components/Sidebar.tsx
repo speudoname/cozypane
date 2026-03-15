@@ -4,6 +4,7 @@ interface Props {
   isOpen: boolean;
   onToggle: () => void;
   onFileSelect: (path: string, name: string) => void;
+  onDiffClick?: (path: string) => void;
   activeFile: string | null;
   onCwdChange: (cwd: string) => void;
   cwd: string;
@@ -64,7 +65,7 @@ function getChangeColor(type: string | undefined): string | undefined {
   }
 }
 
-export default function Sidebar({ isOpen, onToggle, onFileSelect, activeFile, onCwdChange, cwd, changedFiles, lastWatcherEvent, fontSize, onZoomIn, onZoomOut, onZoomReset }: Props) {
+export default function Sidebar({ isOpen, onToggle, onFileSelect, onDiffClick, activeFile, onCwdChange, cwd, changedFiles, lastWatcherEvent, fontSize, onZoomIn, onZoomOut, onZoomReset }: Props) {
   const [tree, setTree] = useState<TreeNode[]>([]);
 
   // Load root tree when cwd changes
@@ -144,7 +145,13 @@ export default function Sidebar({ isOpen, onToggle, onFileSelect, activeFile, on
           })));
         }
       } else {
-        onFileSelect(node.path, node.name);
+        // If the file has been changed and we have a diff handler, show the diff
+        const changeType = changedFiles?.get(node.path);
+        if (changeType === 'modify' && onDiffClick) {
+          onDiffClick(node.path);
+        } else {
+          onFileSelect(node.path, node.name);
+        }
       }
     } catch {}
   }

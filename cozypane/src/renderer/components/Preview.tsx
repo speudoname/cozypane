@@ -7,20 +7,20 @@ interface PreviewError {
   detail?: string;
 }
 
-interface SubProject {
-  path: string;
-  name: string;
-  type: string;
-  devCommand: string | null;
+interface ConsoleLog {
+  level: number;
+  message: string;
+  timestamp: number;
+  source?: string;
+  line?: number;
 }
 
-interface ProjectInfo {
-  type: string | null;
-  devCommand: string | null;
-  productionUrl: string | null;
-  serveStatic?: boolean;
-  needsDatabase?: boolean;
-  subProjects?: SubProject[];
+interface NetworkError {
+  method: string;
+  url: string;
+  status: number;
+  statusText: string;
+  timestamp: number;
 }
 
 interface Props {
@@ -29,12 +29,11 @@ interface Props {
   cwd: string;
   onSendToTerminal: (command: string) => void;
   deployments?: Deployment[];
+  claudeRunning?: boolean;
 }
 
 type DeviceMode = 'desktop' | 'tablet' | 'phone';
 type ViewMode = 'local' | 'production' | 'split';
-
-type ServerState = 'idle' | 'detecting' | 'starting' | 'waiting' | 'ready' | 'failed';
 
 const DEVICE_WIDTHS: Record<DeviceMode, number | null> = {
   desktop: null,
@@ -42,33 +41,23 @@ const DEVICE_WIDTHS: Record<DeviceMode, number | null> = {
   phone: 375,
 };
 
-declare global {
-  interface Window {
-    cozyPane: any;
-  }
-}
+const LEVEL_LABELS = ['verbose', 'info', 'warn', 'error'];
 
-export default function Preview({ localUrl, productionUrl, cwd, onSendToTerminal, deployments = [] }: Props) {
+export default function Preview({ localUrl, productionUrl, cwd, onSendToTerminal, deployments = [], claudeRunning }: Props) {
   const [device, setDevice] = useState<DeviceMode>('desktop');
   const [autoFix, setAutoFix] = useState(false);
   const [errors, setErrors] = useState<PreviewError[]>([]);
+  const [consoleLogs, setConsoleLogs] = useState<ConsoleLog[]>([]);
+  const [networkErrors, setNetworkErrors] = useState<NetworkError[]>([]);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [viewMode, setViewMode] = useState<ViewMode>('local');
-  const [manualUrl, setManualUrl] = useState('');
-
-  // Smart detection state
-  const [serverState, setServerState] = useState<ServerState>('idle');
-  const [statusMessage, setStatusMessage] = useState('');
-  const [detectedPorts, setDetectedPorts] = useState<number[]>([]);
-  const [projectInfo, setProjectInfo] = useState<ProjectInfo | null>(null);
-  const [aiAnalysis, setAiAnalysis] = useState<{ devCommand?: string; productionUrl?: string; summary?: string; error?: string } | null>(null);
-  const [analyzing, setAnalyzing] = useState(false);
+  const [manualLocalUrl, setManualLocalUrl] = useState('');
+  const [manualUrlInput, setManualUrlInput] = useState('');
   const [staticUrl, setStaticUrl] = useState<string | null>(null);
-  const [showSubPicker, setShowSubPicker] = useState(false);
-  const [selectedPort, setSelectedPort] = useState<number | null>(null);
+  const [sendingToClaude, setSendingToClaude] = useState(false);
+  const [claudeWarning, setClaudeWarning] = useState(false);
 
-  // Deployment matching state
   const [matchedDeployments, setMatchedDeployments] = useState<Deployment[]>([]);
   const [selectedDeploymentUrl, setSelectedDeploymentUrl] = useState<string | null>(null);
   const [storedProdUrl, setStoredProdUrl] = useState<string | null>(null);
@@ -76,80 +65,17 @@ export default function Preview({ localUrl, productionUrl, cwd, onSendToTerminal
   const localWebviewRef = useRef<any>(null);
   const prodWebviewRef = useRef<any>(null);
   const autoFixSentRef = useRef(false);
-  const autoStartedForCwdRef = useRef<string>('');
-  const pollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const staticCwdRef = useRef<string>('');
+  const devtoolsWriteTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Determine the actual URLs to show
-  // selectedPort is validated (HTML-serving), so it takes priority over raw terminal-detected localUrl
-  const effectiveLocalUrl = (selectedPort ? `http://localhost:${selectedPort}` : null) || staticUrl || localUrl || (detectedPorts.length > 0 ? `http://localhost:${detectedPorts[0]}` : null) || manualUrl || null;
-  // Prefer deployment-matched URLs, then stored (from deploy), then locally-detected, then prop
-  const effectiveProdUrl = selectedDeploymentUrl || storedProdUrl || projectInfo?.productionUrl || aiAnalysis?.productionUrl || productionUrl || null;
-  const effectiveDevCommand = projectInfo?.devCommand || aiAnalysis?.devCommand || null;
+  const effectiveLocalUrl = staticUrl || localUrl || manualLocalUrl || null;
+  const effectiveProdUrl = selectedDeploymentUrl || storedProdUrl || productionUrl || null;
 
-  // Auto-switch view mode based on available URLs
   useEffect(() => {
-    if (effectiveLocalUrl && effectiveProdUrl) {
-      // Both available — stay on current or default to split
-    } else if (effectiveLocalUrl) {
-      setViewMode('local');
-    } else if (effectiveProdUrl) {
-      setViewMode('production');
-    }
+    if (effectiveLocalUrl && !effectiveProdUrl) setViewMode('local');
+    else if (!effectiveLocalUrl && effectiveProdUrl) setViewMode('production');
   }, [effectiveLocalUrl, effectiveProdUrl]);
 
-  // When server becomes ready, stop polling
-  useEffect(() => {
-    if (effectiveLocalUrl && serverState === 'waiting') {
-      setServerState('ready');
-      setStatusMessage('');
-      if (pollIntervalRef.current) {
-        clearInterval(pollIntervalRef.current);
-        pollIntervalRef.current = null;
-      }
-    }
-  }, [effectiveLocalUrl, serverState]);
-
-  // Cleanup poll on unmount
-  useEffect(() => {
-    return () => {
-      if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
-    };
-  }, []);
-
-  // When terminal detects a new URL (localUrl prop changes), validate and auto-connect
-  // This handles the case where dev server starts AFTER initial detection
-  useEffect(() => {
-    if (!localUrl || serverState === 'ready') return;
-    let cancelled = false;
-    (async () => {
-      try {
-        const port = parseInt(new URL(localUrl).port);
-        if (!port) return;
-        const best = await window.cozyPane.preview.selectBestPort([port]);
-        if (cancelled) return;
-        if (best > 0) {
-          setSelectedPort(best);
-          setServerState('ready');
-          setStatusMessage('');
-        } else {
-          // Terminal detected a URL — load it even if it's an API/JSON server
-          setSelectedPort(port);
-          setServerState('ready');
-          setStatusMessage('');
-        }
-      } catch {}
-    })();
-    return () => { cancelled = true; };
-  }, [localUrl]);
-
-  // When a production URL arrives (from terminal deploy output), auto-switch to show it
-  useEffect(() => {
-    if (!productionUrl) return;
-    if (serverState !== 'ready') setServerState('ready');
-  }, [productionUrl]);
-
-  // Match deployments to current folder name
   useEffect(() => {
     if (!cwd || deployments.length === 0) {
       setMatchedDeployments([]);
@@ -163,12 +89,10 @@ export default function Preview({ localUrl, productionUrl, cwd, onSendToTerminal
       folderName.includes(d.appName.toLowerCase().split('-')[0])
     );
     setMatchedDeployments(matched);
-    // Auto-select: prefer frontend-looking ones (no "api", "backend", "server" in name)
     const frontend = matched.find(d => !/(api|backend|server)/.test(d.appName));
     setSelectedDeploymentUrl((frontend || matched[0])?.url || null);
   }, [cwd, deployments]);
 
-  // Load stored production URL (written by MCP deploy tool) when cwd changes
   useEffect(() => {
     if (!cwd) return;
     setStoredProdUrl(null);
@@ -177,307 +101,78 @@ export default function Preview({ localUrl, productionUrl, cwd, onSendToTerminal
     }).catch(() => {});
   }, [cwd]);
 
-  // === CORE: Seamless auto-start flow when cwd changes ===
   useEffect(() => {
     if (!cwd) return;
-
-    // Stop old static server
     if (staticCwdRef.current && staticCwdRef.current !== cwd) {
       window.cozyPane.preview.stopStatic(staticCwdRef.current).catch(() => {});
       staticCwdRef.current = '';
+      setStaticUrl(null);
     }
-
-    // Reset state for new cwd
-    setDetectedPorts([]);
-    setProjectInfo(null);
-    setAiAnalysis(null);
-    setManualUrl('');
-    setErrors([]);
-    setServerState('detecting');
-    setStatusMessage('Detecting project...');
-    setStaticUrl(null);
-    setShowSubPicker(false);
-    setSelectedPort(null);
-    autoStartedForCwdRef.current = '';
-    if (pollIntervalRef.current) {
-      clearInterval(pollIntervalRef.current);
-      pollIntervalRef.current = null;
-    }
-
+    if (localUrl) return;
     let cancelled = false;
-
     (async () => {
       try {
-        // Step 1: Scan ports (cwd-aware) + detect project in parallel
-        const [portsResult, projectResult] = await Promise.all([
-          window.cozyPane.preview.scanPortsForCwd(cwd),
-          window.cozyPane.preview.detectProject(cwd),
-        ]);
-
+        const projectResult = await window.cozyPane.preview.detectProject(cwd);
         if (cancelled) return;
-
-        const ports = portsResult.ports || [];
-        setDetectedPorts(ports);
-        setProjectInfo(projectResult);
-
-        // Step 2: If a server is already running, check if it serves HTML
-        if (ports.length > 0 || localUrl) {
-          // Combine terminal-detected URL port with scanned ports
-          const allPorts = [...ports];
-          if (localUrl) {
-            try {
-              const urlPort = parseInt(new URL(localUrl).port);
-              if (urlPort && !allPorts.includes(urlPort)) allPorts.push(urlPort);
-            } catch {}
-          }
-
-          // Validate: prefer HTML-serving ports, fall back to any open port
-          const best = await window.cozyPane.preview.selectBestPort(allPorts);
-          if (cancelled) return;
-
-          if (best > 0) {
-            setSelectedPort(best);
-            setServerState('ready');
-            setStatusMessage('');
-          } else if (allPorts.length > 0) {
-            // No HTML port found, but something is running — show it anyway
-            setSelectedPort(allPorts[0]);
-            setServerState('ready');
-            setStatusMessage('');
-          } else {
-            setServerState('ready');
-            setStatusMessage('');
-          }
-          return;
-        }
-
-        // Step 3a: Static HTML — use built-in server
         if (projectResult?.serveStatic) {
-          setServerState('starting');
-          setStatusMessage('Starting static file server...');
-          try {
-            const result = await window.cozyPane.preview.serveStatic(cwd);
-            if (cancelled) return;
-            staticCwdRef.current = cwd;
-            setStaticUrl(`http://localhost:${result.port}`);
-            setServerState('ready');
-            setStatusMessage('');
-          } catch {
-            if (!cancelled) {
-              setServerState('failed');
-              setStatusMessage('Failed to start static server');
-            }
-          }
-          return;
-        }
-
-        // Step 3b: Monorepo with sub-projects but no root dev command
-        if (!projectResult?.devCommand && projectResult?.subProjects?.length) {
-          setShowSubPicker(true);
-          setServerState('idle');
-          setStatusMessage('');
-          return;
-        }
-
-        // Step 3c: We have a dev command — auto-start it
-        const devCommand = projectResult?.devCommand;
-        if (devCommand && autoStartedForCwdRef.current !== cwd) {
-          autoStartedForCwdRef.current = cwd;
-          setServerState('starting');
-          setStatusMessage(`Starting: ${devCommand}`);
-
-          onSendToTerminal(devCommand);
-
-          // Step 4: Poll for the server to come up (cwd-aware)
-          setServerState('waiting');
-          setStatusMessage('Waiting for dev server...');
-
-          let attempts = 0;
-          const maxAttempts = 30;
-
-          pollIntervalRef.current = setInterval(async () => {
-            attempts++;
-            try {
-              const result = await window.cozyPane.preview.scanPortsForCwd(cwd);
-              const newPorts = result.ports || [];
-              if (newPorts.length > 0) {
-                setDetectedPorts(newPorts);
-                const best = await window.cozyPane.preview.selectBestPort(newPorts);
-                if (best > 0) {
-                  setSelectedPort(best);
-                  setServerState('ready');
-                  setStatusMessage('');
-                } else if (newPorts.length === 1) {
-                  // Single port, not HTML — still show it but user can decide
-                  setSelectedPort(newPorts[0]);
-                  setServerState('ready');
-                  setStatusMessage('');
-                } else {
-                  setServerState('idle');
-                  setStatusMessage('Only API servers detected');
-                }
-                if (pollIntervalRef.current) {
-                  clearInterval(pollIntervalRef.current);
-                  pollIntervalRef.current = null;
-                }
-              } else if (attempts >= maxAttempts) {
-                setServerState('failed');
-                setStatusMessage('Server didn\'t start within 30s');
-                if (pollIntervalRef.current) {
-                  clearInterval(pollIntervalRef.current);
-                  pollIntervalRef.current = null;
-                }
-              }
-            } catch {}
-          }, 1000);
-
-          return;
-        }
-
-        // No dev command detected — just show idle state
-        if (!devCommand) {
-          setServerState('idle');
-          setStatusMessage('');
-        }
-      } catch {
-        if (!cancelled) {
-          setServerState('failed');
-          setStatusMessage('Detection failed');
-        }
-      }
-    })();
-
-    return () => { cancelled = true; };
-  }, [cwd]); // intentionally not including localUrl/onSendToTerminal to avoid re-triggering
-
-  const scanPorts = useCallback(async () => {
-    try {
-      const result = await window.cozyPane.preview.scanPortsForCwd(cwd);
-      setDetectedPorts(result.ports || []);
-    } catch {}
-  }, [cwd]);
-
-  const runAiAnalysis = useCallback(async () => {
-    setAnalyzing(true);
-    try {
-      const result = await window.cozyPane.preview.aiAnalyze(cwd);
-      setAiAnalysis(result);
-      if (result.devCommand && !effectiveLocalUrl && autoStartedForCwdRef.current !== cwd) {
-        autoStartedForCwdRef.current = cwd;
-        onSendToTerminal(result.devCommand);
-        setServerState('waiting');
-        setStatusMessage('Waiting for dev server...');
-        pollIntervalRef.current = setInterval(async () => {
-          try {
-            const portResult = await window.cozyPane.preview.scanPortsForCwd(cwd);
-            const newPorts = portResult.ports || [];
-            if (newPorts.length > 0) {
-              setDetectedPorts(newPorts);
-              const best = await window.cozyPane.preview.selectBestPort(newPorts);
-              if (best > 0) setSelectedPort(best);
-              else if (newPorts.length === 1) setSelectedPort(newPorts[0]);
-              setServerState('ready');
-              setStatusMessage('');
-              if (pollIntervalRef.current) {
-                clearInterval(pollIntervalRef.current);
-                pollIntervalRef.current = null;
-              }
-            }
-          } catch {}
-        }, 1000);
-      }
-    } catch (err: any) {
-      setAiAnalysis({ error: err.message });
-    }
-    setAnalyzing(false);
-  }, [cwd, effectiveLocalUrl, onSendToTerminal]);
-
-  const retryStartServer = useCallback(() => {
-    const cmd = effectiveDevCommand || aiAnalysis?.devCommand;
-    if (!cmd) return;
-    autoStartedForCwdRef.current = '';
-    onSendToTerminal(cmd);
-    setServerState('waiting');
-    setStatusMessage('Waiting for dev server...');
-
-    let attempts = 0;
-    pollIntervalRef.current = setInterval(async () => {
-      attempts++;
-      try {
-        const result = await window.cozyPane.preview.scanPortsForCwd(cwd);
-        const newPorts = result.ports || [];
-        if (newPorts.length > 0) {
-          setDetectedPorts(newPorts);
-          const best = await window.cozyPane.preview.selectBestPort(newPorts);
-          if (best > 0) setSelectedPort(best);
-          else if (newPorts.length === 1) setSelectedPort(newPorts[0]);
-          setServerState('ready');
-          setStatusMessage('');
-          if (pollIntervalRef.current) {
-            clearInterval(pollIntervalRef.current);
-            pollIntervalRef.current = null;
-          }
-        } else if (attempts >= 30) {
-          setServerState('failed');
-          setStatusMessage('Server didn\'t start within 30s');
-          if (pollIntervalRef.current) {
-            clearInterval(pollIntervalRef.current);
-            pollIntervalRef.current = null;
-          }
+          const result = await window.cozyPane.preview.serveStatic(cwd);
+          if (cancelled) return;
+          staticCwdRef.current = cwd;
+          setStaticUrl(`http://localhost:${result.port}`);
         }
       } catch {}
-    }, 1000);
-  }, [cwd, effectiveDevCommand, aiAnalysis, onSendToTerminal]);
+    })();
+    return () => { cancelled = true; };
+  }, [cwd, localUrl]);
 
-  const startSubProject = useCallback((sub: SubProject) => {
-    setShowSubPicker(false);
-    if (sub.devCommand) {
-      autoStartedForCwdRef.current = cwd;
-      setServerState('starting');
-      setStatusMessage(`Starting: cd ${sub.name} && ${sub.devCommand}`);
-      onSendToTerminal(`cd ${sub.path} && ${sub.devCommand}`);
+  // Debounced auto-write devtools data for MCP bridge (2s)
+  useEffect(() => {
+    if (consoleLogs.length === 0 && networkErrors.length === 0) return;
+    if (devtoolsWriteTimerRef.current) clearTimeout(devtoolsWriteTimerRef.current);
+    devtoolsWriteTimerRef.current = setTimeout(() => {
+      const data = {
+        url: effectiveLocalUrl || effectiveProdUrl || null,
+        consoleLogs: consoleLogs.slice(-100),
+        networkErrors: networkErrors.slice(-50),
+        timestamp: Date.now(),
+      };
+      window.cozyPane.preview.writeDevToolsData(data).catch(() => {});
+    }, 2000);
+    return () => {
+      if (devtoolsWriteTimerRef.current) clearTimeout(devtoolsWriteTimerRef.current);
+    };
+  }, [consoleLogs, networkErrors, effectiveLocalUrl, effectiveProdUrl]);
 
-      setServerState('waiting');
-      setStatusMessage('Waiting for dev server...');
-
-      let attempts = 0;
-      pollIntervalRef.current = setInterval(async () => {
-        attempts++;
-        try {
-          const result = await window.cozyPane.preview.scanPortsForCwd(sub.path);
-          const newPorts = result.ports || [];
-          if (newPorts.length > 0) {
-            setDetectedPorts(newPorts);
-            const best = await window.cozyPane.preview.selectBestPort(newPorts);
-            if (best > 0) setSelectedPort(best);
-            else if (newPorts.length === 1) setSelectedPort(newPorts[0]);
-            setServerState('ready');
-            setStatusMessage('');
-            if (pollIntervalRef.current) {
-              clearInterval(pollIntervalRef.current);
-              pollIntervalRef.current = null;
-            }
-          } else if (attempts >= 30) {
-            setServerState('failed');
-            setStatusMessage('Server didn\'t start within 30s');
-            if (pollIntervalRef.current) {
-              clearInterval(pollIntervalRef.current);
-              pollIntervalRef.current = null;
-            }
-          }
-        } catch {}
-      }, 1000);
-    }
-  }, [cwd, onSendToTerminal]);
-
-  // Wire webview events
-  const wireWebview = useCallback((wv: any, isLocal: boolean) => {
+  const wireWebview = useCallback((wv: any) => {
     if (!wv) return;
 
     const handleConsoleMessage = (e: any) => {
+      const log: ConsoleLog = {
+        level: e.level,
+        message: e.message,
+        timestamp: Date.now(),
+        source: e.sourceId,
+        line: e.line,
+      };
+      setConsoleLogs(prev => [...prev.slice(-99), log]);
+
+      if (e.message.startsWith('[CozyPreview:netdata]')) {
+        try {
+          const json = JSON.parse(e.message.slice('[CozyPreview:netdata]'.length));
+          setNetworkErrors(prev => [...prev.slice(-49), {
+            method: json.method || 'GET',
+            url: json.url || '',
+            status: json.status || 0,
+            statusText: json.statusText || 'Unknown',
+            timestamp: Date.now(),
+          }]);
+        } catch {}
+        return;
+      }
+
       if (e.level >= 2) {
         setErrors(prev => [...prev.slice(-19), {
-          type: 'console',
+          type: e.message.startsWith('[CozyPreview:network]') ? 'network' : 'console',
           message: e.message,
           timestamp: Date.now(),
           detail: `Line ${e.line} in ${e.sourceId}`,
@@ -506,12 +201,18 @@ export default function Preview({ localUrl, productionUrl, cwd, onSendToTerminal
           window.__cozyPreviewInjected = true;
           const origFetch = window.fetch;
           window.fetch = async function(...args) {
+            const method = (args[1]?.method || 'GET').toUpperCase();
+            const url = typeof args[0] === 'string' ? args[0] : (args[0]?.url || String(args[0]));
             try {
               const res = await origFetch.apply(this, args);
-              if (!res.ok) console.error('[CozyPreview:network] ' + res.status + ' ' + res.statusText + ' - ' + (args[0]?.url || args[0]));
+              if (!res.ok) {
+                console.error('[CozyPreview:netdata]' + JSON.stringify({method: method, url: url, status: res.status, statusText: res.statusText}));
+                console.error('[CozyPreview:network] ' + res.status + ' ' + res.statusText + ' - ' + url);
+              }
               return res;
             } catch(e) {
-              console.error('[CozyPreview:network] Fetch failed: ' + e.message + ' - ' + (args[0]?.url || args[0]));
+              console.error('[CozyPreview:netdata]' + JSON.stringify({method: method, url: url, status: 0, statusText: e.message}));
+              console.error('[CozyPreview:network] Fetch failed: ' + e.message + ' - ' + url);
               throw e;
             }
           };
@@ -540,67 +241,131 @@ export default function Preview({ localUrl, productionUrl, cwd, onSendToTerminal
     };
   }, []);
 
-  // Wire local webview
   useEffect(() => {
     const wv = localWebviewRef.current;
     if (!wv || !effectiveLocalUrl) return;
-    return wireWebview(wv, true);
+    return wireWebview(wv);
   }, [effectiveLocalUrl, wireWebview]);
 
-  // Wire production webview
   useEffect(() => {
     const wv = prodWebviewRef.current;
     if (!wv || !effectiveProdUrl) return;
-    return wireWebview(wv, false);
+    return wireWebview(wv);
   }, [effectiveProdUrl, wireWebview]);
 
-  // Auto-fix: send errors to Claude
+  const collectDevToolsData = useCallback(async () => {
+    const currentUrl = effectiveLocalUrl || effectiveProdUrl || null;
+    const wv = localWebviewRef.current || prodWebviewRef.current;
+
+    let screenshotPath: string | null = null;
+    let htmlSnapshot: string | null = null;
+
+    if (wv) {
+      try {
+        const nativeImage = await wv.capturePage();
+        const base64 = nativeImage.toPNG().toString('base64');
+        screenshotPath = await window.cozyPane.preview.captureScreenshot(base64);
+      } catch {}
+
+      try {
+        const html: string = await wv.executeJavaScript('document.documentElement.outerHTML');
+        htmlSnapshot = html.length > 100000 ? html.slice(0, 100000) : html;
+      } catch {}
+    }
+
+    const data = {
+      url: currentUrl,
+      consoleLogs: consoleLogs.slice(-100),
+      networkErrors: networkErrors.slice(-50),
+      screenshotPath,
+      htmlSnapshot,
+      timestamp: Date.now(),
+    };
+
+    await window.cozyPane.preview.writeDevToolsData(data).catch(() => {});
+    return data;
+  }, [consoleLogs, networkErrors, effectiveLocalUrl, effectiveProdUrl]);
+
+  const sendDevToolsToClaude = useCallback(async () => {
+    if (!claudeRunning) {
+      setClaudeWarning(true);
+      setTimeout(() => setClaudeWarning(false), 3000);
+      return;
+    }
+
+    setSendingToClaude(true);
+    try {
+      const data = await collectDevToolsData();
+
+      const sections: string[] = [];
+      sections.push(`The preview at ${data.url || 'unknown'} needs debugging. Here is the devtools data:\n`);
+
+      const errorLogs = data.consoleLogs.filter(l => l.level >= 2);
+      if (errorLogs.length > 0) {
+        sections.push('## Console Errors/Warnings');
+        sections.push(errorLogs.slice(-15).map(l =>
+          `- [${LEVEL_LABELS[l.level] || 'log'}] ${l.message}${l.source ? ` (${l.source}:${l.line})` : ''}`
+        ).join('\n'));
+      }
+
+      if (data.networkErrors.length > 0) {
+        sections.push('\n## Network Errors');
+        sections.push(data.networkErrors.slice(-10).map(n =>
+          `- ${n.method} ${n.url} -> ${n.status} ${n.statusText}`
+        ).join('\n'));
+      }
+
+      if (data.screenshotPath) {
+        sections.push(`\n## Screenshot\nSaved at: ${data.screenshotPath}`);
+      }
+
+      if (data.htmlSnapshot) {
+        const snippet = data.htmlSnapshot.slice(0, 2000);
+        sections.push(`\n## HTML Snapshot (first 2KB)\n\`\`\`html\n${snippet}\n\`\`\``);
+      }
+
+      sections.push('\nPlease fix these issues. Full data is available via the cozypane_get_preview_info MCP tool.');
+
+      onSendToTerminal(sections.join('\n'));
+    } finally {
+      setSendingToClaude(false);
+    }
+  }, [claudeRunning, collectDevToolsData, onSendToTerminal]);
+
   useEffect(() => {
     if (!autoFix || errors.length === 0 || autoFixSentRef.current) return;
     const timer = setTimeout(() => {
       if (errors.length > 0 && !autoFixSentRef.current) {
         autoFixSentRef.current = true;
-        sendErrorsToClaude();
+        sendDevToolsToClaude();
         setTimeout(() => { autoFixSentRef.current = false; }, 30000);
       }
     }, 3000);
     return () => clearTimeout(timer);
-  }, [autoFix, errors]);
+  }, [autoFix, errors, sendDevToolsToClaude]);
 
   const reload = useCallback(() => {
     setErrors([]);
+    setConsoleLogs([]);
+    setNetworkErrors([]);
     autoFixSentRef.current = false;
     if (viewMode === 'local' || viewMode === 'split') localWebviewRef.current?.reload();
     if (viewMode === 'production' || viewMode === 'split') prodWebviewRef.current?.reload();
   }, [viewMode]);
 
-  const sendErrorsToClaude = useCallback(() => {
-    if (errors.length === 0) return;
-    const errorList = errors
-      .slice(-20)
-      .map(e => `- [${e.type}] ${e.message}${e.detail ? ` (${e.detail})` : ''}`)
-      .join('\n');
-    const currentUrl = effectiveLocalUrl || effectiveProdUrl || 'unknown';
-    const message = `The preview at ${currentUrl} has these errors. Please fix them:\n\n${errorList}`;
-    onSendToTerminal(message);
-  }, [errors, effectiveLocalUrl, effectiveProdUrl, onSendToTerminal]);
-
   const deviceWidth = DEVICE_WIDTHS[device];
 
-  // Force webview src update when URL changes
   useEffect(() => {
     const wv = localWebviewRef.current;
-    if (wv && effectiveLocalUrl && wv.src !== effectiveLocalUrl) {
-      wv.src = effectiveLocalUrl;
-    }
+    if (wv && effectiveLocalUrl && wv.src !== effectiveLocalUrl) wv.src = effectiveLocalUrl;
   }, [effectiveLocalUrl]);
 
   useEffect(() => {
     const wv = prodWebviewRef.current;
-    if (wv && effectiveProdUrl && wv.src !== effectiveProdUrl) {
-      wv.src = effectiveProdUrl;
-    }
+    if (wv && effectiveProdUrl && wv.src !== effectiveProdUrl) wv.src = effectiveProdUrl;
   }, [effectiveProdUrl]);
+
+  const hasDevToolsData = consoleLogs.length > 0 || networkErrors.length > 0 || errors.length > 0;
 
   const renderWebview = (url: string, ref: React.RefObject<any>, label: string) => (
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minWidth: 0 }}>
@@ -618,7 +383,7 @@ export default function Preview({ localUrl, productionUrl, cwd, onSendToTerminal
           {label}
         </div>
       )}
-      <div style={{ flex: 1, display: 'flex', justifyContent: 'center', backgroundColor: '#0a0b10', overflow: 'hidden' }}>
+      <div style={{ flex: 1, display: 'flex', justifyContent: 'center', backgroundColor: '#0a0b10', overflow: 'hidden', position: 'relative' }}>
         <webview
           ref={ref}
           src={url}
@@ -630,314 +395,106 @@ export default function Preview({ localUrl, productionUrl, cwd, onSendToTerminal
             backgroundColor: '#fff',
           }}
           // @ts-ignore
-          allowpopups="true"
-          webpreferences="allowRunningInsecureContent=true"
+          partition="persist:preview"
+          {...(/^https?:\/\/(localhost|127\.0\.0\.1)(:|\/|$)/.test(url) ? { webpreferences: 'allowRunningInsecureContent=true' } : {})}
         />
-      </div>
-    </div>
-  );
 
-  const renderStartingState = () => (
-    <div style={{
-      display: 'flex',
-      flexDirection: 'column',
-      alignItems: 'center',
-      justifyContent: 'center',
-      height: '100%',
-      color: 'var(--text-secondary, #888)',
-      gap: '1em',
-      padding: '2em',
-    }}>
-      {/* Spinner */}
-      <div style={{
-        width: 40, height: 40, borderRadius: '50%',
-        border: '3px solid var(--border, #2a2b3e)',
-        borderTopColor: 'var(--accent, #7c6fe0)',
-        animation: 'spin 1s linear infinite',
-      }} />
-      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
-
-      <div style={{ fontSize: '1em', color: 'var(--text-primary, #e0e0e0)', textAlign: 'center' }}>
-        {serverState === 'detecting' && 'Detecting project...'}
-        {serverState === 'starting' && 'Starting dev server...'}
-        {serverState === 'waiting' && 'Waiting for server to be ready...'}
-      </div>
-
-      {statusMessage && (
-        <div style={{ fontSize: '0.82em', color: 'var(--text-secondary, #888)', fontFamily: 'monospace' }}>
-          {statusMessage}
-        </div>
-      )}
-
-      {projectInfo?.type && (
-        <div style={{ fontSize: '0.82em', color: 'var(--text-secondary, #888)' }}>
-          Detected <strong style={{ color: 'var(--accent, #7c6fe0)' }}>{projectInfo.type}</strong> project
-        </div>
-      )}
-    </div>
-  );
-
-  const renderFailedState = () => (
-    <div style={{
-      display: 'flex',
-      flexDirection: 'column',
-      alignItems: 'center',
-      justifyContent: 'center',
-      height: '100%',
-      color: 'var(--text-secondary, #888)',
-      gap: '1em',
-      padding: '2em',
-    }}>
-      <div style={{ fontSize: '1.2em', color: '#e74c3c' }}>
-        Server failed to start
-      </div>
-
-      {statusMessage && (
-        <div style={{ fontSize: '0.82em', color: 'var(--text-secondary, #888)' }}>
-          {statusMessage}
-        </div>
-      )}
-
-      {/* Database hint */}
-      {projectInfo?.needsDatabase && (
-        <div style={{
-          fontSize: '0.85em',
-          color: '#e6b800',
-          backgroundColor: '#e6b80010',
-          border: '1px solid #e6b80030',
-          borderRadius: 6,
-          padding: '0.6em 1em',
-          maxWidth: 400,
-          textAlign: 'center',
-        }}>
-          This app requires a database. Make sure your database server (PostgreSQL, MongoDB, etc.) is running and configured.
-        </div>
-      )}
-
-      <div style={{ display: 'flex', gap: '0.5em' }}>
-        {effectiveDevCommand && (
-          <button onClick={retryStartServer} style={actionBtnStyle}>
-            Retry
-          </button>
-        )}
-        <button onClick={runAiAnalysis} style={secondaryBtnStyle} disabled={analyzing}>
-          {analyzing ? 'Analyzing...' : 'AI Analyze'}
-        </button>
-      </div>
-
-      {detectedPorts.length > 0 && (
-        <div style={{ fontSize: '0.82em' }}>
-          <span style={{ color: 'var(--text-secondary, #888)' }}>Active ports: </span>
-          {detectedPorts.map(p => (
-            <button
-              key={p}
-              onClick={() => { setManualUrl(`http://localhost:${p}`); setServerState('ready'); }}
-              style={{ ...portBtnStyle, marginLeft: '0.3em' }}
-            >
-              :{p}
-            </button>
-          ))}
-        </div>
-      )}
-
-      {/* Manual URL fallback */}
-      <div style={{ display: 'flex', gap: '0.3em', width: '100%', maxWidth: 400, marginTop: '0.5em' }}>
-        <input
-          type="text"
-          value={manualUrl}
-          onChange={e => setManualUrl(e.target.value)}
-          onKeyDown={e => { if (e.key === 'Enter') { setManualUrl(manualUrl.trim()); setServerState('ready'); } }}
-          placeholder="Or enter URL manually..."
-          spellCheck={false}
-          style={urlInputStyle}
-        />
-      </div>
-    </div>
-  );
-
-  const renderSubProjectPicker = () => (
-    <div style={{
-      display: 'flex',
-      flexDirection: 'column',
-      alignItems: 'center',
-      justifyContent: 'center',
-      height: '100%',
-      color: 'var(--text-secondary, #888)',
-      gap: '1em',
-      padding: '2em',
-    }}>
-      <div style={{ fontSize: '1.1em', color: 'var(--text-primary, #e0e0e0)' }}>
-        Multiple services detected
-      </div>
-      <div style={{ fontSize: '0.82em', color: 'var(--text-secondary, #888)' }}>
-        Choose which service to preview:
-      </div>
-
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5em', width: '100%', maxWidth: 350 }}>
-        {(projectInfo?.subProjects || []).map(sub => (
+        {errors.length > 0 && !drawerOpen && (
           <button
-            key={sub.path}
-            onClick={() => startSubProject(sub)}
+            onClick={sendDevToolsToClaude}
+            disabled={sendingToClaude}
             style={{
-              display: 'flex',
-              justifyContent: 'space-between',
-              alignItems: 'center',
-              padding: '0.6em 1em',
-              borderRadius: 6,
-              border: '1px solid var(--border, #3a3b4e)',
-              backgroundColor: 'var(--bg-primary, #1a1b2e)',
-              color: 'var(--text-primary, #e0e0e0)',
-              fontSize: '0.88em',
-              cursor: 'pointer',
-              textAlign: 'left',
+              position: 'absolute', bottom: 12, right: 12,
+              padding: '6px 12px', borderRadius: 20, border: 'none',
+              backgroundColor: '#e74c3c', color: '#fff',
+              fontSize: '0.75em', fontWeight: 600,
+              cursor: sendingToClaude ? 'wait' : 'pointer',
+              display: 'flex', alignItems: 'center', gap: '6px',
+              boxShadow: '0 2px 8px rgba(0,0,0,0.4)',
+              opacity: sendingToClaude ? 0.7 : 1, zIndex: 10,
             }}
           >
-            <span>
-              <strong>{sub.name}/</strong>
-              <span style={{ color: 'var(--text-secondary, #888)', marginLeft: '0.5em', fontSize: '0.9em' }}>{sub.type}</span>
+            <span style={{
+              display: 'inline-block', minWidth: 18, height: 18,
+              lineHeight: '18px', textAlign: 'center', borderRadius: '50%',
+              backgroundColor: 'rgba(255,255,255,0.25)', fontSize: '0.9em',
+            }}>
+              {errors.length}
             </span>
-            {sub.devCommand && (
-              <span style={{ fontSize: '0.78em', color: 'var(--accent, #7c6fe0)', fontFamily: 'monospace' }}>
-                {sub.devCommand}
-              </span>
-            )}
+            {sendingToClaude ? 'Sending...' : 'Fix with Claude'}
           </button>
-        ))}
-      </div>
+        )}
 
-      {/* Manual URL fallback */}
+        {claudeWarning && (
+          <div style={{
+            position: 'absolute', bottom: 48, right: 12,
+            padding: '6px 12px', borderRadius: 6,
+            backgroundColor: '#e6b80099', color: '#1a1b2e',
+            fontSize: '0.72em', fontWeight: 600, zIndex: 11,
+          }}>
+            Claude is not running in the terminal
+          </div>
+        )}
+      </div>
+    </div>
+  );
+
+  const renderEmptyState = () => (
+    <div style={{
+      display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+      height: '100%', color: 'var(--text-secondary, #888)', gap: '1em', padding: '2em',
+    }}>
+      <div style={{ fontSize: '1.1em', color: 'var(--text-primary, #e0e0e0)', textAlign: 'center' }}>
+        {viewMode === 'production' ? 'No production URL' : 'No dev server running'}
+      </div>
+      {viewMode !== 'production' && (
+        <div style={{ fontSize: '0.82em', color: 'var(--text-secondary, #888)', textAlign: 'center', maxWidth: 380 }}>
+          Run your dev server in the terminal — preview will auto-connect when it starts.
+        </div>
+      )}
+      {viewMode === 'production' && (
+        <div style={{ fontSize: '0.82em', color: 'var(--text-secondary, #888)', textAlign: 'center', maxWidth: 380 }}>
+          Deploy your project to see the production preview, or enter a URL below.
+        </div>
+      )}
       <div style={{ display: 'flex', gap: '0.3em', width: '100%', maxWidth: 400, marginTop: '0.5em' }}>
         <input
           type="text"
-          value={manualUrl}
-          onChange={e => setManualUrl(e.target.value)}
-          onKeyDown={e => { if (e.key === 'Enter') { setManualUrl(manualUrl.trim()); setServerState('ready'); setShowSubPicker(false); } }}
-          placeholder="Or enter URL manually..."
+          value={manualUrlInput}
+          onChange={e => setManualUrlInput(e.target.value)}
+          onKeyDown={e => {
+            if (e.key === 'Enter' && manualUrlInput.trim()) {
+              const url = manualUrlInput.trim();
+              if (viewMode === 'production') {
+                setStoredProdUrl(url);
+                if (cwd) window.cozyPane.preview.storeUrl(cwd, { productionUrl: url }).catch(() => {});
+              } else {
+                setManualLocalUrl(url);
+              }
+              setManualUrlInput('');
+            }
+          }}
+          placeholder={viewMode === 'production' ? 'https://yourapp.com' : 'http://localhost:3000'}
           spellCheck={false}
           style={urlInputStyle}
         />
       </div>
     </div>
   );
-
-  const renderIdleState = () => {
-    // Show different message for production vs local view
-    const isProdView = viewMode === 'production';
-
-    return (
-      <div style={{
-        display: 'flex',
-        flexDirection: 'column',
-        alignItems: 'center',
-        justifyContent: 'center',
-        height: '100%',
-        color: 'var(--text-secondary, #888)',
-        gap: '1em',
-        padding: '2em',
-      }}>
-        <div style={{ fontSize: '1.2em', color: 'var(--text-primary, #e0e0e0)' }}>
-          {isProdView ? 'No production URL configured' : statusMessage === 'Only API servers detected' ? 'Only API servers detected' : 'No dev server detected'}
-        </div>
-
-        {!isProdView && statusMessage === 'Only API servers detected' && (
-          <div style={{ fontSize: '0.82em', color: 'var(--text-secondary, #888)', textAlign: 'center', maxWidth: 400 }}>
-            The detected ports serve API responses (JSON), not a web frontend. You can click a port below to view it anyway.
-          </div>
-        )}
-
-        {isProdView && (
-          <div style={{ fontSize: '0.82em', color: 'var(--text-secondary, #888)', textAlign: 'center', maxWidth: 400 }}>
-            Enter your production URL below, or use AI Analyze to detect it from package.json / README.
-          </div>
-        )}
-
-        {projectInfo?.type && (
-          <div style={{ fontSize: '0.85em', color: 'var(--text-secondary, #888)', textAlign: 'center' }}>
-            Detected <strong style={{ color: 'var(--accent, #7c6fe0)' }}>{projectInfo.type}</strong> project
-          </div>
-        )}
-
-        {aiAnalysis?.summary && (
-          <div style={{ fontSize: '0.82em', color: 'var(--text-secondary, #888)', textAlign: 'center', maxWidth: 400 }}>
-            {aiAnalysis.summary}
-          </div>
-        )}
-
-        {!isProdView && detectedPorts.length > 0 && (
-          <div style={{ fontSize: '0.82em' }}>
-            <span style={{ color: 'var(--text-secondary, #888)' }}>Active ports: </span>
-            {detectedPorts.map(p => (
-              <button
-                key={p}
-                onClick={() => { setSelectedPort(p); setServerState('ready'); }}
-                style={{ ...portBtnStyle, marginLeft: '0.3em' }}
-              >
-                :{p}
-              </button>
-            ))}
-          </div>
-        )}
-
-        <div style={{ display: 'flex', gap: '0.5em', marginTop: '0.5em' }}>
-          <button onClick={runAiAnalysis} style={secondaryBtnStyle} disabled={analyzing}>
-            {analyzing ? 'Analyzing...' : 'AI Analyze'}
-          </button>
-        </div>
-
-        {aiAnalysis?.error && (
-          <div style={{ fontSize: '0.78em', color: '#e74c3c' }}>{aiAnalysis.error}</div>
-        )}
-
-        {/* Manual URL fallback */}
-        <div style={{ display: 'flex', gap: '0.3em', width: '100%', maxWidth: 400, marginTop: '0.5em' }}>
-          <input
-            type="text"
-            value={manualUrl}
-            onChange={e => setManualUrl(e.target.value)}
-            onKeyDown={e => {
-              if (e.key === 'Enter') {
-                const url = manualUrl.trim();
-                if (isProdView) {
-                  setStoredProdUrl(url);
-                  if (cwd) window.cozyPane.preview.storeUrl(cwd, { productionUrl: url }).catch(() => {});
-                } else {
-                  setManualUrl(url);
-                  setServerState('ready');
-                }
-              }
-            }}
-            placeholder={isProdView ? 'Enter production URL...' : 'Enter URL manually...'}
-            spellCheck={false}
-            style={urlInputStyle}
-          />
-        </div>
-      </div>
-    );
-  };
 
   const showLocal = viewMode === 'local' || viewMode === 'split';
   const showProd = viewMode === 'production' || viewMode === 'split';
-  // Only show webview content when server is confirmed ready (not idle/detecting/failed)
-  const hasContent = serverState === 'ready' && ((showLocal && effectiveLocalUrl) || (showProd && effectiveProdUrl));
-  const isStarting = serverState === 'detecting' || serverState === 'starting' || serverState === 'waiting';
+  const hasContent = (showLocal && effectiveLocalUrl) || (showProd && effectiveProdUrl);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
-      {/* Toolbar */}
       <div style={toolbarStyle}>
-        {/* View mode tabs */}
         <div style={{ display: 'flex', gap: '0.15em' }}>
-          <button
-            onClick={() => setViewMode('local')}
-            style={{ ...modeBtnStyle, ...(viewMode === 'local' ? modeActiveStyle : {}) }}
-          >
+          <button onClick={() => setViewMode('local')} style={{ ...modeBtnStyle, ...(viewMode === 'local' ? modeActiveStyle : {}) }}>
             Local
             {effectiveLocalUrl && <span style={dotStyle('#5ce0a8')} />}
           </button>
-          <button
-            onClick={() => setViewMode('production')}
-            style={{ ...modeBtnStyle, ...(viewMode === 'production' ? modeActiveStyle : {}) }}
-          >
+          <button onClick={() => setViewMode('production')} style={{ ...modeBtnStyle, ...(viewMode === 'production' ? modeActiveStyle : {}) }}>
             Prod
             {effectiveProdUrl && <span style={dotStyle('#5cb8f0')} />}
           </button>
@@ -946,14 +503,11 @@ export default function Preview({ localUrl, productionUrl, cwd, onSendToTerminal
               value={selectedDeploymentUrl || ''}
               onChange={e => setSelectedDeploymentUrl(e.target.value)}
               style={{
-                padding: '0.15em 0.3em',
-                borderRadius: 3,
+                padding: '0.15em 0.3em', borderRadius: 3,
                 border: '1px solid var(--border, #2a2b3e)',
                 backgroundColor: 'var(--bg-primary, #1a1b2e)',
                 color: 'var(--text-secondary, #aaa)',
-                fontSize: '0.72em',
-                cursor: 'pointer',
-                maxWidth: 140,
+                fontSize: '0.72em', cursor: 'pointer', maxWidth: 140,
               }}
               title="Switch deployment"
             >
@@ -962,21 +516,15 @@ export default function Preview({ localUrl, productionUrl, cwd, onSendToTerminal
               ))}
             </select>
           )}
-          <button
-            onClick={() => setViewMode('split')}
-            style={{ ...modeBtnStyle, ...(viewMode === 'split' ? modeActiveStyle : {}) }}
-            title="Side by side"
-          >
+          <button onClick={() => setViewMode('split')} style={{ ...modeBtnStyle, ...(viewMode === 'split' ? modeActiveStyle : {}) }} title="Side by side">
             Split
           </button>
         </div>
 
-        {/* Reload */}
         <button onClick={reload} style={toolBtnStyle} title="Reload">
           {loading ? '...' : '\u21BB'}
         </button>
 
-        {/* Device buttons */}
         <div style={{ display: 'flex', gap: '0.15em' }}>
           {(['phone', 'tablet', 'desktop'] as DeviceMode[]).map(d => (
             <button
@@ -996,7 +544,21 @@ export default function Preview({ localUrl, productionUrl, cwd, onSendToTerminal
 
         <div style={{ flex: 1 }} />
 
-        {/* Auto-fix toggle */}
+        <button
+          onClick={sendDevToolsToClaude}
+          disabled={!hasDevToolsData || sendingToClaude}
+          style={{
+            ...toolBtnStyle,
+            color: hasDevToolsData ? 'var(--accent, #7c6fe0)' : 'var(--text-secondary, #555)',
+            fontWeight: 600, fontSize: '0.75em',
+            opacity: hasDevToolsData ? 1 : 0.5,
+            cursor: hasDevToolsData && !sendingToClaude ? 'pointer' : 'default',
+          }}
+          title="Send console logs, network errors, screenshot, and HTML to Claude"
+        >
+          {sendingToClaude ? 'Sending...' : 'Send to Claude'}
+        </button>
+
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.3em' }}>
           <span style={{ fontSize: '0.72em', color: 'var(--text-secondary, #888)' }}>Auto-fix</span>
           <button
@@ -1015,57 +577,41 @@ export default function Preview({ localUrl, productionUrl, cwd, onSendToTerminal
         </div>
       </div>
 
-      {/* Status bar showing detected URL */}
       {effectiveLocalUrl && (
         <div style={{
-          padding: '0.2em 0.6em',
-          fontSize: '0.75em',
+          padding: '0.2em 0.6em', fontSize: '0.75em',
           color: 'var(--text-secondary, #888)',
           backgroundColor: 'var(--bg-primary, #1a1b2e)',
           borderBottom: '1px solid var(--border, #2a2b3e)',
-          display: 'flex',
-          alignItems: 'center',
-          gap: '0.4em',
+          display: 'flex', alignItems: 'center', gap: '0.4em',
         }}>
           <span style={{ ...dotStyle('#5ce0a8'), position: 'relative', top: 0 }} />
           <span style={{ fontFamily: 'monospace' }}>{effectiveLocalUrl}</span>
           {staticUrl && <span style={{ fontSize: '0.9em', color: 'var(--text-secondary, #666)' }}>(static)</span>}
-          {detectedPorts.length > 1 && detectedPorts.map(p => (
-            <button
-              key={p}
-              onClick={() => setSelectedPort(p)}
-              style={{
-                ...portBtnStyle,
-                marginLeft: '0.2em',
-                padding: '0 4px',
-                fontSize: '0.85em',
-                backgroundColor: selectedPort === p ? 'var(--accent, #7c6fe0)' : 'transparent',
-                color: selectedPort === p ? '#fff' : 'var(--accent, #7c6fe0)',
-              }}
-            >
-              :{p}
-            </button>
-          ))}
           {effectiveProdUrl && (
             <>
               <span style={{ margin: '0 0.3em', color: 'var(--border, #3a3b4e)' }}>|</span>
               <span style={{ ...dotStyle('#5cb8f0'), position: 'relative', top: 0 }} />
               <span style={{ fontFamily: 'monospace' }}>{effectiveProdUrl}</span>
+              <button
+                title="Clear production URL"
+                onClick={() => {
+                  setStoredProdUrl(null);
+                  setSelectedDeploymentUrl(null);
+                  if (cwd) window.cozyPane.preview.storeUrl(cwd, { productionUrl: '' }).catch(() => {});
+                }}
+                style={{ ...tinyBtnStyle, padding: '0 3px', color: '#888', fontSize: '0.85em', lineHeight: 1 }}
+              >
+                x
+              </button>
             </>
           )}
         </div>
       )}
 
-      {/* Content area */}
       <div style={{ flex: 1, display: 'flex', overflow: 'hidden', position: 'relative' }}>
-        {showSubPicker && !hasContent ? (
-          renderSubProjectPicker()
-        ) : isStarting && !hasContent ? (
-          renderStartingState()
-        ) : serverState === 'failed' && !hasContent ? (
-          renderFailedState()
-        ) : !hasContent ? (
-          renderIdleState()
+        {!hasContent ? (
+          renderEmptyState()
         ) : (
           <>
             {showLocal && effectiveLocalUrl && renderWebview(effectiveLocalUrl, localWebviewRef, 'Local')}
@@ -1073,37 +619,12 @@ export default function Preview({ localUrl, productionUrl, cwd, onSendToTerminal
               <div style={{ width: 2, backgroundColor: 'var(--border, #2a2b3e)', flexShrink: 0 }} />
             )}
             {showProd && effectiveProdUrl && renderWebview(effectiveProdUrl, prodWebviewRef, 'Production')}
-            {showLocal && !effectiveLocalUrl && renderStartingState()}
-            {showProd && !effectiveProdUrl && (
-              <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', color: 'var(--text-secondary, #666)', gap: '0.8em', padding: '2em' }}>
-                <div>No production URL configured</div>
-                <div style={{ display: 'flex', gap: '0.3em', width: '100%', maxWidth: 350 }}>
-                  <input
-                    type="text"
-                    value={manualUrl}
-                    onChange={e => setManualUrl(e.target.value)}
-                    onKeyDown={e => {
-                      if (e.key === 'Enter' && manualUrl.trim()) {
-                        const url = manualUrl.trim();
-                        setStoredProdUrl(url);
-                        if (cwd) window.cozyPane.preview.storeUrl(cwd, { productionUrl: url }).catch(() => {});
-                      }
-                    }}
-                    placeholder="Enter production URL..."
-                    spellCheck={false}
-                    style={urlInputStyle}
-                  />
-                </div>
-                <button onClick={runAiAnalysis} style={secondaryBtnStyle} disabled={analyzing}>
-                  {analyzing ? 'Analyzing...' : 'AI Analyze'}
-                </button>
-              </div>
-            )}
+            {showLocal && !effectiveLocalUrl && renderEmptyState()}
+            {showProd && !effectiveProdUrl && renderEmptyState()}
           </>
         )}
       </div>
 
-      {/* Error drawer */}
       <div style={{ borderTop: '1px solid var(--border, #2a2b3e)', backgroundColor: 'var(--bg-secondary, #161822)' }}>
         <div
           onClick={() => setDrawerOpen(v => !v)}
@@ -1129,13 +650,13 @@ export default function Preview({ localUrl, productionUrl, cwd, onSendToTerminal
             {errors.length > 0 && (
               <>
                 <button
-                  onClick={(e) => { e.stopPropagation(); sendErrorsToClaude(); }}
+                  onClick={(e) => { e.stopPropagation(); sendDevToolsToClaude(); }}
                   style={{ ...tinyBtnStyle, color: 'var(--accent, #7c6fe0)', fontWeight: 600 }}
                 >
                   Fix with Claude
                 </button>
                 <button
-                  onClick={(e) => { e.stopPropagation(); setErrors([]); }}
+                  onClick={(e) => { e.stopPropagation(); setErrors([]); setConsoleLogs([]); setNetworkErrors([]); }}
                   style={tinyBtnStyle}
                 >
                   Clear
@@ -1181,8 +702,7 @@ export default function Preview({ localUrl, productionUrl, cwd, onSendToTerminal
 }
 
 const toolbarStyle: React.CSSProperties = {
-  display: 'flex',
-  alignItems: 'center',
+  display: 'flex', alignItems: 'center',
   padding: '0.35em 0.5em',
   borderBottom: '1px solid var(--border, #2a2b3e)',
   backgroundColor: 'var(--bg-secondary, #161822)',
@@ -1190,27 +710,20 @@ const toolbarStyle: React.CSSProperties = {
 };
 
 const toolBtnStyle: React.CSSProperties = {
-  padding: '0.2em 0.5em',
-  borderRadius: 4,
+  padding: '0.2em 0.5em', borderRadius: 4,
   border: '1px solid var(--border, #2a2b3e)',
   backgroundColor: 'transparent',
   color: 'var(--text-secondary, #aaa)',
-  fontSize: '0.82em',
-  cursor: 'pointer',
-  lineHeight: 1,
+  fontSize: '0.82em', cursor: 'pointer', lineHeight: 1,
 };
 
 const modeBtnStyle: React.CSSProperties = {
-  padding: '0.2em 0.6em',
-  borderRadius: 4,
+  padding: '0.2em 0.6em', borderRadius: 4,
   border: '1px solid var(--border, #2a2b3e)',
   backgroundColor: 'transparent',
   color: 'var(--text-secondary, #888)',
-  fontSize: '0.78em',
-  cursor: 'pointer',
-  display: 'flex',
-  alignItems: 'center',
-  gap: '0.3em',
+  fontSize: '0.78em', cursor: 'pointer',
+  display: 'flex', alignItems: 'center', gap: '0.3em',
 };
 
 const modeActiveStyle: React.CSSProperties = {
@@ -1220,64 +733,22 @@ const modeActiveStyle: React.CSSProperties = {
 };
 
 const dotStyle = (color: string): React.CSSProperties => ({
-  display: 'inline-block',
-  width: 6,
-  height: 6,
-  borderRadius: '50%',
-  backgroundColor: color,
-  flexShrink: 0,
+  display: 'inline-block', width: 6, height: 6,
+  borderRadius: '50%', backgroundColor: color, flexShrink: 0,
 });
 
-const actionBtnStyle: React.CSSProperties = {
-  padding: '0.5em 1.2em',
-  borderRadius: 6,
-  border: 'none',
-  backgroundColor: 'var(--accent, #7c6fe0)',
-  color: '#fff',
-  fontSize: '0.88em',
-  cursor: 'pointer',
-  fontWeight: 600,
-};
-
-const secondaryBtnStyle: React.CSSProperties = {
-  padding: '0.35em 0.8em',
-  borderRadius: 4,
-  border: '1px solid var(--border, #3a3b4e)',
-  backgroundColor: 'transparent',
-  color: 'var(--text-secondary, #aaa)',
-  fontSize: '0.8em',
-  cursor: 'pointer',
-};
-
-const portBtnStyle: React.CSSProperties = {
-  padding: '0.15em 0.5em',
-  borderRadius: 3,
-  border: '1px solid var(--accent, #7c6fe0)',
-  backgroundColor: 'transparent',
-  color: 'var(--accent, #7c6fe0)',
-  fontSize: '0.85em',
-  cursor: 'pointer',
-  fontFamily: 'monospace',
-};
-
 const urlInputStyle: React.CSSProperties = {
-  flex: 1,
-  padding: '0.3em 0.6em',
-  borderRadius: 4,
+  flex: 1, padding: '0.3em 0.6em', borderRadius: 4,
   border: '1px solid var(--border, #2a2b3e)',
   backgroundColor: 'var(--bg-primary, #1a1b2e)',
   color: 'var(--text-primary, #e0e0e0)',
-  fontSize: '0.82em',
-  fontFamily: 'inherit',
-  outline: 'none',
+  fontSize: '0.82em', fontFamily: 'inherit', outline: 'none',
 };
 
 const tinyBtnStyle: React.CSSProperties = {
-  padding: '2px 8px',
-  borderRadius: 3,
+  padding: '2px 8px', borderRadius: 3,
   border: '1px solid var(--border, #2a2b3e)',
   backgroundColor: 'transparent',
   color: 'var(--text-secondary, #aaa)',
-  fontSize: '0.75em',
-  cursor: 'pointer',
+  fontSize: '0.75em', cursor: 'pointer',
 };

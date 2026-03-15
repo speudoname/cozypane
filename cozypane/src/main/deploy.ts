@@ -1,10 +1,11 @@
-import { ipcMain, safeStorage, app, shell, BrowserWindow } from 'electron';
+import { ipcMain, app, shell, BrowserWindow } from 'electron';
 import path from 'path';
 import fs from 'fs';
-import { execFile } from 'child_process';
-import { promisify } from 'util';
+import crypto from 'crypto';
+import { encryptString, decryptString } from './crypto';
+import { apiFetch as sharedApiFetch, createTarball as sharedCreateTarball, APP_NAME_REGEX } from './deploy-shared';
 
-const execFileAsync = promisify(execFile);
+let pendingOAuthState: string | null = null;
 
 export const API_BASE = process.env.COZYPANE_API_URL || 'https://api.cozypane.com';
 
@@ -30,7 +31,7 @@ function readAuth(): StoredAuth | null {
 function writeAuth(auth: StoredAuth) {
   const dir = path.dirname(getAuthPath());
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(getAuthPath(), JSON.stringify(auth, null, 2));
+  fs.writeFileSync(getAuthPath(), JSON.stringify(auth, null, 2), { mode: 0o600 });
 }
 
 function clearAuth() {
@@ -39,24 +40,9 @@ function clearAuth() {
   } catch {}
 }
 
-function encryptToken(token: string): string {
-  if (token && safeStorage.isEncryptionAvailable()) {
-    return safeStorage.encryptString(token).toString('base64');
-  }
-  return token ? Buffer.from(token).toString('base64') : '';
-}
-
-function decryptToken(encrypted: string): string {
-  if (!encrypted) return '';
-  if (safeStorage.isEncryptionAvailable()) {
-    try {
-      return safeStorage.decryptString(Buffer.from(encrypted, 'base64'));
-    } catch {
-      try { return Buffer.from(encrypted, 'base64').toString('utf-8'); } catch { return ''; }
-    }
-  }
-  try { return Buffer.from(encrypted, 'base64').toString('utf-8'); } catch { return ''; }
-}
+// Use shared encrypt/decrypt from crypto.ts
+const encryptToken = encryptString;
+const decryptToken = decryptString;
 
 export function getToken(): string {
   const auth = readAuth();
@@ -64,37 +50,8 @@ export function getToken(): string {
   return decryptToken(auth.encryptedToken);
 }
 
-async function apiFetch(endpoint: string, options: RequestInit & { timeoutMs?: number } = {}): Promise<any> {
-  const token = getToken();
-  const headers: Record<string, string> = {
-    ...(options.headers as Record<string, string> || {}),
-  };
-  if (token) {
-    headers['Authorization'] = `Bearer ${token}`;
-  }
-  // Only set Content-Type for requests that actually have a body
-  // (Fastify rejects empty bodies when Content-Type is application/json)
-  if (options.body && !(options.body instanceof FormData) && !headers['Content-Type']) {
-    headers['Content-Type'] = 'application/json';
-  }
-
-  const timeout = options.timeoutMs || 60000;
-  const response = await fetch(`${API_BASE}${endpoint}`, {
-    ...options,
-    headers,
-    signal: AbortSignal.timeout(timeout),
-  });
-
-  if (!response.ok) {
-    const text = await response.text().catch(() => '');
-    throw new Error(`API error ${response.status}: ${text || response.statusText}`);
-  }
-
-  const contentType = response.headers.get('content-type') || '';
-  if (contentType.includes('application/json')) {
-    return response.json();
-  }
-  return response.text();
+function apiFetch(endpoint: string, options: RequestInit & { timeoutMs?: number } = {}): Promise<any> {
+  return sharedApiFetch(API_BASE, endpoint, getToken, options);
 }
 
 function detectProjectTypeInDir(dir: string): string | null {
@@ -127,35 +84,18 @@ function detectProjectType(cwd: string): { type: string; name: string } {
   return { type: 'unknown', name };
 }
 
-async function createTarball(cwd: string): Promise<string> {
+function createTarball(cwd: string): Promise<string> {
   const tmpDir = path.join(app.getPath('temp'), 'cozypane-deploy');
-  if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
-  const tarPath = path.join(tmpDir, `deploy-${Date.now()}.tar.gz`);
-
-  const excludeArgs = [
-    '--exclude=.git',
-    '--exclude=node_modules',
-    '--exclude=.env',
-    '--exclude=__pycache__',
-    '--exclude=.venv',
-    '--exclude=.DS_Store',
-  ];
-
-  // Also use .gitignore if it exists
-  const gitignorePath = path.join(cwd, '.gitignore');
-  if (fs.existsSync(gitignorePath)) {
-    excludeArgs.push(`--exclude-from=${gitignorePath}`);
-  }
-
-  await execFileAsync('tar', ['czf', tarPath, ...excludeArgs, '-C', cwd, '.']);
-  return tarPath;
+  return sharedCreateTarball(cwd, tmpDir);
 }
 
 export function registerDeployHandlers(getWindow: () => BrowserWindow | null) {
   ipcMain.handle('deploy:login', async () => {
     const clientId = 'Ov23liUojbnQSvCY9Eq9';
     const redirectUri = encodeURIComponent('cozypane://auth/callback');
-    const oauthUrl = `https://github.com/login/oauth/authorize?client_id=${clientId}&redirect_uri=${redirectUri}&scope=read:user`;
+    const state = crypto.randomUUID();
+    pendingOAuthState = state;
+    const oauthUrl = `https://github.com/login/oauth/authorize?client_id=${clientId}&redirect_uri=${redirectUri}&scope=read:user&state=${state}`;
     await shell.openExternal(oauthUrl);
   });
 
@@ -176,42 +116,17 @@ export function registerDeployHandlers(getWindow: () => BrowserWindow | null) {
     };
   });
 
-  ipcMain.handle('deploy:handleCallback', async (_event, code: string) => {
-    try {
-      // Exchange auth code for JWT
-      const result = await fetch(`${API_BASE}/auth/github`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ code }),
-        signal: AbortSignal.timeout(15000),
-      });
-
-      if (!result.ok) {
-        throw new Error(`Auth failed: ${result.status}`);
-      }
-
-      const data = await result.json() as { token: string; user: { username: string; avatarUrl: string } };
-
-      writeAuth({
-        encryptedToken: encryptToken(data.token),
-        username: data.user.username,
-        avatarUrl: data.user.avatarUrl,
-      });
-
-      return { success: true, username: data.user.username, avatarUrl: data.user.avatarUrl };
-    } catch (err: any) {
-      return { error: err.message || 'Authentication failed' };
-    }
-  });
-
   ipcMain.handle('deploy:detectProject', async (_event, cwd: string) => {
     return detectProjectType(cwd);
   });
 
   ipcMain.handle('deploy:start', async (_event, cwd: string, appName: string, tier?: string) => {
+    if (!APP_NAME_REGEX.test(appName)) {
+      return { error: `Invalid app name "${appName}". Must be 2-64 chars, lowercase alphanumeric and hyphens, start/end with letter or number.` };
+    }
     try {
       const tarPath = await createTarball(cwd);
-      const tarBuffer = fs.readFileSync(tarPath);
+      const tarBuffer = await fs.promises.readFile(tarPath);
 
       // Clean up temp file
       try { fs.unlinkSync(tarPath); } catch {}
@@ -234,61 +149,95 @@ export function registerDeployHandlers(getWindow: () => BrowserWindow | null) {
 
       return result;
     } catch (err: any) {
-      throw new Error(err.message || 'Deploy failed');
+      return { error: err.message || 'Deploy failed' };
     }
   });
 
   ipcMain.handle('deploy:list', async () => {
-    return apiFetch('/deploy/list');
+    try {
+      return await apiFetch('/deploy/list');
+    } catch (err: any) {
+      return { error: err.message || 'Failed to list deployments' };
+    }
   });
 
   ipcMain.handle('deploy:get', async (_event, id: string) => {
-    return apiFetch(`/deploy/${id}`);
+    try {
+      return await apiFetch(`/deploy/${encodeURIComponent(id)}`);
+    } catch (err: any) {
+      return { error: err.message || 'Failed to get deployment' };
+    }
   });
 
   ipcMain.handle('deploy:logs', async (_event, id: string) => {
-    return apiFetch(`/deploy/${id}/logs`);
+    try {
+      return await apiFetch(`/deploy/${encodeURIComponent(id)}/logs`);
+    } catch (err: any) {
+      return { error: err.message || 'Failed to get logs' };
+    }
   });
 
   ipcMain.handle('deploy:delete', async (_event, id: string) => {
-    return apiFetch(`/deploy/${id}`, { method: 'DELETE' });
+    try {
+      return await apiFetch(`/deploy/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    } catch (err: any) {
+      return { error: err.message || 'Failed to delete deployment' };
+    }
   });
 
   ipcMain.handle('deploy:redeploy', async (_event, id: string) => {
-    return apiFetch(`/deploy/${id}/redeploy`, { method: 'POST' });
-  });
-
-  // Handle protocol callback URL on macOS (forwarded from main.ts open-url)
-  ipcMain.on('deploy:processProtocolUrl', async (_event, url: string) => {
     try {
-      const parsed = new URL(url);
-      if (parsed.hostname === 'auth' && parsed.pathname.startsWith('/callback')) {
-        const code = parsed.searchParams.get('code');
-        if (code) {
-          const result = await fetch(`${API_BASE}/auth/github`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ code }),
-            signal: AbortSignal.timeout(15000),
-          });
-
-          if (result.ok) {
-            const data = await result.json() as { token: string; user: { username: string; avatarUrl: string } };
-            writeAuth({
-              encryptedToken: encryptToken(data.token),
-              username: data.user.username,
-              avatarUrl: data.user.avatarUrl,
-            });
-            // Notify renderer that auth succeeded
-            getWindow()?.webContents.send('deploy:auth-success', {
-              username: data.user.username,
-              avatarUrl: data.user.avatarUrl,
-            });
-          }
-        }
-      }
-    } catch (err) {
-      console.error('[CozyPane] Protocol callback error:', err);
+      return await apiFetch(`/deploy/${encodeURIComponent(id)}/redeploy`, { method: 'POST' });
+    } catch (err: any) {
+      return { error: err.message || 'Failed to redeploy' };
     }
   });
+
+}
+
+export async function processProtocolUrl(url: string, getWindow: () => BrowserWindow | null): Promise<void> {
+  try {
+    const parsed = new URL(url);
+    if (parsed.hostname === 'auth' && parsed.pathname.startsWith('/callback')) {
+      // Verify OAuth state to prevent CSRF
+      const returnedState = parsed.searchParams.get('state');
+      if (!pendingOAuthState || returnedState !== pendingOAuthState) {
+        console.error('[CozyPane] OAuth state mismatch — possible CSRF attempt');
+        pendingOAuthState = null;
+        return;
+      }
+      pendingOAuthState = null;
+
+      const code = parsed.searchParams.get('code');
+      if (code) {
+        const result = await fetch(`${API_BASE}/auth/github`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ code }),
+          signal: AbortSignal.timeout(15000),
+        });
+
+        if (result.ok) {
+          const data = await result.json() as { token: string; user: { username: string; avatarUrl: string } };
+          writeAuth({
+            encryptedToken: encryptToken(data.token),
+            username: data.user.username,
+            avatarUrl: data.user.avatarUrl,
+          });
+          // Notify renderer that auth succeeded
+          getWindow()?.webContents.send('deploy:auth-success', {
+            username: data.user.username,
+            avatarUrl: data.user.avatarUrl,
+          });
+        } else {
+          const text = await result.text().catch(() => '');
+          console.error('[CozyPane] OAuth token exchange failed:', result.status, text);
+          getWindow()?.webContents.send('deploy:auth-error', { error: `Authentication failed (${result.status})` });
+        }
+      }
+    }
+  } catch (err: any) {
+    console.error('[CozyPane] Protocol callback error:', err);
+    getWindow()?.webContents.send('deploy:auth-error', { error: err.message || 'Authentication failed' });
+  }
 }

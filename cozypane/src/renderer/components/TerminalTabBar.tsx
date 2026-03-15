@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import type { AiAction, CostInfo } from '../lib/terminalAnalyzer';
+import type { AiAction } from '../lib/terminalAnalyzer';
 
 export interface TerminalTab {
   id: string;
@@ -8,8 +8,6 @@ export interface TerminalTab {
   customLabel?: string;
   cwd: string;
   aiAction: AiAction;
-  costInfo: CostInfo;
-  conversationTurns: ConversationTurn[];
   launched: boolean;
   autoCommand?: string;
   previewLocalUrl?: string;

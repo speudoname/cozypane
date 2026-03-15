@@ -1,6 +1,7 @@
-import { ipcMain, safeStorage, app } from 'electron';
+import { ipcMain, app } from 'electron';
 import path from 'path';
 import fs from 'fs';
+import { encryptString, decryptString } from './crypto';
 
 interface StoredSettings {
   provider: string;
@@ -44,35 +45,9 @@ function writeSettings(settings: StoredSettings) {
   fs.writeFileSync(getSettingsPath(), JSON.stringify(settings, null, 2));
 }
 
-function encryptKey(key: string): string {
-  if (key && safeStorage.isEncryptionAvailable()) {
-    return safeStorage.encryptString(key).toString('base64');
-  }
-  // Fallback: base64 only (not truly secure, but userData is per-user)
-  return key ? Buffer.from(key).toString('base64') : '';
-}
-
-function decryptKey(encrypted: string): string {
-  if (!encrypted) return '';
-  if (safeStorage.isEncryptionAvailable()) {
-    try {
-      return safeStorage.decryptString(Buffer.from(encrypted, 'base64'));
-    } catch {
-      // Might be base64-only fallback from before encryption was available
-      try { return Buffer.from(encrypted, 'base64').toString('utf-8'); } catch { return ''; }
-    }
-  }
-  try { return Buffer.from(encrypted, 'base64').toString('utf-8'); } catch { return ''; }
-}
-
-export function getDecryptedApiKey(): string {
-  const settings = readSettings();
-  return decryptKey(settings.encryptedKey);
-}
-
-export function getSettings(): StoredSettings & { provider: string; model: string } {
-  return readSettings();
-}
+// Use shared encrypt/decrypt from crypto.ts
+const encryptKey = encryptString;
+const decryptKey = decryptString;
 
 export async function callLlm(prompt: string, maxTokens: number): Promise<{ text?: string; error?: string }> {
   const settings = readSettings();
@@ -80,39 +55,49 @@ export async function callLlm(prompt: string, maxTokens: number): Promise<{ text
   if (!apiKey) return { error: 'No API key configured. Add one in Settings.' };
 
   if (settings.provider === 'anthropic') {
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
-      },
-      body: JSON.stringify({
-        model: settings.model,
-        max_tokens: maxTokens,
-        messages: [{ role: 'user', content: prompt }],
-      }),
-      signal: AbortSignal.timeout(15000),
-    });
+    let response: Response;
+    try {
+      response = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': apiKey,
+          'anthropic-version': '2023-06-01',
+        },
+        body: JSON.stringify({
+          model: settings.model,
+          max_tokens: maxTokens,
+          messages: [{ role: 'user', content: prompt }],
+        }),
+        signal: AbortSignal.timeout(15000),
+      });
+    } catch (err: any) {
+      return { error: err.message || 'Network error' };
+    }
     if (!response.ok) return { error: `API error: ${response.status} ${response.statusText}` };
     let data: any;
     try { data = await response.json(); } catch { return { error: 'Invalid response from API' }; }
     if (data.content?.[0]?.text) return { text: data.content[0].text.trim() };
     return { error: data.error?.message || 'API error' };
   } else if (settings.provider === 'openai') {
-    const response = await fetch('https://api.openai.com/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        model: settings.model,
-        max_tokens: maxTokens,
-        messages: [{ role: 'user', content: prompt }],
-      }),
-      signal: AbortSignal.timeout(15000),
-    });
+    let response: Response;
+    try {
+      response = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify({
+          model: settings.model,
+          max_tokens: maxTokens,
+          messages: [{ role: 'user', content: prompt }],
+        }),
+        signal: AbortSignal.timeout(15000),
+      });
+    } catch (err: any) {
+      return { error: err.message || 'Network error' };
+    }
     if (!response.ok) return { error: `API error: ${response.status} ${response.statusText}` };
     let data: any;
     try { data = await response.json(); } catch { return { error: 'Invalid response from API' }; }
@@ -136,6 +121,16 @@ export function registerSettingsHandlers() {
 
   ipcMain.handle('settings:set', (_event, data: { provider: string; model: string; apiKey?: string }) => {
     try {
+      // Validate provider
+      if (!Object.keys(PROVIDERS).includes(data.provider)) {
+        return { error: `Invalid provider: ${data.provider}` };
+      }
+      // Validate model belongs to the selected provider
+      const providerModels = PROVIDERS[data.provider].models.map(m => m.id);
+      if (!providerModels.includes(data.model)) {
+        return { error: `Invalid model "${data.model}" for provider "${data.provider}"` };
+      }
+
       const current = readSettings();
       let encryptedKey = current.encryptedKey;
 
@@ -155,15 +150,4 @@ export function registerSettingsHandlers() {
     }
   });
 
-  ipcMain.handle('settings:summarize', async (_event, changes: { type: string; name: string }[]) => {
-    const prompt = `Summarize what happened in this coding session based on these file changes. Be concise (1-2 sentences), friendly, and use plain English. Focus on what was accomplished, not individual file names.\n\nChanges:\n${changes.map(c => `- ${c.name}: ${c.type}`).join('\n')}`;
-
-    try {
-      const result = await callLlm(prompt, 200);
-      if (result.error) return { error: result.error };
-      return { summary: result.text };
-    } catch (err: any) {
-      return { error: err.message || 'API call failed' };
-    }
-  });
 }

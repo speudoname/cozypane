@@ -10,15 +10,20 @@ import { z } from 'zod';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
-import { execFile } from 'child_process';
-import { promisify } from 'util';
-
-const execFileAsync = promisify(execFile);
+import { apiFetch as sharedApiFetch, createTarball as sharedCreateTarball, APP_NAME_REGEX } from './deploy-shared.js';
 
 const API_BASE = process.env.COZYPANE_API_URL || 'https://api.cozypane.com';
 const DEPLOY_TOKEN = process.env.COZYPANE_DEPLOY_TOKEN || '';
 
-const APP_NAME_REGEX = /^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$/;
+function getUserDataDir(): string {
+  if (process.platform === 'darwin') {
+    return path.join(os.homedir(), 'Library', 'Application Support', 'cozypane');
+  } else if (process.platform === 'win32') {
+    return path.join(process.env.APPDATA || os.homedir(), 'cozypane');
+  } else {
+    return path.join(os.homedir(), '.config', 'cozypane');
+  }
+}
 
 function requireToken(): string {
   if (!DEPLOY_TOKEN) {
@@ -29,59 +34,13 @@ function requireToken(): string {
   return DEPLOY_TOKEN;
 }
 
-async function apiFetch(endpoint: string, options: RequestInit & { timeoutMs?: number } = {}): Promise<any> {
-  const token = requireToken();
-  const headers: Record<string, string> = {
-    ...(options.headers as Record<string, string> || {}),
-  };
-  headers['Authorization'] = `Bearer ${token}`;
-
-  // Only set Content-Type for requests that actually have a body
-  // (Fastify rejects empty bodies when Content-Type is application/json)
-  if (options.body && !(options.body instanceof FormData) && !headers['Content-Type']) {
-    headers['Content-Type'] = 'application/json';
-  }
-
-  const timeout = options.timeoutMs || 60000;
-  const response = await fetch(`${API_BASE}${endpoint}`, {
-    ...options,
-    headers,
-    signal: AbortSignal.timeout(timeout),
-  });
-
-  if (!response.ok) {
-    const text = await response.text().catch(() => '');
-    throw new Error(`API error ${response.status}: ${text || response.statusText}`);
-  }
-
-  const contentType = response.headers.get('content-type') || '';
-  if (contentType.includes('application/json')) {
-    return response.json();
-  }
-  return response.text();
+function apiFetch(endpoint: string, options: RequestInit & { timeoutMs?: number } = {}): Promise<any> {
+  return sharedApiFetch(API_BASE, endpoint, requireToken, options);
 }
 
-async function createTarball(cwd: string): Promise<string> {
+function createTarball(cwd: string): Promise<string> {
   const tmpDir = path.join(os.tmpdir(), 'cozypane-deploy');
-  if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
-  const tarPath = path.join(tmpDir, `deploy-${Date.now()}.tar.gz`);
-
-  const excludeArgs = [
-    '--exclude=.git',
-    '--exclude=node_modules',
-    '--exclude=.env',
-    '--exclude=__pycache__',
-    '--exclude=.venv',
-    '--exclude=.DS_Store',
-  ];
-
-  const gitignorePath = path.join(cwd, '.gitignore');
-  if (fs.existsSync(gitignorePath)) {
-    excludeArgs.push(`--exclude-from=${gitignorePath}`);
-  }
-
-  await execFileAsync('tar', ['czf', tarPath, ...excludeArgs, '-C', cwd, '.']);
-  return tarPath;
+  return sharedCreateTarball(cwd, tmpDir);
 }
 
 // --- MCP Server ---
@@ -178,55 +137,55 @@ Note: DATABASE_URL is automatically injected when needsDatabase is set.`,
       };
     }
 
-    const tarPath = await createTarball(directory);
-    const tarBuffer = fs.readFileSync(tarPath);
-    try { fs.unlinkSync(tarPath); } catch {}
+    try {
+      const tarPath = await createTarball(directory);
+      const tarBuffer = fs.readFileSync(tarPath);
+      try { fs.unlinkSync(tarPath); } catch {}
 
-    const blob = new Blob([tarBuffer], { type: 'application/gzip' });
+      const blob = new Blob([tarBuffer], { type: 'application/gzip' });
 
-    // Text fields MUST come before the file — Fastify's multipart parser
-    // only exposes fields that appear before the file stream in data.fields.
-    const formData = new FormData();
-    formData.append('appName', appName);
-    if (tier) formData.append('tier', tier);
-    if (port) formData.append('port', String(port));
-    if (needsDatabase) formData.append('needsDatabase', needsDatabase);
-    if (env && Object.keys(env).length > 0) formData.append('env', JSON.stringify(env));
-    if (group) formData.append('group', group);
-    formData.append('file', blob, 'deploy.tar.gz');
+      // Text fields MUST come before the file — Fastify's multipart parser
+      // only exposes fields that appear before the file stream in data.fields.
+      const formData = new FormData();
+      formData.append('appName', appName);
+      if (tier) formData.append('tier', tier);
+      if (port) formData.append('port', String(port));
+      if (needsDatabase) formData.append('needsDatabase', needsDatabase);
+      if (env && Object.keys(env).length > 0) formData.append('env', JSON.stringify(env));
+      if (group) formData.append('group', group);
+      formData.append('file', blob, 'deploy.tar.gz');
 
-    const result = await apiFetch('/deploy', {
-      method: 'POST',
-      body: formData,
-      timeoutMs: 300000, // 5 minutes — Docker builds can be slow
-    });
+      const result = await apiFetch('/deploy', {
+        method: 'POST',
+        body: formData,
+        timeoutMs: 300000, // 5 minutes — Docker builds can be slow
+      });
 
-    // Store the production URL so the Preview panel can find it
-    const deployedUrl = (result as any)?.url;
-    if (deployedUrl) {
-      try {
-        let userDataDir: string;
-        if (process.platform === 'darwin') {
-          userDataDir = path.join(os.homedir(), 'Library', 'Application Support', 'cozypane');
-        } else if (process.platform === 'win32') {
-          userDataDir = path.join(process.env.APPDATA || os.homedir(), 'cozypane');
-        } else {
-          userDataDir = path.join(os.homedir(), '.config', 'cozypane');
-        }
-        const previewUrlsPath = path.join(userDataDir, 'preview-urls.json');
-        let stored: Record<string, any> = {};
-        try { stored = JSON.parse(fs.readFileSync(previewUrlsPath, 'utf-8')); } catch {}
-        stored[directory] = { ...stored[directory], productionUrl: deployedUrl };
-        fs.writeFileSync(previewUrlsPath, JSON.stringify(stored, null, 2));
-      } catch {}
+      // Store the production URL so the Preview panel can find it
+      const deployedUrl = (result as any)?.url;
+      if (deployedUrl) {
+        try {
+          const userDataDir = process.env.COZYPANE_USER_DATA || getUserDataDir();
+          const previewUrlsPath = path.join(userDataDir, 'preview-urls.json');
+          let stored: Record<string, any> = {};
+          try { stored = JSON.parse(fs.readFileSync(previewUrlsPath, 'utf-8')); } catch {}
+          stored[directory] = { ...stored[directory], productionUrl: deployedUrl };
+          fs.writeFileSync(previewUrlsPath, JSON.stringify(stored, null, 2));
+        } catch {}
+      }
+
+      return {
+        content: [{
+          type: 'text' as const,
+          text: JSON.stringify(result, null, 2),
+        }],
+      };
+    } catch (err: any) {
+      return {
+        content: [{ type: 'text' as const, text: `Deploy failed: ${err.message || err}` }],
+        isError: true,
+      };
     }
-
-    return {
-      content: [{
-        type: 'text' as const,
-        text: JSON.stringify(result, null, 2),
-      }],
-    };
   }
 );
 
@@ -235,13 +194,20 @@ server.tool(
   'List all deployments for the authenticated user. Shows all services grouped by their deploy group.',
   {},
   async () => {
-    const result = await apiFetch('/deploy/list');
-    return {
-      content: [{
-        type: 'text' as const,
-        text: JSON.stringify(result, null, 2),
-      }],
-    };
+    try {
+      const result = await apiFetch('/deploy/list');
+      return {
+        content: [{
+          type: 'text' as const,
+          text: JSON.stringify(result, null, 2),
+        }],
+      };
+    } catch (err: any) {
+      return {
+        content: [{ type: 'text' as const, text: `Failed to list deployments: ${err.message || err}` }],
+        isError: true,
+      };
+    }
   }
 );
 
@@ -252,13 +218,20 @@ server.tool(
     id: z.string().describe('Deployment ID'),
   },
   async ({ id }) => {
-    const result = await apiFetch(`/deploy/${id}`);
-    return {
-      content: [{
-        type: 'text' as const,
-        text: JSON.stringify(result, null, 2),
-      }],
-    };
+    try {
+      const result = await apiFetch(`/deploy/${encodeURIComponent(id)}`);
+      return {
+        content: [{
+          type: 'text' as const,
+          text: JSON.stringify(result, null, 2),
+        }],
+      };
+    } catch (err: any) {
+      return {
+        content: [{ type: 'text' as const, text: `Failed to get deployment: ${err.message || err}` }],
+        isError: true,
+      };
+    }
   }
 );
 
@@ -270,14 +243,21 @@ server.tool(
     type: z.enum(['runtime', 'build']).optional().describe('Log type: "runtime" (default) for container logs, "build" for Docker build output'),
   },
   async ({ id, type }) => {
-    const query = type === 'build' ? '?type=build' : '';
-    const result = await apiFetch(`/deploy/${id}/logs${query}`);
-    return {
-      content: [{
-        type: 'text' as const,
-        text: typeof result === 'string' ? result : JSON.stringify(result, null, 2),
-      }],
-    };
+    try {
+      const query = type === 'build' ? '?type=build' : '';
+      const result = await apiFetch(`/deploy/${encodeURIComponent(id)}/logs${query}`);
+      return {
+        content: [{
+          type: 'text' as const,
+          text: typeof result === 'string' ? result : JSON.stringify(result, null, 2),
+        }],
+      };
+    } catch (err: any) {
+      return {
+        content: [{ type: 'text' as const, text: `Failed to get logs: ${err.message || err}` }],
+        isError: true,
+      };
+    }
   }
 );
 
@@ -296,23 +276,30 @@ server.tool(
       };
     }
 
-    if (group) {
-      const result = await apiFetch(`/deploy/group/${encodeURIComponent(group)}`, { method: 'DELETE' });
+    try {
+      if (group) {
+        const result = await apiFetch(`/deploy/group/${encodeURIComponent(group)}`, { method: 'DELETE' });
+        return {
+          content: [{
+            type: 'text' as const,
+            text: JSON.stringify(result, null, 2),
+          }],
+        };
+      }
+
+      const result = await apiFetch(`/deploy/${encodeURIComponent(id!)}`, { method: 'DELETE' });
       return {
         content: [{
           type: 'text' as const,
           text: JSON.stringify(result, null, 2),
         }],
       };
+    } catch (err: any) {
+      return {
+        content: [{ type: 'text' as const, text: `Failed to delete deployment: ${err.message || err}` }],
+        isError: true,
+      };
     }
-
-    const result = await apiFetch(`/deploy/${id}`, { method: 'DELETE' });
-    return {
-      content: [{
-        type: 'text' as const,
-        text: JSON.stringify(result, null, 2),
-      }],
-    };
   }
 );
 
@@ -323,13 +310,82 @@ server.tool(
     id: z.string().describe('Deployment ID'),
   },
   async ({ id }) => {
-    const result = await apiFetch(`/deploy/${id}/redeploy`, { method: 'POST' });
-    return {
-      content: [{
-        type: 'text' as const,
-        text: JSON.stringify(result, null, 2),
-      }],
-    };
+    try {
+      const result = await apiFetch(`/deploy/${encodeURIComponent(id)}/redeploy`, { method: 'POST' });
+      return {
+        content: [{
+          type: 'text' as const,
+          text: JSON.stringify(result, null, 2),
+        }],
+      };
+    } catch (err: any) {
+      return {
+        content: [{ type: 'text' as const, text: `Failed to redeploy: ${err.message || err}` }],
+        isError: true,
+      };
+    }
+  }
+);
+
+server.tool(
+  'cozypane_get_preview_info',
+  `Get devtools data from the CozyPane preview panel. Use this when debugging frontend/preview issues — it provides console logs, network errors, and optionally a screenshot path and HTML snapshot from the live preview.
+
+The preview panel captures all console output and network failures from the running app. Call this tool to inspect what's happening in the browser without asking the user to copy-paste.`,
+  {
+    includeScreenshot: z.boolean().optional().describe('Include the file path to a screenshot PNG of the preview (default: false)'),
+    includeHtml: z.boolean().optional().describe('Include the HTML snapshot of the page (default: false)'),
+  },
+  async ({ includeScreenshot, includeHtml }) => {
+    try {
+      const userDataDir = process.env.COZYPANE_USER_DATA || getUserDataDir();
+      const devtoolsPath = path.join(userDataDir, 'preview-devtools.json');
+
+      if (!fs.existsSync(devtoolsPath)) {
+        return {
+          content: [{
+            type: 'text' as const,
+            text: JSON.stringify({
+              url: null,
+              consoleLogs: [],
+              networkErrors: [],
+              message: 'No preview data available. The preview panel may not be open or no page has been loaded yet.',
+            }, null, 2),
+          }],
+        };
+      }
+
+      const raw = JSON.parse(fs.readFileSync(devtoolsPath, 'utf-8'));
+      const age = Date.now() - (raw.timestamp || 0);
+
+      const result: Record<string, any> = {
+        url: raw.url || null,
+        consoleLogs: raw.consoleLogs || [],
+        networkErrors: raw.networkErrors || [],
+        age: `${Math.round(age / 1000)}s ago`,
+      };
+
+      if (includeScreenshot) {
+        const screenshotPath = path.join(userDataDir, 'preview-screenshot.png');
+        result.screenshotPath = fs.existsSync(screenshotPath) ? screenshotPath : null;
+      }
+
+      if (includeHtml) {
+        result.htmlSnapshot = raw.htmlSnapshot || null;
+      }
+
+      return {
+        content: [{
+          type: 'text' as const,
+          text: JSON.stringify(result, null, 2),
+        }],
+      };
+    } catch (err: any) {
+      return {
+        content: [{ type: 'text' as const, text: `Failed to read preview data: ${err.message || err}` }],
+        isError: true,
+      };
+    }
   }
 );
 

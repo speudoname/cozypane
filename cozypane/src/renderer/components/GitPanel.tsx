@@ -91,7 +91,7 @@ export default function GitPanel({ cwd, onDiffClick, onBranchChange, activityEve
     setLoading(true);
     refresh();
     fetchRemoteInfo();
-  }, [cwd]);
+  }, [cwd, refresh, fetchRemoteInfo]);
 
   // Debounced refresh on activity events
   const prevEventCountRef = useRef(activityEvents.length);

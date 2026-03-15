@@ -68,16 +68,26 @@ declare global {
     updatedAt: string;
   }
 
-  interface ConversationTurn {
-    role: 'user' | 'assistant';
-    content: string;
-    timestamp: number;
-  }
-
   interface GitCommit {
     hash: string;
     message: string;
     timeAgo: string;
+  }
+
+  interface SubProject {
+    path: string;
+    name: string;
+    type: string;
+    devCommand: string | null;
+  }
+
+  interface ProjectInfo {
+    type: string | null;
+    devCommand: string | null;
+    productionUrl: string | null;
+    serveStatic?: boolean;
+    needsDatabase?: boolean;
+    subProjects?: SubProject[];
   }
 
   interface CozyPaneAPI {
@@ -113,7 +123,6 @@ declare global {
     settings: {
       get: () => Promise<SettingsData>;
       set: (data: { provider: string; model: string; apiKey?: string }) => Promise<{ success?: boolean; error?: string }>;
-      summarize: (changes: { type: string; name: string }[]) => Promise<{ summary?: string; error?: string }>;
     };
     deploy: {
       login: () => Promise<void>;
@@ -127,6 +136,15 @@ declare global {
       delete: (id: string) => Promise<{ success: boolean }>;
       redeploy: (id: string) => Promise<Deployment>;
       onProtocolCallback: (callback: (url: string) => void) => () => void;
+    };
+    preview: {
+      detectProject: (cwd: string) => Promise<ProjectInfo>;
+      serveStatic: (cwd: string) => Promise<{ url?: string; port?: number; error?: string }>;
+      stopStatic: (cwd: string) => Promise<{ success?: boolean }>;
+      getStoredUrl: (cwd: string) => Promise<{ productionUrl?: string; lastDevCommand?: string }>;
+      storeUrl: (cwd: string, data: { productionUrl?: string; lastDevCommand?: string }) => Promise<{ success?: boolean }>;
+      writeDevToolsData: (data: object) => Promise<void>;
+      captureScreenshot: (base64Png: string) => Promise<string>;
     };
     onMenuAction: (channel: string, callback: () => void) => () => void;
     git: {

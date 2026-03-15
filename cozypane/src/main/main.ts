@@ -9,7 +9,7 @@ import { registerFsHandlers } from './filesystem';
 import { registerWatcherHandlers, closeWatcher } from './watcher';
 import { registerSettingsHandlers } from './settings';
 import { registerGitHandlers } from './git';
-import { registerDeployHandlers } from './deploy';
+import { registerDeployHandlers, processProtocolUrl, getToken, API_BASE } from './deploy';
 import { registerPreviewHandlers } from './preview';
 
 // Global error handlers
@@ -46,7 +46,7 @@ app.on('second-instance', (_event, argv) => {
   const protocolUrl = argv.find(arg => arg.startsWith('cozypane://'));
   if (protocolUrl) {
     mainWindow?.webContents.send('deploy:protocol-callback', protocolUrl);
-    ipcMain.emit('deploy:processProtocolUrl', {} as any, protocolUrl);
+    processProtocolUrl(protocolUrl, getWindow);
   }
 });
 
@@ -253,7 +253,15 @@ function buildMenu() {
 }
 
 // Register IPC handlers from modules
-registerPtyHandlers(getWindow);
+registerPtyHandlers(getWindow, () => {
+  const token = getToken();
+  const env: Record<string, string> = {
+    COZYPANE_API_URL: API_BASE,
+    COZYPANE_USER_DATA: app.getPath('userData'),
+  };
+  if (token) env.COZYPANE_DEPLOY_TOKEN = token;
+  return env;
+});
 registerFsHandlers();
 registerWatcherHandlers(getWindow);
 registerSettingsHandlers();
@@ -363,9 +371,9 @@ function setupAutoUpdater() {
     console.error('[CozyPane] Auto-update error:', err.message);
   });
 
-  autoUpdater.checkForUpdates();
+  autoUpdater.checkForUpdates().catch((err: any) => console.error('[CozyPane] checkForUpdates failed:', err.message));
   // Check every 4 hours
-  setInterval(() => autoUpdater.checkForUpdates(), 4 * 60 * 60 * 1000);
+  setInterval(() => autoUpdater.checkForUpdates().catch((err: any) => console.error('[CozyPane] checkForUpdates failed:', err.message)), 4 * 60 * 60 * 1000);
 }
 
 // Register MCP server config in ~/.claude.json so Claude Code discovers CozyPane tools
@@ -392,7 +400,10 @@ function registerMcpConfig() {
     let config: Record<string, any> = {};
 
     try {
-      config = JSON.parse(fs.readFileSync(claudeConfigPath, 'utf-8'));
+      const parsed = JSON.parse(fs.readFileSync(claudeConfigPath, 'utf-8'));
+      if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
+        config = parsed;
+      }
     } catch {}
 
     if (!config.mcpServers) config.mcpServers = {};
@@ -425,7 +436,9 @@ app.whenReady().then(() => {
       if (response === 0) {
         try {
           app.moveToApplicationsFolder();
-        } catch {}
+        } catch (err: any) {
+          dialog.showErrorBox('Move Failed', `Could not move to Applications folder:\n${err.message}`);
+        }
       }
     });
   }
@@ -446,7 +459,7 @@ app.on('open-url', (event, url) => {
   event.preventDefault();
   mainWindow?.webContents.send('deploy:protocol-callback', url);
   // Also process in main process for token exchange
-  ipcMain.emit('deploy:processProtocolUrl', event, url);
+  processProtocolUrl(url, getWindow);
 });
 
 app.on('window-all-closed', () => {

@@ -78,17 +78,15 @@ export async function enableCozyMode(cwd: string): Promise<void> {
 
 export async function disableCozyMode(cwd: string): Promise<void> {
   const claudeMdPath = cwd + '/CLAUDE.md';
-  try {
-    const result = await window.cozyPane.fs.readfile(claudeMdPath);
-    if (!result.content || !result.content.includes(COZY_MODE_MARKER)) return;
+  const result = await window.cozyPane.fs.readfile(claudeMdPath);
+  if (!result.content || !result.content.includes(COZY_MODE_MARKER)) return;
 
-    const markerIdx = result.content.indexOf(COZY_MODE_MARKER);
-    const remaining = result.content.slice(0, markerIdx).trimEnd();
+  const markerIdx = result.content.indexOf(COZY_MODE_MARKER);
+  const remaining = result.content.slice(0, markerIdx).trimEnd();
 
-    if (remaining.length === 0) {
-      await window.cozyPane.fs.writefile(claudeMdPath, '');
-    } else {
-      await window.cozyPane.fs.writefile(claudeMdPath, remaining + '\n');
-    }
-  } catch {}
+  if (remaining.length === 0) {
+    await window.cozyPane.fs.writefile(claudeMdPath, '');
+  } else {
+    await window.cozyPane.fs.writefile(claudeMdPath, remaining + '\n');
+  }
 }

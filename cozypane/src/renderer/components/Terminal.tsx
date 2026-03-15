@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { Terminal as XTerm } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
-import { stripAnsi, TUI_ENTER, TUI_EXIT, analyzeFocus, analyzeAction, parseCostInfo, detectChoicePrompt, detectDeployUrl, detectLocalUrl, type AiAction, type CostInfo } from '../lib/terminalAnalyzer';
+import { stripAnsi, TUI_ENTER, TUI_EXIT, analyzeFocus, analyzeAction, detectChoicePrompt, detectDeployUrl, detectLocalUrl, type AiAction } from '../lib/terminalAnalyzer';
 import CommandInput from './CommandInput';
 import '@xterm/xterm/css/xterm.css';
 
@@ -14,14 +14,12 @@ interface Props {
   autoCommand?: string;
   onCwdChange?: (newCwd: string) => void;
   onActionChange?: (action: AiAction) => void;
-  onCostChange?: (cost: CostInfo) => void;
-  onConversationUpdate?: (turns: ConversationTurn[]) => void;
   onTerminalReady?: (id: string) => void;
   onLocalUrlDetected?: (url: string) => void;
   onProdUrlDetected?: (url: string) => void;
 }
 
-export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, autoCommand, onCwdChange, onActionChange, onCostChange, onConversationUpdate, onTerminalReady, onLocalUrlDetected, onProdUrlDetected }: Props) {
+export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, autoCommand, onCwdChange, onActionChange, onTerminalReady, onLocalUrlDetected, onProdUrlDetected }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<XTerm | null>(null);
   const [termDragOver, setTermDragOver] = useState(false);
@@ -41,18 +39,12 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, au
   onCwdChangeRef.current = onCwdChange;
   const onActionChangeRef = useRef(onActionChange);
   onActionChangeRef.current = onActionChange;
-  const onCostChangeRef = useRef(onCostChange);
-  onCostChangeRef.current = onCostChange;
-  const onConversationUpdateRef = useRef(onConversationUpdate);
-  onConversationUpdateRef.current = onConversationUpdate;
   const onTerminalReadyRef = useRef(onTerminalReady);
   onTerminalReadyRef.current = onTerminalReady;
   const onLocalUrlDetectedRef = useRef(onLocalUrlDetected);
   onLocalUrlDetectedRef.current = onLocalUrlDetected;
   const onProdUrlDetectedRef = useRef(onProdUrlDetected);
   onProdUrlDetectedRef.current = onProdUrlDetected;
-  const conversationRef = useRef<ConversationTurn[]>([]);
-  const assistantBufferRef = useRef('');
   const isVisibleRef = useRef(isVisible);
   isVisibleRef.current = isVisible;
   const followOutputRef = useRef(true);
@@ -83,11 +75,11 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, au
     }
   }, []);
 
-  const autoSwitch = useCallback(() => {
+  const autoSwitch = useCallback((preStripped?: string) => {
     if (tuiModeRef.current) return;
     if (Date.now() < manualUntilRef.current) return;
 
-    const result = analyzeFocus(rollingBufferRef.current);
+    const result = analyzeFocus(rollingBufferRef.current, preStripped);
     if (result && result !== focusRef.current) {
       switchFocus(result);
     }
@@ -146,22 +138,6 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, au
     if (trimmed.startsWith('claude') || trimmed.startsWith('npx claude')) {
       activeProcessRef.current = 'claude';
       setClaudeRunning(true);
-    }
-
-    // Track conversation while Claude is running
-    if (activeProcessRef.current === 'claude' && command !== '\x03') {
-      // Finalize any pending assistant output
-      if (assistantBufferRef.current.trim()) {
-        conversationRef.current.push({
-          role: 'assistant',
-          content: assistantBufferRef.current.trim(),
-          timestamp: Date.now(),
-        });
-        assistantBufferRef.current = '';
-      }
-      conversationRef.current.push({ role: 'user', content: command, timestamp: Date.now() });
-      assistantBufferRef.current = '';
-      onConversationUpdateRef.current?.([...conversationRef.current]);
     }
 
     window.cozyPane.terminal.write(id, command.replace(/\n/g, '\r') + '\r');
@@ -310,25 +286,9 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, au
       if (TUI_ENTER.test(data)) { tuiModeRef.current = true; setTuiMode(true); }
       if (TUI_EXIT.test(data)) { tuiModeRef.current = false; setTuiMode(false); }
 
-      // Accumulate assistant output for conversation tracking
-      if (activeProcessRef.current === 'claude') {
-        assistantBufferRef.current += stripAnsi(data);
-        if (assistantBufferRef.current.length > 10000) {
-          assistantBufferRef.current = assistantBufferRef.current.slice(-8000);
-        }
-      }
-
       // Detect Claude exiting (shell prompt returns)
-      if (activeProcessRef.current === 'claude' && /[$%#]\s*$/.test(stripAnsi(data))) {
-        if (assistantBufferRef.current.trim()) {
-          conversationRef.current.push({
-            role: 'assistant',
-            content: assistantBufferRef.current.trim(),
-            timestamp: Date.now(),
-          });
-          assistantBufferRef.current = '';
-          onConversationUpdateRef.current?.([...conversationRef.current]);
-        }
+      const strippedData = stripAnsi(data);
+      if (activeProcessRef.current === 'claude' && /[$%#]\s*$/.test(strippedData)) {
         activeProcessRef.current = '';
         setClaudeRunning(false);
         onActionChangeRef.current?.('idle');
@@ -344,17 +304,16 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, au
       idleTimerRef.current = setTimeout(() => {
         // Skip expensive analysis for hidden terminals
         if (!isVisibleRef.current) return;
-        autoSwitchRef.current();
+        // Strip ANSI once for all analyzer functions
+        const cleaned = stripAnsi(rollingBufferRef.current);
+        autoSwitchRef.current(cleaned);
         checkCwd();
-        const action = analyzeAction(rollingBufferRef.current, activeProcessRef.current === 'claude');
+        const action = analyzeAction(cleaned, activeProcessRef.current === 'claude', true);
         onActionChangeRef.current?.(action);
-        setIsChoicePrompt(detectChoicePrompt(rollingBufferRef.current));
+        setIsChoicePrompt(detectChoicePrompt(cleaned, true));
         if (activeProcessRef.current === 'claude') {
-          const cost = parseCostInfo(rollingBufferRef.current);
-          onCostChangeRef.current?.(cost);
-
           // Detect deployed CozyPane URLs and auto-open preview
-          const deployUrl = detectDeployUrl(rollingBufferRef.current);
+          const deployUrl = detectDeployUrl(cleaned, true);
           if (deployUrl && deployUrl !== lastDeployUrlRef.current) {
             lastDeployUrlRef.current = deployUrl;
             onProdUrlDetectedRef.current?.(deployUrl);
@@ -362,7 +321,7 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, au
         }
 
         // Detect localhost dev server URLs (always, not just during Claude)
-        const localUrl = detectLocalUrl(rollingBufferRef.current);
+        const localUrl = detectLocalUrl(cleaned, true);
         if (localUrl && localUrl !== lastLocalUrlRef.current) {
           lastLocalUrlRef.current = localUrl;
           onLocalUrlDetectedRef.current?.(localUrl);
