@@ -46,7 +46,7 @@ interface DiffState {
 function makeTerminalTab(cwd: string, counter: number, launched = false): TerminalTab {
   const id = `tab-${Date.now()}-${counter}`;
   const label = `Terminal ${counter}`;
-  return { id, ptyId: null, label, cwd, aiAction: 'idle', launched };
+  return { id, ptyId: null, label, cwd, aiAction: 'idle', claudeRunning: false, launched };
 }
 
 export default function App() {
@@ -106,6 +106,7 @@ export default function App() {
   const activeTerminal = terminalTabs.find(t => t.id === activeTerminalId) || terminalTabs[0];
   const cwd = activeTerminal.cwd;
   const aiAction = activeTerminal.aiAction;
+  const isClaudeRunning = activeTerminal.claudeRunning;
 
   const updateTab = useCallback((tabId: string, updates: Partial<TerminalTab>) => {
     setTerminalTabs(prev => prev.map(t => t.id === tabId ? { ...t, ...updates } : t));
@@ -553,13 +554,13 @@ export default function App() {
           onBranchChange={setGitBranch}
           activityEvents={activityEvents}
           onTerminalCommand={sendTerminalCommand}
-          claudeRunning={aiAction !== 'idle'}
+          claudeRunning={isClaudeRunning}
         />
       );
     }
 
     if (rightPanelTab === 'deploy') {
-      return <DeployPanel cwd={cwd} onTerminalCommand={sendTerminalCommand} claudeRunning={aiAction !== 'idle'} onDeploymentsLoaded={setDeployments} />;
+      return <DeployPanel cwd={cwd} onTerminalCommand={sendTerminalCommand} claudeRunning={isClaudeRunning} onDeploymentsLoaded={setDeployments} />;
     }
 
     // Preview tab — show diff viewer or editor
@@ -750,6 +751,7 @@ export default function App() {
                     onTerminalReady={(ptyId) => updateTab(tab.id, { ptyId })}
                     onCwdChange={(newCwd) => updateTab(tab.id, { cwd: newCwd })}
                     onActionChange={(action) => updateTab(tab.id, { aiAction: action })}
+                    onClaudeRunningChange={(running) => updateTab(tab.id, { claudeRunning: running })}
                     onLocalUrlDetected={(url) => {
                       updateTab(tab.id, { previewLocalUrl: url });
                       if (tab.id === activeTerminalIdRef.current) {
@@ -830,7 +832,7 @@ export default function App() {
                 cwd={cwd}
                 onSendToTerminal={sendTerminalCommand}
                 deployments={deployments}
-                claudeRunning={aiAction !== 'idle'}
+                claudeRunning={isClaudeRunning}
               />
             </div>
           </>

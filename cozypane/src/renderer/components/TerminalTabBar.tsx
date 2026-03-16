@@ -8,6 +8,7 @@ export interface TerminalTab {
   customLabel?: string;
   cwd: string;
   aiAction: AiAction;
+  claudeRunning: boolean;
   launched: boolean;
   autoCommand?: string;
   previewLocalUrl?: string;

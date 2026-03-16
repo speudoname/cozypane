@@ -14,12 +14,13 @@ interface Props {
   autoCommand?: string;
   onCwdChange?: (newCwd: string) => void;
   onActionChange?: (action: AiAction) => void;
+  onClaudeRunningChange?: (running: boolean) => void;
   onTerminalReady?: (id: string) => void;
   onLocalUrlDetected?: (url: string) => void;
   onProdUrlDetected?: (url: string) => void;
 }
 
-export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, autoCommand, onCwdChange, onActionChange, onTerminalReady, onLocalUrlDetected, onProdUrlDetected }: Props) {
+export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, autoCommand, onCwdChange, onActionChange, onClaudeRunningChange, onTerminalReady, onLocalUrlDetected, onProdUrlDetected }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<XTerm | null>(null);
   const [termDragOver, setTermDragOver] = useState(false);
@@ -39,6 +40,8 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, au
   onCwdChangeRef.current = onCwdChange;
   const onActionChangeRef = useRef(onActionChange);
   onActionChangeRef.current = onActionChange;
+  const onClaudeRunningChangeRef = useRef(onClaudeRunningChange);
+  onClaudeRunningChangeRef.current = onClaudeRunningChange;
   const onTerminalReadyRef = useRef(onTerminalReady);
   onTerminalReadyRef.current = onTerminalReady;
   const onLocalUrlDetectedRef = useRef(onLocalUrlDetected);
@@ -126,6 +129,7 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, au
     if (trimmed.startsWith('claude') || trimmed.startsWith('npx claude')) {
       activeProcessRef.current = 'claude';
       setClaudeRunning(true);
+      onClaudeRunningChangeRef.current?.(true);
     }
 
     window.cozyPane.terminal.write(id, command.replace(/\n/g, '\r') + '\r');
@@ -324,6 +328,7 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, au
         if (activeProcessRef.current === 'claude' && detectClaudeExit(lines)) {
           activeProcessRef.current = '';
           setClaudeRunning(false);
+          onClaudeRunningChangeRef.current?.(false);
           onActionChangeRef.current?.('idle');
         }
 
@@ -361,6 +366,7 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, au
       term.writeln(`\r\n[Process exited with code ${code}]`);
       activeProcessRef.current = '';
       setClaudeRunning(false);
+      onClaudeRunningChangeRef.current?.(false);
       onActionChangeRef.current?.('idle');
     });
 
