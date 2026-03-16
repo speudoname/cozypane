@@ -3,6 +3,7 @@ import { exec, execFile } from 'child_process';
 import fs from 'fs/promises';
 import path from 'path';
 import { callLlm } from './settings';
+import { getGithubToken, getAskpassHelperPath } from './deploy';
 
 const GIT = '/usr/bin/git';
 
@@ -89,7 +90,7 @@ export function registerGitHandlers() {
 
   ipcMain.handle('git:log', async (_event, cwd: string) => {
     try {
-      const output = await gitExecFile(['log', '--oneline', '--format=%h|%s|%ar', '-20'], cwd);
+      const output = await gitExecFile(['log', '--oneline', '--format=%h|%s|%ar', '-5'], cwd);
       const commits = output.trim().split('\n').filter(Boolean).map(line => {
         const [hash, message, timeAgo] = line.split('|');
         return { hash, message, timeAgo };
@@ -123,44 +124,120 @@ export function registerGitHandlers() {
   });
 
   ipcMain.handle('git:remoteInfo', async (_event, cwd: string) => {
-    const result = { hasRemote: false, remoteUrl: '', ghAuthed: false, ghInstalled: false };
+    const result = { hasRemote: false, remoteUrl: '', githubAuthed: false, isSSH: false };
     try {
       const remoteOut = await gitExecFile(['remote', '-v'], cwd);
       const pushLine = remoteOut.split('\n').find(l => l.includes('origin') && l.includes('(push)'));
       if (pushLine) {
         result.hasRemote = true;
         result.remoteUrl = pushLine.replace(/^origin\s+/, '').replace(/\s+\(push\)$/, '').trim();
+        result.isSSH = result.remoteUrl.startsWith('git@');
       }
     } catch {}
 
-    // Find gh CLI
-    const ghPaths = ['/opt/homebrew/bin/gh', '/usr/local/bin/gh'];
-    let ghPath = '';
-    try {
-      const whichOut = await new Promise<string>((resolve, reject) => {
-        exec('which gh', { timeout: 3000 }, (err, stdout) => err ? reject(err) : resolve(stdout.trim()));
-      });
-      if (whichOut) ghPath = whichOut;
-    } catch {}
-    if (!ghPath) {
-      for (const p of ghPaths) {
-        try { await fs.access(p); ghPath = p; break; } catch {}
-      }
-    }
-
-    if (ghPath) {
-      result.ghInstalled = true;
-      try {
-        await new Promise<string>((resolve, reject) => {
-          exec(`"${ghPath}" auth status`, { timeout: 5000 }, (err, stdout, stderr) => {
-            if (err) reject(err); else resolve(stdout || stderr);
-          });
-        });
-        result.ghAuthed = true;
-      } catch {}
-    }
-
+    result.githubAuthed = !!getGithubToken();
     return result;
+  });
+
+  ipcMain.handle('git:wrapCommand', async (_event, cmd: string) => {
+    const ghToken = getGithubToken();
+    if (!ghToken) return cmd;
+    const helper = getAskpassHelperPath();
+    if (process.platform === 'win32') {
+      return `set "COZYPANE_GH_TOKEN=${ghToken}" && set "GIT_ASKPASS=${helper}" && ${cmd}`;
+    }
+    // Shell-quote values to prevent injection
+    const q = (s: string) => "'" + s.replace(/'/g, "'\\''") + "'";
+    return `COZYPANE_GH_TOKEN=${q(ghToken)} GIT_ASKPASS=${q(helper)} ${cmd}`;
+  });
+
+  ipcMain.handle('git:createRepo', async (_event, cwd: string, isPrivate: boolean = true) => {
+    const ghToken = getGithubToken();
+    if (!ghToken) return { error: 'Not authenticated with GitHub' };
+
+    try {
+      const name = path.basename(cwd);
+      const res = await fetch('https://api.github.com/user/repos', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${ghToken}`,
+          Accept: 'application/vnd.github+json',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ name, private: isPrivate, auto_init: false }),
+      });
+
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({})) as any;
+        return { error: body.message || `GitHub API error (${res.status})` };
+      }
+
+      const repo = await res.json() as { clone_url: string; html_url: string; full_name: string };
+
+      // Set remote origin
+      try {
+        await gitExecFile(['remote', 'add', 'origin', repo.clone_url], cwd);
+      } catch {
+        // Remote might already exist — update it
+        await gitExecFile(['remote', 'set-url', 'origin', repo.clone_url], cwd);
+      }
+
+      return { url: repo.html_url, cloneUrl: repo.clone_url, fullName: repo.full_name };
+    } catch (err: any) {
+      return { error: err.message || 'Failed to create repository' };
+    }
+  });
+
+  ipcMain.handle('git:listRepos', async (_event, query: string) => {
+    const ghToken = getGithubToken();
+    if (!ghToken) return { repos: [], error: 'Not authenticated' };
+
+    try {
+      // Use search API if query provided, otherwise list user's repos sorted by recent
+      let url: string;
+      if (query.trim()) {
+        const q = encodeURIComponent(`${query.trim()} in:name user:@me`);
+        url = `https://api.github.com/search/repositories?q=${q}&sort=updated&per_page=20`;
+      } else {
+        url = 'https://api.github.com/user/repos?sort=updated&per_page=20&affiliation=owner';
+      }
+
+      const res = await fetch(url, {
+        headers: {
+          Authorization: `Bearer ${ghToken}`,
+          Accept: 'application/vnd.github+json',
+        },
+      });
+
+      if (!res.ok) return { repos: [], error: `GitHub API error (${res.status})` };
+
+      const data = await res.json() as any;
+      const items = Array.isArray(data) ? data : data.items || [];
+      const repos = items.map((r: any) => ({
+        fullName: r.full_name,
+        cloneUrl: r.clone_url,
+        htmlUrl: r.html_url,
+        private: r.private,
+        description: r.description || '',
+      }));
+
+      return { repos };
+    } catch (err: any) {
+      return { repos: [], error: err.message };
+    }
+  });
+
+  ipcMain.handle('git:addRemote', async (_event, cwd: string, cloneUrl: string) => {
+    try {
+      try {
+        await gitExecFile(['remote', 'add', 'origin', cloneUrl], cwd);
+      } catch {
+        await gitExecFile(['remote', 'set-url', 'origin', cloneUrl], cwd);
+      }
+      return { success: true };
+    } catch (err: any) {
+      return { error: err.message };
+    }
   });
 
   ipcMain.handle('git:generateCommitMsg', async (_event, cwd: string) => {

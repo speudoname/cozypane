@@ -9,60 +9,102 @@ export function stripAnsi(text: string): string {
 export const TUI_ENTER = /\x1b\[\?1049h/;
 export const TUI_EXIT = /\x1b\[\?1049l/;
 
-// Interactive patterns -> raw mode (check against all recent lines)
-const RAW_PATTERNS = [
+// Interactive patterns → terminal mode (checked against last 3 lines only)
+const INTERACTIVE_PATTERNS = [
   /\[Y\/n\]/i,
   /\[y\/N\]/i,
   /\(y\/n\)/i,
   /\(yes\/no\)/i,
+  /continue\s*\?/i,
+  /overwrite\s*\?/i,
+  /proceed\s*\?/i,
+  /do you want to/i,
   /enter to confirm/i,
   /esc to cancel/i,
   /press any key/i,
   /press enter/i,
   /password\s*:/i,
   /passphrase/i,
-  /continue\s*\?/i,
-  /overwrite\s*\?/i,
-  /proceed\s*\?/i,
-  /do you want to/i,
-  /\d+\.\s*Yes/,
-  /\d+\.\s*No/,
   /trust this folder/i,
+  /type yes to confirm/i,
+  /\(use arrow keys\)/i,
+  /\(press .* to select\)/i,
+  /select\s*:/i,
+  /choose\s*:/i,
+  /pick\s*:/i,
+  /enter a number/i,
+  /enter your choice/i,
+  /\d+[\.\)]\s*(Yes|No|Accept|Reject|Skip)\b/,
 ];
 
-// Text input patterns -> input bar
-const INPUT_PATTERNS = [
-  /[$%#]\s*$/,              // shell prompt
-  /❯\s*$/,                 // Claude Code prompt / starship
-  /➜\s*/,                  // oh-my-zsh
-  />>>\s*$/,               // python repl
-  />\s*$/,                 // generic > prompt
+// Shell prompt patterns → input mode (checked against last 5 lines)
+const SHELL_PROMPT_PATTERNS = [
+  /[$%#]\s*$/,              // bash/zsh/root
+  /❯\s*$/,                 // Claude Code / starship
+  /➜\s+\S/,                // oh-my-zsh (tightened: require char after arrow)
+  />>>\s*$/,               // python REPL
+  // REMOVED: />\s*$/ — too greedy, matches markdown blockquotes, HTML, git log
 ];
+
+// Choice detection patterns → input mode with passthrough (last 10 lines, need >= 2)
+const CHOICE_DETECT_PATTERNS = [
+  /^\s*\d+[.)]\s+\S/,           // "1. Accept" or "1) Accept"
+  /^\s*[a-e][.)]\s+\S/i,        // "a) Option" lettered choices
+];
+
+export interface FocusDecision {
+  target: 'input' | 'terminal' | null;
+  isChoicePrompt: boolean;
+}
 
 /**
- * Detect if the terminal is showing a numbered choice prompt (e.g. plan mode).
- * Looks for patterns like "1. Yes", "2. No", numbered options in recent output.
+ * Unified focus decision function. Takes pre-stripped lines and returns
+ * the desired focus target and whether a choice prompt is detected.
+ *
+ * Priority order:
+ * 1. Interactive patterns (last 3 lines) → terminal
+ * 2. Choice prompt (last 10 lines, >= 2 numbered/lettered items) → input with passthrough
+ * 3. Shell prompt (last 5 lines) → input
+ * 4. Nothing matched → null
  */
-const CHOICE_PATTERNS = [
-  /^\s*\d+[\.\)]\s+\S/,         // "1. Accept" or "1) Accept"
-];
-
-export function detectChoicePrompt(rollingBuffer: string, preStripped = false): boolean {
-  const cleaned = preStripped ? rollingBuffer : stripAnsi(rollingBuffer);
-  const lines = cleaned.split('\n');
-  const recentLines = lines.slice(-20);
-
-  // Count lines that look like numbered options
-  let choiceCount = 0;
-  for (let i = recentLines.length - 1; i >= Math.max(0, recentLines.length - 15); i--) {
-    const line = recentLines[i].trim();
-    for (const p of CHOICE_PATTERNS) {
-      if (p.test(line)) { choiceCount++; break; }
+export function decideFocus(lines: string[]): FocusDecision {
+  // 1. Interactive patterns — last 3 lines
+  const last3 = lines.slice(-3);
+  for (const line of last3) {
+    const trimmed = line.trim();
+    for (const pattern of INTERACTIVE_PATTERNS) {
+      if (pattern.test(trimmed)) {
+        return { target: 'terminal', isChoicePrompt: false };
+      }
     }
   }
 
-  // Need at least 2 numbered options to consider it a choice prompt
-  return choiceCount >= 2;
+  // 2. Choice prompt — last 10 lines, need >= 2 matches
+  const last10 = lines.slice(-10);
+  let choiceCount = 0;
+  for (const line of last10) {
+    const trimmed = line.trim();
+    for (const p of CHOICE_DETECT_PATTERNS) {
+      if (p.test(trimmed)) { choiceCount++; break; }
+    }
+  }
+  if (choiceCount >= 2) {
+    return { target: 'input', isChoicePrompt: true };
+  }
+
+  // 3. Shell prompt — last 5 lines
+  const last5 = lines.slice(-5);
+  for (const line of last5) {
+    const trimmed = line.trim();
+    for (const pattern of SHELL_PROMPT_PATTERNS) {
+      if (pattern.test(trimmed)) {
+        return { target: 'input', isChoicePrompt: false };
+      }
+    }
+  }
+
+  // 4. Nothing matched
+  return { target: null, isChoicePrompt: false };
 }
 
 /**
@@ -112,31 +154,21 @@ export function analyzeAction(rollingBuffer: string, claudeRunning: boolean, pre
   return 'thinking';
 }
 
-export function analyzeFocus(rollingBuffer: string, preStripped?: string): 'input' | 'terminal' | null {
-  const cleaned = preStripped || stripAnsi(rollingBuffer);
-  const lines = cleaned.split('\n').filter(l => l.trim());
-  const recentLines = lines.slice(-15);
-  const recentText = recentLines.join('\n');
+/**
+ * Check if recent lines indicate Claude has exited and shell prompt is back.
+ * Looks for shell prompt in last 2 lines AND verifies no Claude prompt (❯) in last 5 lines.
+ */
+export function detectClaudeExit(lines: string[]): boolean {
+  const last2 = lines.slice(-2);
+  const last5 = lines.slice(-5);
 
-  // Check interactive patterns (against all recent text)
-  for (const pattern of RAW_PATTERNS) {
-    if (pattern.test(recentText)) {
-      return 'terminal';
-    }
-  }
+  // Must have a shell prompt in last 2 lines
+  const hasShellPrompt = last2.some(line => /[$%#]\s*$/.test(line.trim()));
+  if (!hasShellPrompt) return false;
 
-  // Check input patterns against EACH recent line (not just last)
-  // because Claude's prompt ❯ might be on a middle line with status bar below
-  for (let i = recentLines.length - 1; i >= Math.max(0, recentLines.length - 5); i--) {
-    const line = recentLines[i].trim();
-    for (const pattern of INPUT_PATTERNS) {
-      if (pattern.test(line)) {
-        return 'input';
-      }
-    }
-  }
-
-  return null;
+  // Must NOT have Claude prompt in last 5 lines
+  const hasClaudePrompt = last5.some(line => /❯\s*$/.test(line.trim()));
+  return !hasClaudePrompt;
 }
 
 /**

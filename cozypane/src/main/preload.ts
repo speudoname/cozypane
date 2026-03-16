@@ -77,7 +77,7 @@ contextBridge.exposeInMainWorld('cozyPane', {
       'menu:new-tab', 'menu:close-tab', 'menu:toggle-panels', 'menu:toggle-layout',
       'menu:settings', 'menu:clear-terminal', 'menu:split-view',
       'menu:zoom-in', 'menu:zoom-out', 'menu:zoom-reset',
-      'updater:status', 'deploy:auth-success', 'deploy:auth-error',
+      'updater:status', 'deploy:auth-success', 'deploy:auth-error', 'github:auth-changed',
     ]);
     if (!ALLOWED_CHANNELS.has(channel)) return () => {};
     const listener = () => callback();
@@ -92,5 +92,9 @@ contextBridge.exposeInMainWorld('cozyPane', {
     diffFile: (cwd: string, path: string) => ipcRenderer.invoke('git:diffFile', cwd, path),
     remoteInfo: (cwd: string) => ipcRenderer.invoke('git:remoteInfo', cwd),
     generateCommitMsg: (cwd: string) => ipcRenderer.invoke('git:generateCommitMsg', cwd),
+    wrapCommand: (cmd: string) => ipcRenderer.invoke('git:wrapCommand', cmd),
+    createRepo: (cwd: string, isPrivate?: boolean) => ipcRenderer.invoke('git:createRepo', cwd, isPrivate),
+    listRepos: (query: string) => ipcRenderer.invoke('git:listRepos', query),
+    addRemote: (cwd: string, cloneUrl: string) => ipcRenderer.invoke('git:addRemote', cwd, cloneUrl),
   },
 });

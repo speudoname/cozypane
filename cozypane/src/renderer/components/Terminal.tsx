@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { Terminal as XTerm } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
-import { stripAnsi, TUI_ENTER, TUI_EXIT, analyzeFocus, analyzeAction, detectChoicePrompt, detectDeployUrl, detectLocalUrl, type AiAction } from '../lib/terminalAnalyzer';
+import { stripAnsi, TUI_ENTER, TUI_EXIT, decideFocus, detectClaudeExit, analyzeAction, detectDeployUrl, detectLocalUrl, type AiAction } from '../lib/terminalAnalyzer';
 import CommandInput from './CommandInput';
 import '@xterm/xterm/css/xterm.css';
 
@@ -31,7 +31,7 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, au
   const focusRef = useRef<'input' | 'terminal'>('input');
   const manualUntilRef = useRef(0);
   const idleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const rollingBufferRef = useRef('');
+  const rollingBufferRef = useRef<string[]>([]);
   const lastDeployUrlRef = useRef('');
   const lastLocalUrlRef = useRef('');
   const activeProcessRef = useRef('');
@@ -49,6 +49,7 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, au
   isVisibleRef.current = isVisible;
   const followOutputRef = useRef(true);
   const scrollRafRef = useRef(0); // requestAnimationFrame handle for debounced scroll
+  const scrollDisengageRef = useRef({ cumulative: 0, timer: 0 });
 
   const [tuiMode, setTuiMode] = useState(false);
   const [focus, setFocus] = useState<'input' | 'terminal'>('input');
@@ -74,19 +75,6 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, au
       termRef.current.focus();
     }
   }, []);
-
-  const autoSwitch = useCallback((preStripped?: string) => {
-    if (tuiModeRef.current) return;
-    if (Date.now() < manualUntilRef.current) return;
-
-    const result = analyzeFocus(rollingBufferRef.current, preStripped);
-    if (result && result !== focusRef.current) {
-      switchFocus(result);
-    }
-  }, [switchFocus]);
-
-  const autoSwitchRef = useRef(autoSwitch);
-  autoSwitchRef.current = autoSwitch;
 
   const lastReportedCwd = useRef('');
   const wrapperRef = useRef<HTMLDivElement>(null);
@@ -141,8 +129,8 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, au
     }
 
     window.cozyPane.terminal.write(id, command.replace(/\n/g, '\r') + '\r');
-    followOutputRef.current = true;
-    setScrolledUp(false);
+    // Don't snap to bottom if user deliberately scrolled up — respect their position.
+    // followOutput stays whatever it was; the ↓ button remains visible if scrolled up.
     manualUntilRef.current = 0;
 
     // Check cwd after command executes
@@ -217,17 +205,35 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, au
     };
 
     term.element?.addEventListener('wheel', (e) => {
-      if (e.deltaY < 0) {
-        // User scrolling up — stop following output and cancel any pending scroll-to-bottom
-        followOutputRef.current = false;
-        setScrolledUp(true);
-        if (scrollRafRef.current) {
-          cancelAnimationFrame(scrollRafRef.current);
-          scrollRafRef.current = 0;
+      if (e.deltaY < 0 && followOutputRef.current) {
+        // User scrolling up — accumulate delta and only disengage after meaningful scroll.
+        // Prevents accidental Mac trackpad touches (tiny deltaY) from breaking auto-scroll.
+        const sd = scrollDisengageRef.current;
+        sd.cumulative += Math.abs(e.deltaY);
+        if (sd.timer) window.clearTimeout(sd.timer);
+        sd.timer = window.setTimeout(() => { sd.cumulative = 0; sd.timer = 0; }, 300);
+
+        if (sd.cumulative > 50) {
+          followOutputRef.current = false;
+          setScrolledUp(true);
+          sd.cumulative = 0;
+          if (sd.timer) { window.clearTimeout(sd.timer); sd.timer = 0; }
+          if (scrollRafRef.current) {
+            cancelAnimationFrame(scrollRafRef.current);
+            scrollRafRef.current = 0;
+          }
         }
+      } else if (e.deltaY > 0 && !followOutputRef.current) {
+        // User scrolling down while disengaged — check if viewport is clamped at bottom
+        requestAnimationFrame(() => {
+          if (!termRef.current) return;
+          const buf = termRef.current.buffer.active;
+          if (buf.viewportY >= buf.baseY) {
+            followOutputRef.current = true;
+            setScrolledUp(false);
+          }
+        });
       }
-      // Scroll-down re-engagement is handled by onScroll below, which fires
-      // synchronously and avoids the RAF race with fast-streaming baseY growth.
     }, { passive: true });
 
     // Re-engage follow mode when the viewport reaches near the bottom.
@@ -238,9 +244,10 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, au
     term.onScroll((viewportY: number) => {
       if (followOutputRef.current) return; // already following
       const buf = term.buffer.active;
-      // Within 15 lines of the current bottom → re-engage auto-scroll.
-      // Generous threshold ensures the user can re-engage even during streaming.
-      if (viewportY >= buf.baseY - 15) {
+      // Within a full screen of the bottom → re-engage auto-scroll.
+      // Generous threshold ensures the user can catch up during fast streaming
+      // where baseY jumps 50+ lines between frames.
+      if (viewportY >= buf.baseY - Math.max(50, term.rows)) {
         followOutputRef.current = true;
         setScrolledUp(false);
       }
@@ -286,34 +293,47 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, au
       if (TUI_ENTER.test(data)) { tuiModeRef.current = true; setTuiMode(true); }
       if (TUI_EXIT.test(data)) { tuiModeRef.current = false; setTuiMode(false); }
 
-      // Detect Claude exiting (shell prompt returns)
+      // Rolling buffer: strip ANSI once, store as clean lines
       const strippedData = stripAnsi(data);
-      if (activeProcessRef.current === 'claude' && /[$%#]\s*$/.test(strippedData)) {
-        activeProcessRef.current = '';
-        setClaudeRunning(false);
-        onActionChangeRef.current?.('idle');
-      }
-
-      // Rolling buffer
-      rollingBufferRef.current += data;
-      if (rollingBufferRef.current.length > 3000) {
-        rollingBufferRef.current = rollingBufferRef.current.slice(-2000);
+      const newLines = strippedData.split('\n').filter(l => l.trim());
+      if (newLines.length > 0) {
+        rollingBufferRef.current.push(...newLines);
+        if (rollingBufferRef.current.length > 50) {
+          rollingBufferRef.current = rollingBufferRef.current.slice(-50);
+        }
       }
 
       if (idleTimerRef.current) clearTimeout(idleTimerRef.current);
       idleTimerRef.current = setTimeout(() => {
         // Skip expensive analysis for hidden terminals
         if (!isVisibleRef.current) return;
-        // Strip ANSI once for all analyzer functions
-        const cleaned = stripAnsi(rollingBufferRef.current);
-        autoSwitchRef.current(cleaned);
+
+        const lines = rollingBufferRef.current;
+        const joined = lines.join('\n');
+
+        // Unified focus decision (replaces separate autoSwitch + detectChoicePrompt)
+        if (!tuiModeRef.current && Date.now() >= manualUntilRef.current) {
+          const decision = decideFocus(lines);
+          if (decision.target && decision.target !== focusRef.current) {
+            switchFocus(decision.target);
+          }
+          setIsChoicePrompt(decision.isChoicePrompt);
+        }
+
+        // Detect Claude exiting (moved from per-chunk to debounce handler)
+        if (activeProcessRef.current === 'claude' && detectClaudeExit(lines)) {
+          activeProcessRef.current = '';
+          setClaudeRunning(false);
+          onActionChangeRef.current?.('idle');
+        }
+
         checkCwd();
-        const action = analyzeAction(cleaned, activeProcessRef.current === 'claude', true);
+        const action = analyzeAction(joined, activeProcessRef.current === 'claude', true);
         onActionChangeRef.current?.(action);
-        setIsChoicePrompt(detectChoicePrompt(cleaned, true));
+
         if (activeProcessRef.current === 'claude') {
           // Detect deployed CozyPane URLs and auto-open preview
-          const deployUrl = detectDeployUrl(cleaned, true);
+          const deployUrl = detectDeployUrl(joined, true);
           if (deployUrl && deployUrl !== lastDeployUrlRef.current) {
             lastDeployUrlRef.current = deployUrl;
             onProdUrlDetectedRef.current?.(deployUrl);
@@ -321,7 +341,7 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, au
         }
 
         // Detect localhost dev server URLs (always, not just during Claude)
-        const localUrl = detectLocalUrl(cleaned, true);
+        const localUrl = detectLocalUrl(joined, true);
         if (localUrl && localUrl !== lastLocalUrlRef.current) {
           lastLocalUrlRef.current = localUrl;
           onLocalUrlDetectedRef.current?.(localUrl);
@@ -358,6 +378,7 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, au
       removeExitListener();
       resizeObserver.disconnect();
       if (scrollRafRef.current) cancelAnimationFrame(scrollRafRef.current);
+      if (scrollDisengageRef.current.timer) window.clearTimeout(scrollDisengageRef.current.timer);
       window.removeEventListener('cozyPane:themeChange', handleThemeChange);
       if (idleTimerRef.current) clearTimeout(idleTimerRef.current);
       term.dispose();
@@ -495,7 +516,7 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, au
           history={commandHistory}
           onFocus={() => switchFocus('input', true)}
           isFocused={focus === 'input'}
-          showSlashCommands={true}
+          showSlashCommands={claudeRunning}
           dynamicSlashCommands={dynamicSlashCommands}
           terminalId={terminalIdRef.current || undefined}
           isChoicePrompt={isChoicePrompt}

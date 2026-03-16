@@ -1615,11 +1615,6 @@ html, body, #root {
   letter-spacing: 1px;
 }
 
-.git-refresh-btn {
-  font-size: 10px;
-  padding: 2px 8px;
-}
-
 .git-empty {
   padding: 20px 14px;
   color: var(--text-muted);
@@ -1641,23 +1636,19 @@ html, body, #root {
   padding: 0;
 }
 
-.git-branch-row {
-  padding: 8px 14px;
-  font-size: 12px;
-  color: var(--text-secondary);
-  border-bottom: 1px solid var(--border);
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.git-branch-label {
-  color: var(--text-muted);
+.git-error {
+  padding: 6px 14px;
+  font-size: 11px;
+  color: var(--danger);
+  background: rgba(240, 108, 126, 0.1);
+  border-bottom: 1px solid var(--danger);
+  cursor: pointer;
 }
 
 .git-branch-name {
   color: var(--accent);
   font-family: var(--font-mono);
+  font-size: 11px;
   font-weight: 500;
 }
 
@@ -1737,16 +1728,10 @@ html, body, #root {
   color: var(--danger);
 }
 
-.git-actions-row {
-  display: flex;
-  gap: 4px;
-  margin-left: auto;
-}
-
 .git-action-btn {
-  font-size: 10px;
-  padding: 2px 8px;
-  color: var(--text-muted);
+  font-size: 11px;
+  padding: 4px 10px;
+  color: var(--text-secondary);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
 }
@@ -1814,13 +1799,20 @@ html, body, #root {
   color: var(--text-muted);
 }
 
+.git-commit-actions {
+  display: flex;
+  gap: 6px;
+}
+
 .git-commit-btn {
+  flex: 1;
   background: var(--accent);
   color: white;
   font-weight: 500;
-  padding: 6px 16px;
+  padding: 6px 0;
   border-radius: var(--radius-sm);
   font-size: 12px;
+  text-align: center;
 }
 
 .git-commit-btn:hover {
@@ -1834,9 +1826,25 @@ html, body, #root {
   background: var(--accent-dim);
 }
 
+.git-push-btn,
+.git-pull-btn {
+  padding: 6px 12px;
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+  font-weight: 500;
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+}
+
+.git-push-btn:hover,
+.git-pull-btn:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+  border-color: var(--text-muted);
+}
+
 .git-commits-list {
-  max-height: 200px;
-  overflow-y: auto;
+  max-height: none;
 }
 
 .git-commit-item {
@@ -1869,24 +1877,25 @@ html, body, #root {
 }
 
 .git-revert-section {
-  padding: 12px 14px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--border);
 }
 
 .git-revert-btn {
   width: 100%;
-  background: rgba(240, 108, 126, 0.1);
+  background: rgba(240, 108, 126, 0.08);
   color: var(--danger);
-  border: 1px solid var(--danger);
-  padding: 8px 16px;
+  border: 1px solid rgba(240, 108, 126, 0.3);
+  padding: 6px 12px;
   border-radius: var(--radius-sm);
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 500;
   cursor: pointer;
   transition: background 0.15s;
 }
 
 .git-revert-btn:hover {
-  background: rgba(240, 108, 126, 0.2);
+  background: rgba(240, 108, 126, 0.15);
 }
 
 .git-revert-confirm {
@@ -1921,29 +1930,124 @@ html, body, #root {
   color: white;
 }
 
-.git-remote-section {
-  border-bottom: 1px solid var(--border);
+/* Remote setup */
+.git-remote-setup {
+  padding: 10px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 
-.git-remote-body {
-  padding: 8px 14px;
-  font-size: 12px;
+.git-remote-setup-inner {
   display: flex;
-  align-items: center;
+  flex-direction: column;
   gap: 8px;
-  flex-wrap: wrap;
+}
+
+.git-remote-setup-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.git-github-btn {
+  width: 100%;
+  padding: 8px 16px;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  font-weight: 500;
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.git-github-btn:hover {
+  background: var(--bg-hover);
+  border-color: var(--text-muted);
+}
+
+.git-remote-connected {
+  padding: 6px 14px;
+  border-bottom: 1px solid var(--border);
 }
 
 .git-remote-url {
   font-family: var(--font-mono);
   font-size: 11px;
-  color: var(--text-secondary);
+  color: var(--text-muted);
   word-break: break-all;
 }
 
 .git-remote-hint {
   color: var(--text-muted);
   font-size: 11px;
+  padding: 4px 0;
+}
+
+.git-remote-create-header,
+.git-remote-connect-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.git-remote-create-name {
+  flex: 1;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-primary);
+  font-weight: 500;
+}
+
+.git-remote-visibility {
+  display: flex;
+  gap: 12px;
+}
+
+.git-radio-label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.git-radio-label input[type="radio"] {
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.git-repo-list {
+  max-height: 160px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.git-repo-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 5px 6px;
+  cursor: pointer;
+  border-radius: 4px;
+}
+
+.git-repo-item:hover {
+  background: var(--bg-hover);
+}
+
+.git-repo-name {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-primary);
+}
+
+.git-repo-vis {
+  font-size: 10px;
+  color: var(--text-muted);
 }
 
 

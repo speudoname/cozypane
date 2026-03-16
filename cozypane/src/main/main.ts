@@ -9,7 +9,7 @@ import { registerFsHandlers } from './filesystem';
 import { registerWatcherHandlers, closeWatcher } from './watcher';
 import { registerSettingsHandlers } from './settings';
 import { registerGitHandlers } from './git';
-import { registerDeployHandlers, processProtocolUrl, getToken, API_BASE } from './deploy';
+import { registerDeployHandlers, processProtocolUrl, getToken, getGithubToken, getAskpassHelperPath, writeAskpassHelper, API_BASE } from './deploy';
 import { registerPreviewHandlers } from './preview';
 
 // Global error handlers
@@ -260,6 +260,11 @@ registerPtyHandlers(getWindow, () => {
     COZYPANE_USER_DATA: app.getPath('userData'),
   };
   if (token) env.COZYPANE_DEPLOY_TOKEN = token;
+  const ghToken = getGithubToken();
+  if (ghToken) {
+    env.COZYPANE_GH_TOKEN = ghToken;
+    env.GIT_ASKPASS = getAskpassHelperPath();
+  }
   return env;
 });
 registerFsHandlers();
@@ -452,6 +457,8 @@ app.whenReady().then(() => {
   createWindow();
   setupAutoUpdater();
   registerMcpConfig();
+  // Write askpass helper if GitHub token exists (for git push/pull auth)
+  if (getGithubToken()) writeAskpassHelper();
 });
 
 // Handle cozypane:// protocol URLs on macOS

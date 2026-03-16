@@ -11,6 +11,7 @@ export const API_BASE = process.env.COZYPANE_API_URL || 'https://api.cozypane.co
 
 interface StoredAuth {
   encryptedToken: string;
+  encryptedGithubToken?: string;
   username: string;
   avatarUrl: string;
 }
@@ -48,6 +49,31 @@ export function getToken(): string {
   const auth = readAuth();
   if (!auth) return '';
   return decryptToken(auth.encryptedToken);
+}
+
+export function getGithubToken(): string {
+  const auth = readAuth();
+  if (!auth?.encryptedGithubToken) return '';
+  return decryptToken(auth.encryptedGithubToken);
+}
+
+export function getAskpassHelperPath(): string {
+  const ext = process.platform === 'win32' ? 'bat' : 'sh';
+  return path.join(app.getPath('userData'), `git-askpass.${ext}`);
+}
+
+export function writeAskpassHelper(): void {
+  const helperPath = getAskpassHelperPath();
+  const dir = path.dirname(helperPath);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+
+  if (process.platform === 'win32') {
+    const script = '@echo off\r\necho %COZYPANE_GH_TOKEN%\r\n';
+    fs.writeFileSync(helperPath, script, { mode: 0o700 });
+  } else {
+    const script = `#!/bin/sh\ncase "$1" in\n  *sername*) echo "x-access-token" ;;\n  *) echo "$COZYPANE_GH_TOKEN" ;;\nesac\n`;
+    fs.writeFileSync(helperPath, script, { mode: 0o700 });
+  }
 }
 
 function apiFetch(endpoint: string, options: RequestInit & { timeoutMs?: number } = {}): Promise<any> {
@@ -95,7 +121,7 @@ export function registerDeployHandlers(getWindow: () => BrowserWindow | null) {
     const redirectUri = encodeURIComponent('cozypane://auth/callback');
     const state = crypto.randomUUID();
     pendingOAuthState = state;
-    const oauthUrl = `https://github.com/login/oauth/authorize?client_id=${clientId}&redirect_uri=${redirectUri}&scope=read:user&state=${state}`;
+    const oauthUrl = `https://github.com/login/oauth/authorize?client_id=${clientId}&redirect_uri=${redirectUri}&scope=repo,read:user&state=${state}`;
     await shell.openExternal(oauthUrl);
   });
 
@@ -218,17 +244,24 @@ export async function processProtocolUrl(url: string, getWindow: () => BrowserWi
         });
 
         if (result.ok) {
-          const data = await result.json() as { token: string; user: { username: string; avatarUrl: string } };
-          writeAuth({
+          const data = await result.json() as { token: string; githubToken?: string; user: { username: string; avatarUrl: string } };
+          const authData: StoredAuth = {
             encryptedToken: encryptToken(data.token),
             username: data.user.username,
             avatarUrl: data.user.avatarUrl,
-          });
+          };
+          if (data.githubToken) {
+            authData.encryptedGithubToken = encryptToken(data.githubToken);
+            writeAskpassHelper();
+          }
+          writeAuth(authData);
           // Notify renderer that auth succeeded
-          getWindow()?.webContents.send('deploy:auth-success', {
+          const authPayload = {
             username: data.user.username,
             avatarUrl: data.user.avatarUrl,
-          });
+          };
+          getWindow()?.webContents.send('deploy:auth-success', authPayload);
+          getWindow()?.webContents.send('github:auth-changed', authPayload);
         } else {
           const text = await result.text().catch(() => '');
           console.error('[CozyPane] OAuth token exchange failed:', result.status, text);

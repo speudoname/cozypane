@@ -3,8 +3,8 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 interface RemoteInfo {
   hasRemote: boolean;
   remoteUrl: string;
-  ghAuthed: boolean;
-  ghInstalled: boolean;
+  githubAuthed: boolean;
+  isSSH: boolean;
 }
 
 interface Props {
@@ -17,7 +17,6 @@ interface Props {
 }
 
 function shellEscape(s: string): string {
-  // Single-quote wrapping: replace each ' with '\''
   return "'" + s.replace(/'/g, "'\\''") + "'";
 }
 
@@ -30,10 +29,25 @@ export default function GitPanel({ cwd, onDiffClick, onBranchChange, activityEve
   const [commits, setCommits] = useState<GitCommit[]>([]);
   const [commitMsg, setCommitMsg] = useState('');
   const [revertConfirm, setRevertConfirm] = useState(false);
-  const [remoteInfo, setRemoteInfo] = useState<RemoteInfo>({ hasRemote: false, remoteUrl: '', ghAuthed: false, ghInstalled: false });
+  const [remoteInfo, setRemoteInfo] = useState<RemoteInfo>({ hasRemote: false, remoteUrl: '', githubAuthed: false, isSSH: false });
+  const [creatingRepo, setCreatingRepo] = useState(false);
+  const [remoteMode, setRemoteMode] = useState<'none' | 'create' | 'connect'>('none');
+  const [repoVisibility, setRepoVisibility] = useState<'private' | 'public'>('private');
+  const [repoSearch, setRepoSearch] = useState('');
+  const [repoResults, setRepoResults] = useState<GitHubRepo[]>([]);
+  const [searchingRepos, setSearchingRepos] = useState(false);
+  const [error, setError] = useState('');
+  const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [generatingMsg, setGeneratingMsg] = useState(false);
   const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const refreshRef = useRef<(() => Promise<void>) | null>(null);
+  const errorTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const showError = useCallback((msg: string) => {
+    setError(msg);
+    if (errorTimerRef.current) clearTimeout(errorTimerRef.current);
+    errorTimerRef.current = setTimeout(() => setError(''), 5000);
+  }, []);
 
   const scheduleRefresh = useCallback(() => {
     if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current);
@@ -86,35 +100,35 @@ export default function GitPanel({ cwd, onDiffClick, onBranchChange, activityEve
   }, [cwd, onBranchChange]);
   refreshRef.current = refresh;
 
-  // Refresh immediately on cwd change, fetch remote info once
   useEffect(() => {
     setLoading(true);
     refresh();
     fetchRemoteInfo();
   }, [cwd, refresh, fetchRemoteInfo]);
 
-  // Debounced refresh on activity events
+  useEffect(() => {
+    const unsub = window.cozyPane.onMenuAction('github:auth-changed', () => {
+      fetchRemoteInfo();
+    });
+    return unsub;
+  }, [fetchRemoteInfo]);
+
   const prevEventCountRef = useRef(activityEvents.length);
   useEffect(() => {
     if (activityEvents.length === prevEventCountRef.current) return;
     prevEventCountRef.current = activityEvents.length;
-
     if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current);
     refreshTimerRef.current = setTimeout(refresh, 1000);
-
-    return () => {
-      if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current);
-    };
+    return () => { if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current); };
   }, [activityEvents.length, refresh]);
 
-  // Poll git status every 5s while panel is mounted
   useEffect(() => {
     if (!isRepo) return;
     const interval = setInterval(refresh, 15000);
     return () => clearInterval(interval);
   }, [isRepo, refresh]);
 
-  // Write actions — all route through terminal
+  // Actions
   const handleStage = (filePath: string) => { onTerminalCommand(`git add -- ${shellEscape(filePath)}`); scheduleRefresh(); };
   const handleUnstage = (filePath: string) => { onTerminalCommand(`git reset HEAD -- ${shellEscape(filePath)}`); scheduleRefresh(); };
   const handleStageAll = () => { onTerminalCommand('git add -A'); scheduleRefresh(); };
@@ -125,10 +139,74 @@ export default function GitPanel({ cwd, onDiffClick, onBranchChange, activityEve
     setCommitMsg('');
     scheduleRefresh();
   };
-  const handlePush = () => { onTerminalCommand('git push'); scheduleRefresh(); };
-  const handlePull = () => { onTerminalCommand('git pull'); scheduleRefresh(); };
-  const handlePullRebase = () => { onTerminalCommand('git pull --rebase'); scheduleRefresh(); };
+  const handlePush = async () => {
+    const cmd = await window.cozyPane.git.wrapCommand('git push');
+    onTerminalCommand(cmd);
+    scheduleRefresh();
+  };
+  const handlePull = async () => {
+    const cmd = await window.cozyPane.git.wrapCommand('git pull');
+    onTerminalCommand(cmd);
+    scheduleRefresh();
+  };
   const handleRevertFile = (filePath: string) => { onTerminalCommand(`git checkout HEAD -- ${shellEscape(filePath)}`); scheduleRefresh(); };
+
+  const handleCreateRepo = async () => {
+    setCreatingRepo(true);
+    setError('');
+    try {
+      const result = await window.cozyPane.git.createRepo(cwd, repoVisibility === 'private');
+      if (result.error) {
+        showError(result.error);
+      } else {
+        setRemoteMode('none');
+        fetchRemoteInfo();
+      }
+    } catch (err: any) {
+      showError(err.message || 'Failed to create repository');
+    } finally {
+      setCreatingRepo(false);
+    }
+  };
+
+  const handleConnectRepo = async (repo: GitHubRepo) => {
+    setError('');
+    try {
+      const result = await window.cozyPane.git.addRemote(cwd, repo.cloneUrl);
+      if (result.error) {
+        showError(result.error);
+      } else {
+        setRemoteMode('none');
+        setRepoSearch('');
+        setRepoResults([]);
+        fetchRemoteInfo();
+      }
+    } catch (err: any) {
+      showError(err.message || 'Failed to connect repository');
+    }
+  };
+
+  const searchRepos = useCallback(async (query: string) => {
+    setSearchingRepos(true);
+    try {
+      const result = await window.cozyPane.git.listRepos(query);
+      setRepoResults(result.repos || []);
+    } catch (err) {
+      console.error('[GitPanel] listRepos error:', err);
+    } finally {
+      setSearchingRepos(false);
+    }
+  }, []);
+
+  const handleSwitchToHttps = () => {
+    const sshMatch = remoteInfo.remoteUrl.match(/^git@github\.com:(.+)$/);
+    if (sshMatch) {
+      const httpsUrl = `https://github.com/${sshMatch[1]}`;
+      onTerminalCommand(`git remote set-url origin ${httpsUrl}`);
+      scheduleRefresh();
+      setTimeout(fetchRemoteInfo, 1500);
+    }
+  };
 
   const handleDiff = async (filePath: string) => {
     const result = await window.cozyPane.git.diffFile(cwd, filePath);
@@ -153,8 +231,9 @@ export default function GitPanel({ cwd, onDiffClick, onBranchChange, activityEve
     try {
       const result = await window.cozyPane.git.generateCommitMsg(cwd);
       if (result.message) setCommitMsg(result.message);
-    } catch (err) {
-      console.error('[GitPanel] generateCommitMsg error:', err);
+      if (result.error) showError(result.error);
+    } catch (err: any) {
+      showError(err.message || 'Failed to generate message');
     } finally {
       setGeneratingMsg(false);
     }
@@ -162,6 +241,7 @@ export default function GitPanel({ cwd, onDiffClick, onBranchChange, activityEve
 
   const staged = files.filter(f => f.staged);
   const unstaged = files.filter(f => !f.staged);
+  const displayCommits = commits.slice(0, 5);
 
   const statusIcon = (status: GitFileStatus['status']) => {
     switch (status) {
@@ -204,121 +284,162 @@ export default function GitPanel({ cwd, onDiffClick, onBranchChange, activityEve
     );
   }
 
+  // Remote setup UI — shown inline when no remote or not authed
+  const renderRemoteSetup = () => {
+    if (!remoteInfo.githubAuthed) {
+      return (
+        <div className="git-remote-setup">
+          <button className="btn git-github-btn" onClick={() => window.cozyPane.deploy.login()}>
+            Sign in with GitHub
+          </button>
+        </div>
+      );
+    }
+
+    if (!remoteInfo.hasRemote) {
+      if (remoteMode === 'create') {
+        return (
+          <div className="git-remote-setup">
+            <div className="git-remote-setup-inner">
+              <div className="git-remote-create-header">
+                <span className="git-remote-create-name">{cwd.split('/').pop()}</span>
+                <button className="btn git-section-btn" onClick={() => setRemoteMode('none')}>Cancel</button>
+              </div>
+              <div className="git-remote-visibility">
+                <label className="git-radio-label">
+                  <input type="radio" name="visibility" checked={repoVisibility === 'private'} onChange={() => setRepoVisibility('private')} />
+                  Private
+                </label>
+                <label className="git-radio-label">
+                  <input type="radio" name="visibility" checked={repoVisibility === 'public'} onChange={() => setRepoVisibility('public')} />
+                  Public
+                </label>
+              </div>
+              <button className="btn git-commit-btn" onClick={handleCreateRepo} disabled={creatingRepo}>
+                {creatingRepo ? 'Creating...' : 'Create Repository'}
+              </button>
+            </div>
+          </div>
+        );
+      }
+
+      if (remoteMode === 'connect') {
+        return (
+          <div className="git-remote-setup">
+            <div className="git-remote-setup-inner">
+              <div className="git-remote-connect-header">
+                <input
+                  className="git-commit-input"
+                  placeholder="Search your repositories..."
+                  value={repoSearch}
+                  onChange={e => {
+                    setRepoSearch(e.target.value);
+                    if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
+                    searchTimerRef.current = setTimeout(() => searchRepos(e.target.value), 300);
+                  }}
+                  autoFocus
+                />
+                <button className="btn git-section-btn" onClick={() => { setRemoteMode('none'); setRepoSearch(''); setRepoResults([]); }}>Cancel</button>
+              </div>
+              <div className="git-repo-list">
+                {searchingRepos ? (
+                  <span className="git-remote-hint">Searching...</span>
+                ) : repoResults.length === 0 ? (
+                  <span className="git-remote-hint">No repositories found</span>
+                ) : repoResults.map(repo => (
+                  <div key={repo.fullName} className="git-repo-item" onClick={() => handleConnectRepo(repo)}>
+                    <span className="git-repo-name">{repo.fullName}</span>
+                    <span className="git-repo-vis">{repo.private ? 'private' : 'public'}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        );
+      }
+
+      return (
+        <div className="git-remote-setup">
+          <div className="git-remote-setup-actions">
+            <button className="btn git-action-btn" onClick={() => setRemoteMode('create')}>New Repository</button>
+            <button className="btn git-action-btn" onClick={() => { setRemoteMode('connect'); searchRepos(''); }}>Connect Existing</button>
+          </div>
+        </div>
+      );
+    }
+
+    if (remoteInfo.isSSH) {
+      return (
+        <div className="git-remote-setup">
+          <span className="git-remote-url">{remoteInfo.remoteUrl}</span>
+          <button className="btn git-action-btn" onClick={handleSwitchToHttps}>Switch to HTTPS</button>
+        </div>
+      );
+    }
+
+    return null;
+  };
+
+  const remoteSetup = renderRemoteSetup();
+  const hasWorkingRemote = remoteInfo.hasRemote && !remoteInfo.isSSH;
+
   return (
     <div className="git-panel">
       <div className="git-header">
         <span className="git-title">Git</span>
-        <button className="btn git-refresh-btn" onClick={refresh} title="Refresh">Refresh</button>
+        <span className="git-branch-name">{detached ? `(${branch})` : branch}</span>
       </div>
 
       <div className="git-body">
-        <div className="git-branch-row">
-          <span className="git-branch-label">Branch:</span>
-          <span className="git-branch-name">{detached ? `(${branch})` : branch}</span>
-          <div className="git-actions-row">
-            <button className="btn git-action-btn" onClick={handlePull} title="Pull">Pull</button>
-            <button className="btn git-action-btn" onClick={handlePullRebase} title="Pull --rebase">Pull -r</button>
-            <button className="btn git-action-btn" onClick={handlePush} title="Push">Push</button>
-          </div>
-        </div>
+        {/* Error banner */}
+        {error && (
+          <div className="git-error" onClick={() => setError('')}>{error}</div>
+        )}
 
-        {/* Staged section */}
-        <div className="git-section">
-          <div className="git-section-header">
-            <span>STAGED ({staged.length})</span>
-            {staged.length > 0 && (
-              <button className="btn git-section-btn" onClick={handleUnstageAll}>Unstage All</button>
-            )}
-          </div>
-          {staged.map(f => (
-            <div key={`staged-${f.path}`} className="git-file-item">
-              <span className="git-file-icon" style={{ color: statusColor(f.status) }}>{statusIcon(f.status)}</span>
-              <span className="git-file-name" onClick={() => handleDiff(f.path)} title={f.path}>{f.path}</span>
-              <div className="git-file-actions">
-                <button className="btn git-file-btn" onClick={() => handleUnstage(f.path)}>Unstage</button>
-              </div>
-            </div>
-          ))}
-        </div>
+        {/* Remote setup — prominent when not configured */}
+        {remoteSetup && (
+          <div className="git-section">{remoteSetup}</div>
+        )}
 
-        {/* Changes section */}
-        <div className="git-section">
-          <div className="git-section-header">
-            <span>CHANGES ({unstaged.length})</span>
-            {unstaged.length > 0 && (
-              <button className="btn git-section-btn" onClick={handleStageAll}>Stage All</button>
-            )}
-          </div>
-          {unstaged.map(f => (
-            <div key={`unstaged-${f.path}`} className="git-file-item">
-              <span className="git-file-icon" style={{ color: statusColor(f.status) }}>{statusIcon(f.status)}</span>
-              <span className="git-file-name" onClick={() => handleDiff(f.path)} title={f.path}>{f.path}</span>
-              <div className="git-file-actions">
-                {f.status !== 'untracked' && (
-                  <button className="btn git-file-btn" onClick={() => handleDiff(f.path)}>Diff</button>
-                )}
-                {f.status === 'deleted' ? (
-                  <button className="btn git-file-btn git-undo-btn" onClick={() => handleRevertFile(f.path)}>Undo</button>
-                ) : (
-                  <button className="btn git-file-btn" onClick={() => handleStage(f.path)}>Stage</button>
-                )}
-              </div>
-            </div>
-          ))}
-        </div>
-
-        {/* Commit area */}
-        <div className="git-commit-area">
-          <div className="git-commit-input-row">
-            <button
-              className="btn git-generate-btn"
-              onClick={handleGenerateMsg}
-              disabled={generatingMsg || staged.length === 0}
-              title="Generate commit message with AI"
-            >
-              {generatingMsg ? '...' : 'AI'}
-            </button>
-            <input
-              className="git-commit-input"
-              placeholder="Commit message..."
-              value={commitMsg}
-              onChange={e => setCommitMsg(e.target.value)}
-              onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleCommit(); } }}
-            />
-          </div>
-          <button
-            className="btn git-commit-btn"
-            disabled={staged.length === 0 || !commitMsg.trim()}
-            onClick={handleCommit}
-          >
-            Commit {staged.length} file{staged.length !== 1 ? 's' : ''}
-          </button>
-        </div>
-
-        {/* Recent commits */}
-        {commits.length > 0 && (
-          <div className="git-section">
-            <div className="git-section-header">
-              <span>RECENT COMMITS</span>
-            </div>
-            <div className="git-commits-list">
-              {commits.map(c => (
-                <div key={c.hash} className="git-commit-item">
-                  <span className="git-commit-hash">{c.hash}</span>
-                  <span className="git-commit-msg">{c.message}</span>
-                  <span className="git-commit-time">{c.timeAgo}</span>
-                </div>
-              ))}
-            </div>
+        {/* Connected remote — compact display */}
+        {hasWorkingRemote && (
+          <div className="git-remote-connected">
+            <span className="git-remote-url">{remoteInfo.remoteUrl}</span>
           </div>
         )}
 
-        {/* Revert AI changes */}
+        {/* Changes section — only when there are changes */}
+        {unstaged.length > 0 && (
+          <div className="git-section">
+            <div className="git-section-header">
+              <span>CHANGES ({unstaged.length})</span>
+              <button className="btn git-section-btn" onClick={handleStageAll}>Stage All</button>
+            </div>
+            {unstaged.map(f => (
+              <div key={`unstaged-${f.path}`} className="git-file-item">
+                <span className="git-file-icon" style={{ color: statusColor(f.status) }}>{statusIcon(f.status)}</span>
+                <span className="git-file-name" onClick={() => handleDiff(f.path)} title={f.path}>{f.path}</span>
+                <div className="git-file-actions">
+                  {f.status !== 'untracked' && (
+                    <button className="btn git-file-btn" onClick={() => handleDiff(f.path)}>Diff</button>
+                  )}
+                  {f.status === 'deleted' ? (
+                    <button className="btn git-file-btn git-undo-btn" onClick={() => handleRevertFile(f.path)}>Undo</button>
+                  ) : (
+                    <button className="btn git-file-btn" onClick={() => handleStage(f.path)}>Stage</button>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Revert AI changes — near the changes it relates to */}
         {aiTouchedFiles.length > 0 && (
           <div className="git-revert-section">
             {!revertConfirm ? (
               <button className="btn git-revert-btn" onClick={() => setRevertConfirm(true)}>
-                Revert All AI Changes ({aiTouchedFiles.length} files)
+                Revert AI Changes ({aiTouchedFiles.length} files)
               </button>
             ) : (
               <div className="git-revert-confirm">
@@ -330,36 +451,78 @@ export default function GitPanel({ cwd, onDiffClick, onBranchChange, activityEve
           </div>
         )}
 
-        {/* Remote section */}
-        <div className="git-remote-section">
-          <div className="git-section-header">
-            <span>REMOTE</span>
+        {/* Staged section — only when there are staged files */}
+        {staged.length > 0 && (
+          <div className="git-section">
+            <div className="git-section-header">
+              <span>STAGED ({staged.length})</span>
+              <button className="btn git-section-btn" onClick={handleUnstageAll}>Unstage All</button>
+            </div>
+            {staged.map(f => (
+              <div key={`staged-${f.path}`} className="git-file-item">
+                <span className="git-file-icon" style={{ color: statusColor(f.status) }}>{statusIcon(f.status)}</span>
+                <span className="git-file-name" onClick={() => handleDiff(f.path)} title={f.path}>{f.path}</span>
+                <div className="git-file-actions">
+                  <button className="btn git-file-btn" onClick={() => handleUnstage(f.path)}>Unstage</button>
+                </div>
+              </div>
+            ))}
           </div>
-          <div className="git-remote-body">
-            {remoteInfo.hasRemote ? (
-              <span className="git-remote-url">{remoteInfo.remoteUrl}</span>
-            ) : remoteInfo.ghInstalled && remoteInfo.ghAuthed ? (
-              <button
-                className="btn git-action-btn"
-                onClick={() => { onTerminalCommand('gh repo create --source=. --private --push'); scheduleRefresh(); }}
-              >
-                Create on GitHub
-              </button>
-            ) : remoteInfo.ghInstalled && !remoteInfo.ghAuthed ? (
+        )}
+
+        {/* Commit + Push area */}
+        <div className="git-commit-area">
+          <div className="git-commit-input-row">
+            <button
+              className="btn git-generate-btn"
+              onClick={handleGenerateMsg}
+              disabled={generatingMsg || staged.length === 0}
+              title="Generate commit message with AI"
+            >
+              {generatingMsg ? '...' : 'Generate'}
+            </button>
+            <input
+              className="git-commit-input"
+              placeholder="Commit message..."
+              value={commitMsg}
+              onChange={e => setCommitMsg(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleCommit(); } }}
+            />
+          </div>
+          <div className="git-commit-actions">
+            <button
+              className="btn git-commit-btn"
+              disabled={staged.length === 0 || !commitMsg.trim()}
+              onClick={handleCommit}
+            >
+              Commit
+            </button>
+            {hasWorkingRemote && (
               <>
-                <span className="git-remote-hint">gh not authenticated.</span>
-                <button
-                  className="btn git-action-btn"
-                  onClick={() => { onTerminalCommand('gh auth login --web'); }}
-                >
-                  Login to GitHub
-                </button>
+                <button className="btn git-push-btn" onClick={handlePush}>Push</button>
+                <button className="btn git-pull-btn" onClick={handlePull}>Pull</button>
               </>
-            ) : (
-              <span className="git-remote-hint">Install gh CLI for GitHub features</span>
             )}
           </div>
         </div>
+
+        {/* Recent commits — compact */}
+        {displayCommits.length > 0 && (
+          <div className="git-section">
+            <div className="git-section-header">
+              <span>RECENT</span>
+            </div>
+            <div className="git-commits-list">
+              {displayCommits.map(c => (
+                <div key={c.hash} className="git-commit-item">
+                  <span className="git-commit-hash">{c.hash}</span>
+                  <span className="git-commit-msg">{c.message}</span>
+                  <span className="git-commit-time">{c.timeAgo}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

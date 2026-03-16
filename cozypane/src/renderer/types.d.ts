@@ -68,6 +68,14 @@ declare global {
     updatedAt: string;
   }
 
+  interface GitHubRepo {
+    fullName: string;
+    cloneUrl: string;
+    htmlUrl: string;
+    private: boolean;
+    description: string;
+  }
+
   interface GitCommit {
     hash: string;
     message: string;
@@ -153,8 +161,12 @@ declare global {
       branch: (cwd: string) => Promise<{ branch: string; detached: boolean }>;
       log: (cwd: string) => Promise<{ commits: GitCommit[] }>;
       diffFile: (cwd: string, path: string) => Promise<{ before?: string; after?: string; error?: string }>;
-      remoteInfo: (cwd: string) => Promise<{ hasRemote: boolean; remoteUrl: string; ghAuthed: boolean; ghInstalled: boolean }>;
+      remoteInfo: (cwd: string) => Promise<{ hasRemote: boolean; remoteUrl: string; githubAuthed: boolean; isSSH: boolean }>;
       generateCommitMsg: (cwd: string) => Promise<{ message?: string; error?: string }>;
+      wrapCommand: (cmd: string) => Promise<string>;
+      createRepo: (cwd: string, isPrivate?: boolean) => Promise<{ url?: string; cloneUrl?: string; fullName?: string; error?: string }>;
+      listRepos: (query: string) => Promise<{ repos: GitHubRepo[]; error?: string }>;
+      addRemote: (cwd: string, cloneUrl: string) => Promise<{ success?: boolean; error?: string }>;
     };
   }
 
