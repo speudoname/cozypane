@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CozyPane Admin</title>
+  <link rel="stylesheet" href="/admin/style.css?v=2">
+</head>
+<body>
+  <div id="app">
+    <nav id="nav">
+      <div class="nav-brand">CozyPane Admin</div>
+      <div class="nav-links">
+        <a href="#/" class="nav-link" data-page="dashboard">Dashboard</a>
+        <a href="#/users" class="nav-link" data-page="users">Users</a>
+        <a href="#/deployments" class="nav-link" data-page="deployments">Deployments</a>
+      </div>
+      <div id="nav-user"></div>
+    </nav>
+    <main id="content"></main>
+  </div>
+  <div id="login-screen" style="display:none">
+    <div class="login-box">
+      <h1>CozyPane Admin</h1>
+      <p>Sign in with your admin account</p>
+      <button onclick="doLogin()" class="btn btn-primary">Sign in with GitHub</button>
+    </div>
+  </div>
+  <script src="/admin/app.js?v=2"></script>
+</body>
+</html>
