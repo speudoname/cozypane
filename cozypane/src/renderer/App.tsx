@@ -8,6 +8,7 @@ import Settings from './components/Settings';
 import GitPanel from './components/GitPanel';
 import DeployPanel from './components/DeployPanel';
 import Preview from './components/Preview';
+import ErrorBoundary from './components/ErrorBoundary';
 import TabLauncher from './components/TabLauncher';
 import { enableCozyMode } from './lib/cozyMode';
 
@@ -735,7 +736,10 @@ export default function App() {
                 <div
                   key={tab.id}
                   className="terminal-instance"
-                  style={{ display: visible ? 'flex' : 'none', flex: 1 }}
+                  style={visible
+                    ? { display: 'flex', flex: 1, position: 'relative' as const }
+                    : { visibility: 'hidden' as const, position: 'absolute' as const, inset: 0, pointerEvents: 'none' as const }
+                  }
                   onClick={() => {
                     if (isSplit && !isActive) {
                       setActiveTerminalId(tab.id);
@@ -756,14 +760,12 @@ export default function App() {
                       updateTab(tab.id, { previewLocalUrl: url });
                       if (tab.id === activeTerminalIdRef.current) {
                         setPreviewLocalUrl(url);
-                        setPreviewOpen(true);
                       }
                     }}
                     onProdUrlDetected={(url) => {
                       updateTab(tab.id, { previewProdUrl: url });
                       if (tab.id === activeTerminalIdRef.current) {
                         setPreviewProdUrl(url);
-                        setPreviewOpen(true);
                       }
                     }}
                   />
@@ -825,15 +827,17 @@ export default function App() {
               onMouseDown={handlePreviewResizeStart}
             />
             <div className="right-panel preview-panel" style={{ width: previewWidth }}>
-              <Preview
-                key={activeTerminalId}
-                localUrl={previewLocalUrl}
-                productionUrl={previewProdUrl}
-                cwd={cwd}
-                onSendToTerminal={sendTerminalCommand}
-                deployments={deployments}
-                claudeRunning={isClaudeRunning}
-              />
+              <ErrorBoundary panel="Preview">
+                <Preview
+                  key={activeTerminalId}
+                  localUrl={previewLocalUrl}
+                  productionUrl={previewProdUrl}
+                  cwd={cwd}
+                  onSendToTerminal={sendTerminalCommand}
+                  deployments={deployments}
+                  claudeRunning={isClaudeRunning}
+                />
+              </ErrorBoundary>
             </div>
           </>
         )}

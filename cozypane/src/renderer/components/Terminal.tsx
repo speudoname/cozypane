@@ -51,6 +51,7 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, au
   const isVisibleRef = useRef(isVisible);
   isVisibleRef.current = isVisible;
   const followOutputRef = useRef(true);
+  const inputTextRef = useRef('');
   const scrollRafRef = useRef(0); // requestAnimationFrame handle for debounced scroll
   const scrollDisengageRef = useRef({ cumulative: 0, timer: 0 });
 
@@ -126,7 +127,7 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, au
 
     // Track if Claude is being launched
     const trimmed = command.trim().toLowerCase();
-    if (trimmed.startsWith('claude') || trimmed.startsWith('npx claude')) {
+    if (/^(claude|npx\s+claude)(\s|$)/.test(trimmed)) {
       activeProcessRef.current = 'claude';
       setClaudeRunning(true);
       onClaudeRunningChangeRef.current?.(true);
@@ -217,26 +218,32 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, au
         if (sd.timer) window.clearTimeout(sd.timer);
         sd.timer = window.setTimeout(() => { sd.cumulative = 0; sd.timer = 0; }, 300);
 
-        if (sd.cumulative > 50) {
+        // Cancel any pending scroll-to-bottom immediately so the user isn't
+        // yanked back between wheel events while cumulative builds up.
+        if (scrollRafRef.current) {
+          cancelAnimationFrame(scrollRafRef.current);
+          scrollRafRef.current = 0;
+        }
+
+        if (sd.cumulative > 15) {
           followOutputRef.current = false;
           setScrolledUp(true);
           sd.cumulative = 0;
           if (sd.timer) { window.clearTimeout(sd.timer); sd.timer = 0; }
-          if (scrollRafRef.current) {
-            cancelAnimationFrame(scrollRafRef.current);
-            scrollRafRef.current = 0;
-          }
         }
       } else if (e.deltaY > 0 && !followOutputRef.current) {
-        // User scrolling down while disengaged — check if viewport is clamped at bottom
-        requestAnimationFrame(() => {
-          if (!termRef.current) return;
-          const buf = termRef.current.buffer.active;
-          if (buf.viewportY >= buf.baseY) {
-            followOutputRef.current = true;
-            setScrolledUp(false);
-          }
-        });
+        // User scrolling down while disengaged — check synchronously (no RAF)
+        // to avoid races where baseY grows between event and callback.
+        if (!termRef.current) return;
+        const buf = termRef.current.buffer.active;
+        // Use generous threshold: within one screen of bottom → re-engage.
+        // This matches the onScroll handler and ensures re-engagement even
+        // during fast streaming where baseY grows between frames.
+        if (buf.viewportY >= buf.baseY - Math.max(50, termRef.current.rows)) {
+          followOutputRef.current = true;
+          setScrolledUp(false);
+          scheduleScrollToBottom();
+        }
       }
     }, { passive: true });
 
@@ -276,7 +283,14 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, au
       if (e.key === 'c' && e.ctrlKey && !e.shiftKey && term.hasSelection()) return true;
       // Paste: Cmd+V (mac) or Ctrl+Shift+V (linux/win) or Ctrl+V
       if (e.key === 'v' && (e.metaKey || e.ctrlKey)) return true;
-      if (tuiModeRef.current || focusRef.current === 'terminal') return true;
+      if (tuiModeRef.current || focusRef.current === 'terminal') {
+        // H5: Escape in terminal mode (non-TUI) → switch back to input
+        if (e.key === 'Escape' && !tuiModeRef.current && e.type === 'keydown') {
+          switchFocus('input', true);
+          return false;
+        }
+        return true;
+      }
       return false;
     });
 
@@ -295,7 +309,7 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, au
       });
 
       if (TUI_ENTER.test(data)) { tuiModeRef.current = true; setTuiMode(true); }
-      if (TUI_EXIT.test(data)) { tuiModeRef.current = false; setTuiMode(false); }
+      if (TUI_EXIT.test(data)) { tuiModeRef.current = false; setTuiMode(false); switchFocus('input'); }
 
       // Rolling buffer: strip ANSI once, store as clean lines
       const strippedData = stripAnsi(data);
@@ -319,7 +333,14 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, au
         if (!tuiModeRef.current && Date.now() >= manualUntilRef.current) {
           const decision = decideFocus(lines);
           if (decision.target && decision.target !== focusRef.current) {
-            switchFocus(decision.target);
+            // Don't steal focus from input→terminal if user is mid-typing.
+            // They can click or press Escape to switch when ready.
+            const inputHasText = !!inputTextRef.current;
+            if (decision.target === 'terminal' && focusRef.current === 'input' && inputHasText) {
+              // Skip — user is typing
+            } else {
+              switchFocus(decision.target);
+            }
           }
           setIsChoicePrompt(decision.isChoicePrompt);
         }
@@ -431,7 +452,7 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, au
       // Auto-run command if specified (e.g. claude --dangerously-skip-permissions)
       if (autoCommand) {
         setTimeout(() => {
-          window.cozyPane.terminal.write(result.id, autoCommand + '\n');
+          window.cozyPane.terminal.write(result.id, autoCommand + '\r');
         }, 300);
       }
     }).catch((err: any) => console.error('Failed to create PTY:', err));
@@ -473,7 +494,7 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, au
       if (focusRef.current === 'input') {
         window.dispatchEvent(new CustomEvent('cozyPane:fileDrop', { detail: { paths, terminalId: id } }));
       } else {
-        const escaped = paths.map(p => p.includes(' ') ? `'${p}'` : p).join(' ');
+        const escaped = paths.map(p => "'" + p.replace(/'/g, "'\\''") + "'").join(' ');
         window.cozyPane.terminal.write(id, escaped);
       }
     }
@@ -527,6 +548,7 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, au
           terminalId={terminalIdRef.current || undefined}
           isChoicePrompt={isChoicePrompt}
           focusTick={focusTick}
+          onTextChange={(text) => { inputTextRef.current = text; }}
         />
       )}
       {!tuiMode && (

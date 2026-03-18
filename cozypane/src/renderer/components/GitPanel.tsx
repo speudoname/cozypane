@@ -107,11 +107,17 @@ export default function GitPanel({ cwd, onDiffClick, onBranchChange, activityEve
   }, [cwd, refresh, fetchRemoteInfo]);
 
   useEffect(() => {
-    const unsub = window.cozyPane.onMenuAction('github:auth-changed', () => {
+    const unsub1 = window.cozyPane.onMenuAction('github:auth-changed', () => {
       fetchRemoteInfo();
     });
-    return unsub;
-  }, [fetchRemoteInfo]);
+    const unsub2 = window.cozyPane.onMenuAction('deploy:auth-success', () => {
+      fetchRemoteInfo();
+    });
+    const unsub3 = window.cozyPane.onMenuAction('deploy:auth-error', (_data: any) => {
+      showError('GitHub sign-in failed. Please try again.');
+    });
+    return () => { unsub1(); unsub2(); unsub3(); };
+  }, [fetchRemoteInfo, showError]);
 
   const prevEventCountRef = useRef(activityEvents.length);
   useEffect(() => {

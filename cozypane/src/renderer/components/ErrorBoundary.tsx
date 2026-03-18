@@ -1,11 +1,17 @@
 import React from 'react';
 
+interface Props {
+  children: React.ReactNode;
+  /** When set, renders a compact panel-level fallback instead of the full-page reload UI */
+  panel?: string;
+}
+
 interface State {
   hasError: boolean;
   error: Error | null;
 }
 
-export default class ErrorBoundary extends React.Component<{ children: React.ReactNode }, State> {
+export default class ErrorBoundary extends React.Component<Props, State> {
   state: State = { hasError: false, error: null };
 
   static getDerivedStateFromError(error: Error): State {
@@ -16,8 +22,35 @@ export default class ErrorBoundary extends React.Component<{ children: React.Rea
     console.error('[CozyPane] React error:', error, info.componentStack);
   }
 
+  private handleRetry = () => {
+    this.setState({ hasError: false, error: null });
+  };
+
   render() {
     if (this.state.hasError) {
+      if (this.props.panel) {
+        return (
+          <div style={{
+            display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+            height: '100%', background: '#1a1b2e', color: '#e4e4f0', fontFamily: 'monospace', padding: '1.5em',
+          }}>
+            <div style={{ fontSize: '1em', marginBottom: 8 }}>{this.props.panel} crashed</div>
+            <pre style={{ color: '#f06c7e', fontSize: 12, maxWidth: '90%', overflow: 'auto', marginBottom: 14, textAlign: 'center' }}>
+              {this.state.error?.message}
+            </pre>
+            <button
+              onClick={this.handleRetry}
+              style={{
+                padding: '6px 16px', background: '#7c6ef0', color: '#fff',
+                border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 13,
+              }}
+            >
+              Retry
+            </button>
+          </div>
+        );
+      }
+
       return (
         <div style={{
           display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',

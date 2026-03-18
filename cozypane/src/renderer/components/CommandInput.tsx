@@ -17,6 +17,11 @@ interface Props {
   terminalId?: string;
   isChoicePrompt?: boolean;
   focusTick?: number;
+  onTextChange?: (text: string) => void;
+}
+
+function shellEscape(p: string): string {
+  return "'" + p.replace(/'/g, "'\\''") + "'";
 }
 
 const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg', 'ico']);
@@ -29,7 +34,7 @@ function isImageFile(name: string): boolean {
   return IMAGE_EXTS.has(getFileExt(name));
 }
 
-export default function CommandInput({ onSubmit, onRawKey, visible, history, onFocus, isFocused, showSlashCommands, dynamicSlashCommands, terminalId, isChoicePrompt, focusTick }: Props) {
+export default function CommandInput({ onSubmit, onRawKey, visible, history, onFocus, isFocused, showSlashCommands, dynamicSlashCommands, terminalId, isChoicePrompt, focusTick, onTextChange }: Props) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [value, setValue] = useState('');
   const [historyIndex, setHistoryIndex] = useState(-1);
@@ -43,7 +48,7 @@ export default function CommandInput({ onSubmit, onRawKey, visible, history, onF
   // Insert path(s) at cursor position in textarea
   const insertPaths = useCallback((paths: string[]) => {
     if (paths.length === 0) return;
-    const escaped = paths.map(p => p.includes(' ') ? `'${p}'` : p).join(' ');
+    const escaped = paths.map(p => shellEscape(p)).join(' ');
     setValue(prev => prev ? prev + ' ' + escaped : escaped);
     setAttachedPaths(prev => [...prev, ...paths]);
     textareaRef.current?.focus();
@@ -76,6 +81,11 @@ export default function CommandInput({ onSubmit, onRawKey, visible, history, onF
     window.addEventListener('cozyPane:fileDrop', handler);
     return () => window.removeEventListener('cozyPane:fileDrop', handler);
   }, [insertPaths, terminalId]);
+
+  // Sync inputTextRef for all setValue calls (H1: stale inputTextRef fix)
+  useEffect(() => {
+    onTextChange?.(value);
+  }, [value, onTextChange]);
 
   // Auto-resize textarea — max ~10 lines then scroll
   useEffect(() => {
@@ -200,10 +210,14 @@ export default function CommandInput({ onSubmit, onRawKey, visible, history, onF
       }
     }
 
-    // Escape (no suggestions open) — forward to terminal as interrupt
+    // Escape (no suggestions open) — clear input first, then forward ESC on second press
     if (e.key === 'Escape') {
       e.preventDefault();
-      onRawKey?.('\x1b');
+      if (value !== '') {
+        setValue('');
+      } else {
+        onRawKey?.('\x1b');
+      }
       return;
     }
 

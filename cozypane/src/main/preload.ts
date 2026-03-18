@@ -72,7 +72,7 @@ contextBridge.exposeInMainWorld('cozyPane', {
     writeDevToolsData: (data: object) => ipcRenderer.invoke('preview:writeDevToolsData', data),
     captureScreenshot: (base64Png: string) => ipcRenderer.invoke('preview:captureScreenshot', base64Png),
   },
-  onMenuAction: (channel: string, callback: () => void) => {
+  onMenuAction: (channel: string, callback: (...args: any[]) => void) => {
     const ALLOWED_CHANNELS = new Set([
       'menu:new-tab', 'menu:close-tab', 'menu:toggle-panels', 'menu:toggle-layout',
       'menu:settings', 'menu:clear-terminal', 'menu:split-view',
@@ -80,7 +80,7 @@ contextBridge.exposeInMainWorld('cozyPane', {
       'updater:status', 'deploy:auth-success', 'deploy:auth-error', 'github:auth-changed',
     ]);
     if (!ALLOWED_CHANNELS.has(channel)) return () => {};
-    const listener = () => callback();
+    const listener = (_event: any, ...args: any[]) => callback(...args);
     ipcRenderer.on(channel, listener);
     return () => ipcRenderer.removeListener(channel, listener);
   },

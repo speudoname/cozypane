@@ -45,7 +45,6 @@ const LEVEL_LABELS = ['verbose', 'info', 'warn', 'error'];
 
 export default function Preview({ localUrl, productionUrl, cwd, onSendToTerminal, deployments = [], claudeRunning }: Props) {
   const [device, setDevice] = useState<DeviceMode>('desktop');
-  const [autoFix, setAutoFix] = useState(false);
   const [errors, setErrors] = useState<PreviewError[]>([]);
   const [consoleLogs, setConsoleLogs] = useState<ConsoleLog[]>([]);
   const [networkErrors, setNetworkErrors] = useState<NetworkError[]>([]);
@@ -64,7 +63,6 @@ export default function Preview({ localUrl, productionUrl, cwd, onSendToTerminal
 
   const localWebviewRef = useRef<any>(null);
   const prodWebviewRef = useRef<any>(null);
-  const autoFixSentRef = useRef(false);
   const staticCwdRef = useRef<string>('');
   const devtoolsWriteTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -332,23 +330,11 @@ export default function Preview({ localUrl, productionUrl, cwd, onSendToTerminal
     }
   }, [claudeRunning, collectDevToolsData, onSendToTerminal]);
 
-  useEffect(() => {
-    if (!autoFix || errors.length === 0 || autoFixSentRef.current) return;
-    const timer = setTimeout(() => {
-      if (errors.length > 0 && !autoFixSentRef.current) {
-        autoFixSentRef.current = true;
-        sendDevToolsToClaude();
-        setTimeout(() => { autoFixSentRef.current = false; }, 30000);
-      }
-    }, 3000);
-    return () => clearTimeout(timer);
-  }, [autoFix, errors, sendDevToolsToClaude]);
 
   const reload = useCallback(() => {
     setErrors([]);
     setConsoleLogs([]);
     setNetworkErrors([]);
-    autoFixSentRef.current = false;
     if (viewMode === 'local' || viewMode === 'split') localWebviewRef.current?.reload();
     if (viewMode === 'production' || viewMode === 'split') prodWebviewRef.current?.reload();
   }, [viewMode]);
@@ -559,22 +545,6 @@ export default function Preview({ localUrl, productionUrl, cwd, onSendToTerminal
           {sendingToClaude ? 'Sending...' : 'Send to Claude'}
         </button>
 
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.3em' }}>
-          <span style={{ fontSize: '0.72em', color: 'var(--text-secondary, #888)' }}>Auto-fix</span>
-          <button
-            onClick={() => setAutoFix(v => !v)}
-            style={{
-              width: 32, height: 16, borderRadius: 8, border: 'none',
-              backgroundColor: autoFix ? 'var(--accent, #7c6fe0)' : 'var(--border, #3a3b4e)',
-              cursor: 'pointer', position: 'relative', transition: 'background-color 0.2s', flexShrink: 0,
-            }}
-          >
-            <div style={{
-              width: 12, height: 12, borderRadius: '50%', backgroundColor: '#fff',
-              position: 'absolute', top: 2, left: autoFix ? 18 : 2, transition: 'left 0.2s',
-            }} />
-          </button>
-        </div>
       </div>
 
       {effectiveLocalUrl && (

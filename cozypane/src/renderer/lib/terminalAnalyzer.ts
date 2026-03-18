@@ -2,7 +2,7 @@ export function stripAnsi(text: string): string {
   // eslint-disable-next-line no-control-regex
   return text.replace(/\x1b[\[\(][0-9;?]*[a-zA-Z]/g, '')
              .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '')
-             .replace(/\x1b[^[\(][^\x1b]*/g, '')
+             .replace(/\x1b[^[\(].?/g, '')
              .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '');
 }
 
@@ -18,20 +18,20 @@ const INTERACTIVE_PATTERNS = [
   /continue\s*\?/i,
   /overwrite\s*\?/i,
   /proceed\s*\?/i,
-  /do you want to/i,
+  /do you want to .{0,50}\?\s*$/i,
   /enter to confirm/i,
   /esc to cancel/i,
   /press any key/i,
   /press enter/i,
-  /password\s*:/i,
-  /passphrase/i,
+  /^\s*password\s*:\s*$/i,
+  /passphrase\s*.*:\s*$/i,
   /trust this folder/i,
   /type yes to confirm/i,
   /\(use arrow keys\)/i,
   /\(press .* to select\)/i,
-  /select\s*:/i,
-  /choose\s*:/i,
-  /pick\s*:/i,
+  /^\s*select\s*:/i,
+  /^\s*choose\s*:/i,
+  /^\s*pick\s*:/i,
   /enter a number/i,
   /enter your choice/i,
   /\d+[\.\)]\s*(Yes|No|Accept|Reject|Skip)\b/,
@@ -39,7 +39,7 @@ const INTERACTIVE_PATTERNS = [
 
 // Shell prompt patterns → input mode (checked against last 5 lines)
 const SHELL_PROMPT_PATTERNS = [
-  /[$%#]\s*$/,              // bash/zsh/root
+  /[\w~\/.][$%#]\s*$/,      // bash/zsh/root (require word/path char before symbol)
   /❯\s*$/,                 // Claude Code / starship
   /➜\s+\S/,                // oh-my-zsh (tightened: require char after arrow)
   />>>\s*$/,               // python REPL
@@ -79,7 +79,7 @@ export function decideFocus(lines: string[]): FocusDecision {
     }
   }
 
-  // 2. Choice prompt — last 10 lines, need >= 2 matches
+  // 2. Choice prompt — last 10 lines, need >= 2 matches + question indicator in last 3 lines
   const last10 = lines.slice(-10);
   let choiceCount = 0;
   for (const line of last10) {
@@ -89,7 +89,15 @@ export function decideFocus(lines: string[]): FocusDecision {
     }
   }
   if (choiceCount >= 2) {
-    return { target: 'input', isChoicePrompt: true };
+    // M1: Require a question/prompt indicator in last 3 lines to avoid false positives
+    // from numbered lists in normal output
+    const hasPromptIndicator = last3.some(line => {
+      const t = line.trim();
+      return /\?\s*$/.test(t) || /:\s*$/.test(t) || INTERACTIVE_PATTERNS.some(p => p.test(t));
+    });
+    if (hasPromptIndicator) {
+      return { target: 'input', isChoicePrompt: true };
+    }
   }
 
   // 3. Shell prompt — last 5 lines
@@ -160,14 +168,14 @@ export function analyzeAction(rollingBuffer: string, claudeRunning: boolean, pre
  */
 export function detectClaudeExit(lines: string[]): boolean {
   const last2 = lines.slice(-2);
-  const last5 = lines.slice(-5);
+  const last20 = lines.slice(-20);
 
-  // Must have a shell prompt in last 2 lines
-  const hasShellPrompt = last2.some(line => /[$%#]\s*$/.test(line.trim()));
+  // Must have a shell prompt in last 2 lines (tightened regex)
+  const hasShellPrompt = last2.some(line => /[\w~\/.][$%#]\s*$/.test(line.trim()));
   if (!hasShellPrompt) return false;
 
-  // Must NOT have Claude prompt in last 5 lines
-  const hasClaudePrompt = last5.some(line => /❯\s*$/.test(line.trim()));
+  // Must NOT have Claude prompt in last 20 lines
+  const hasClaudePrompt = last20.some(line => /❯\s*$/.test(line.trim()));
   return !hasClaudePrompt;
 }
 

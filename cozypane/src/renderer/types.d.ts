@@ -154,7 +154,7 @@ declare global {
       writeDevToolsData: (data: object) => Promise<void>;
       captureScreenshot: (base64Png: string) => Promise<string>;
     };
-    onMenuAction: (channel: string, callback: () => void) => () => void;
+    onMenuAction: (channel: string, callback: (...args: any[]) => void) => () => void;
     git: {
       isRepo: (cwd: string) => Promise<{ isRepo: boolean }>;
       status: (cwd: string) => Promise<{ files: GitFileStatus[]; error?: string }>;

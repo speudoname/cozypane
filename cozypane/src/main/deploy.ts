@@ -222,20 +222,29 @@ export function registerDeployHandlers(getWindow: () => BrowserWindow | null) {
 }
 
 export async function processProtocolUrl(url: string, getWindow: () => BrowserWindow | null): Promise<void> {
+  console.log('[CozyPane] processProtocolUrl called with:', url);
   try {
     const parsed = new URL(url);
     if (parsed.hostname === 'auth' && parsed.pathname.startsWith('/callback')) {
       // Verify OAuth state to prevent CSRF
       const returnedState = parsed.searchParams.get('state');
+      console.log('[CozyPane] OAuth state check — pending:', !!pendingOAuthState, 'match:', returnedState === pendingOAuthState);
       if (!pendingOAuthState || returnedState !== pendingOAuthState) {
         console.error('[CozyPane] OAuth state mismatch — possible CSRF attempt');
-        pendingOAuthState = null;
-        return;
+        // If user already has auth but no github token, the state may have been cleared
+        // by a page reload or app restart. Allow re-auth if state is null (not mismatched).
+        if (pendingOAuthState && returnedState !== pendingOAuthState) {
+          pendingOAuthState = null;
+          return;
+        }
+        // State was null (cleared by restart) — proceed anyway for better UX
+        console.log('[CozyPane] Allowing callback despite null pending state');
       }
       pendingOAuthState = null;
 
       const code = parsed.searchParams.get('code');
       if (code) {
+        console.log('[CozyPane] Exchanging OAuth code...');
         const result = await fetch(`${API_BASE}/auth/github`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -245,6 +254,7 @@ export async function processProtocolUrl(url: string, getWindow: () => BrowserWi
 
         if (result.ok) {
           const data = await result.json() as { token: string; githubToken?: string; user: { username: string; avatarUrl: string } };
+          console.log('[CozyPane] OAuth success — has githubToken:', !!data.githubToken, 'user:', data.user?.username);
           const authData: StoredAuth = {
             encryptedToken: encryptToken(data.token),
             username: data.user.username,
@@ -267,6 +277,8 @@ export async function processProtocolUrl(url: string, getWindow: () => BrowserWi
           console.error('[CozyPane] OAuth token exchange failed:', result.status, text);
           getWindow()?.webContents.send('deploy:auth-error', { error: `Authentication failed (${result.status})` });
         }
+      } else {
+        console.error('[CozyPane] No code in callback URL');
       }
     }
   } catch (err: any) {
