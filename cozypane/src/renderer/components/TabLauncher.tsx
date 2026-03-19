@@ -36,9 +36,10 @@ export default function TabLauncher({ onOpenProject, onCreateProject, onNewTermi
   }, [onOpenProject, selectedDir]);
 
   const handleCreateStep = useCallback(async () => {
-    // Get home directory as default parent
-    const home = await window.cozyPane.fs.homedir();
-    setParentDir(home);
+    // Use saved default dir, fall back to home
+    const settings = await window.cozyPane.settings.get();
+    const dir = settings.defaultProjectDir || await window.cozyPane.fs.homedir();
+    setParentDir(dir);
     setStep('create-name');
   }, []);
 
@@ -91,6 +92,18 @@ export default function TabLauncher({ onOpenProject, onCreateProject, onNewTermi
                 Change
               </button>
             </div>
+            <label style={{ display: 'flex', alignItems: 'center', gap: '0.4em', marginTop: '0.5em', fontSize: '0.78em', color: 'var(--text-secondary, #888)', cursor: 'pointer' }}>
+              <input
+                type="checkbox"
+                onChange={async (e) => {
+                  if (e.target.checked) {
+                    await window.cozyPane.settings.setDefaultDir(parentDir);
+                  }
+                }}
+                style={{ margin: 0 }}
+              />
+              Make default
+            </label>
           </div>
           <div style={{ display: 'flex', gap: '0.5em' }}>
             <button onClick={() => setStep('choose')} style={smallActionBtnStyle}>Back</button>

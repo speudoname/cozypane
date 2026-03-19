@@ -7,6 +7,7 @@ interface StoredSettings {
   provider: string;
   model: string;
   encryptedKey: string;
+  defaultProjectDir?: string;
 }
 
 const PROVIDERS: Record<string, { name: string; models: { id: string; name: string }[] }> = {
@@ -116,7 +117,19 @@ export function registerSettingsHandlers() {
       model: settings.model,
       hasApiKey: !!apiKey,
       providers: PROVIDERS,
+      defaultProjectDir: settings.defaultProjectDir || '',
     };
+  });
+
+  ipcMain.handle('settings:setDefaultDir', (_event, dir: string) => {
+    try {
+      const current = readSettings();
+      current.defaultProjectDir = dir;
+      writeSettings(current);
+      return { success: true };
+    } catch (err: any) {
+      return { error: err.message || 'Failed to save default directory' };
+    }
   });
 
   ipcMain.handle('settings:set', (_event, data: { provider: string; model: string; apiKey?: string }) => {

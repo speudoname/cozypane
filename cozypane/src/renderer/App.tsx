@@ -74,6 +74,7 @@ export default function App() {
     return valid.includes(saved as RightPanelTab) ? (saved as RightPanelTab) : 'preview';
   });
   const [previewLocalUrl, setPreviewLocalUrl] = useState<string>('');
+  const [previewLocalUrls, setPreviewLocalUrls] = useState<string[]>([]);
   const [previewProdUrl, setPreviewProdUrl] = useState<string>('');
   const [previewOpen, setPreviewOpen] = useState(() => loadPersisted('previewOpen', false));
   const [previewWidth, setPreviewWidth] = useState(() => loadPersisted('previewWidth', 500));
@@ -156,6 +157,7 @@ export default function App() {
     // Restore preview URLs for the newly active tab
     const newTab = terminalTabsRef.current.find(t => t.id === activeTerminalId);
     setPreviewLocalUrl(newTab?.previewLocalUrl || '');
+    setPreviewLocalUrls(newTab?.previewLocalUrls || []);
     setPreviewProdUrl(newTab?.previewProdUrl || '');
     prevActiveTabRef.current = activeTerminalId;
   }, [activeTerminalId]);
@@ -503,7 +505,7 @@ export default function App() {
   const sendTerminalCommand = useCallback((command: string) => {
     const tab = terminalTabsRef.current.find(t => t.id === activeTerminalIdRef.current);
     if (tab?.ptyId) {
-      window.cozyPane.terminal.write(tab.ptyId, command + '\n');
+      window.cozyPane.terminal.write(tab.ptyId, command + '\r');
     }
   }, []);
 
@@ -762,6 +764,12 @@ export default function App() {
                         setPreviewLocalUrl(url);
                       }
                     }}
+                    onLocalUrlsDetected={(urls) => {
+                      updateTab(tab.id, { previewLocalUrls: urls });
+                      if (tab.id === activeTerminalIdRef.current) {
+                        setPreviewLocalUrls(urls);
+                      }
+                    }}
                     onProdUrlDetected={(url) => {
                       updateTab(tab.id, { previewProdUrl: url });
                       if (tab.id === activeTerminalIdRef.current) {
@@ -831,6 +839,7 @@ export default function App() {
                 <Preview
                   key={activeTerminalId}
                   localUrl={previewLocalUrl}
+                  localUrls={previewLocalUrls}
                   productionUrl={previewProdUrl}
                   cwd={cwd}
                   onSendToTerminal={sendTerminalCommand}

@@ -89,9 +89,13 @@ export function decideFocus(lines: string[]): FocusDecision {
     }
   }
   if (choiceCount >= 2) {
-    // M1: Require a question/prompt indicator in last 3 lines to avoid false positives
-    // from numbered lists in normal output
-    const hasPromptIndicator = last3.some(line => {
+    // Strong signal: 3+ numbered items is almost certainly a choice prompt (not a random list)
+    if (choiceCount >= 3) {
+      return { target: 'input', isChoicePrompt: true };
+    }
+    // For exactly 2 items, require a question/prompt indicator in the same window
+    // to avoid false positives from short numbered lists in normal output
+    const hasPromptIndicator = last10.some(line => {
       const t = line.trim();
       return /\?\s*$/.test(t) || /:\s*$/.test(t) || INTERACTIVE_PATTERNS.some(p => p.test(t));
     });
@@ -193,12 +197,10 @@ export function detectDeployUrl(rollingBuffer: string, preStripped = false): str
 /**
  * Detect localhost/dev server URLs in terminal output.
  * Catches Vite, Next.js, webpack-dev-server, Django, Flask, Rails, etc.
- * Returns the most recently detected URL, or null.
+ * Returns ALL unique detected URLs (normalized), ordered by first appearance.
  */
-export function detectLocalUrl(rollingBuffer: string, preStripped = false): string | null {
+export function detectLocalUrls(rollingBuffer: string, preStripped = false): string[] {
   const cleaned = preStripped ? rollingBuffer : stripAnsi(rollingBuffer);
-  // Match http://localhost:PORT, http://127.0.0.1:PORT, http://0.0.0.0:PORT
-  // Also match "Local:" lines from Vite/Next (e.g. "Local:   http://localhost:5173/")
   const patterns = [
     /https?:\/\/localhost:\d{2,5}\b[^\s)}\]]*/gi,
     /https?:\/\/127\.0\.0\.1:\d{2,5}\b[^\s)}\]]*/gi,
@@ -206,21 +208,33 @@ export function detectLocalUrl(rollingBuffer: string, preStripped = false): stri
     /https?:\/\/\[::\]:\d{2,5}\b[^\s)}\]]*/gi,
   ];
 
-  let lastMatch: string | null = null;
+  const seen = new Set<string>();
+  const results: string[] = [];
   for (const pattern of patterns) {
     const matches = cleaned.match(pattern);
     if (matches) {
-      lastMatch = matches[matches.length - 1];
+      for (const raw of matches) {
+        let url = raw
+          .replace(/\/\/0\.0\.0\.0:/, '//localhost:')
+          .replace(/\/\/127\.0\.0\.1:/, '//localhost:')
+          .replace(/\/\/\[::\]:/, '//localhost:')
+          .replace(/\/+$/, '');
+        if (!seen.has(url)) {
+          seen.add(url);
+          results.push(url);
+        }
+      }
     }
   }
+  return results;
+}
 
-  // Normalize 0.0.0.0 and [::] to localhost for webview access
-  if (lastMatch) {
-    lastMatch = lastMatch.replace(/\/\/0\.0\.0\.0:/, '//localhost:');
-    lastMatch = lastMatch.replace(/\/\/\[::\]:/, '//localhost:');
-    // Remove trailing slash if it's the only path
-    lastMatch = lastMatch.replace(/\/+$/, '');
-  }
-
-  return lastMatch;
+/**
+ * Detect localhost/dev server URLs in terminal output.
+ * Returns the most recently detected URL, or null.
+ * @deprecated Use detectLocalUrls for multi-URL support
+ */
+export function detectLocalUrl(rollingBuffer: string, preStripped = false): string | null {
+  const urls = detectLocalUrls(rollingBuffer, preStripped);
+  return urls.length > 0 ? urls[urls.length - 1] : null;
 }

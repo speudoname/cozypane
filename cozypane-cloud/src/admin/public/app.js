@@ -7,13 +7,15 @@ let token = localStorage.getItem('admin_token') || '';
 // --- API ---
 
 async function api(path, opts = {}) {
+  const headers = {
+    Authorization: `Bearer ${token}`,
+    ...(opts.headers || {}),
+  };
+  // Only set Content-Type for requests that have a body
+  if (opts.body) headers['Content-Type'] = 'application/json';
   const res = await fetch(`${API}${path}`, {
     ...opts,
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${token}`,
-      ...(opts.headers || {}),
-    },
+    headers,
   });
   if (res.status === 401 || res.status === 403) {
     showLogin();
@@ -349,26 +351,46 @@ async function toggleAdmin(id, val) {
 }
 
 async function deleteUser(id, name) {
-  if (!confirm(`Delete user "${name}" and all their deployments?`)) return;
-  await api(`/admin/users/${id}`, { method: 'DELETE' });
+  if (!confirm(`Delete user "${name}" and all their deployments, databases, and images?`)) return;
+  try {
+    const res = await api(`/admin/users/${id}`, { method: 'DELETE' });
+    if (res.warnings) alert('Deleted with warnings:\n' + res.warnings.join('\n'));
+  } catch (e) {
+    alert('Failed to delete user: ' + e.message);
+  }
   renderUsers();
 }
 
 async function stopDep(id) {
-  await api(`/admin/deployments/${id}/stop`, { method: 'POST' });
+  try {
+    const res = await api(`/admin/deployments/${id}/stop`, { method: 'POST' });
+    if (res.warnings) alert('Stopped with warnings:\n' + res.warnings.join('\n'));
+  } catch (e) {
+    alert('Failed to stop: ' + e.message);
+  }
   if (location.hash.includes(`/deployments/${id}`)) renderDeploymentDetail(id);
   else renderDeployments();
 }
 
 async function restartDep(id) {
-  await api(`/admin/deployments/${id}/restart`, { method: 'POST' });
+  try {
+    await api(`/admin/deployments/${id}/restart`, { method: 'POST' });
+  } catch (e) {
+    alert('Failed to restart: ' + e.message);
+  }
   if (location.hash.includes(`/deployments/${id}`)) renderDeploymentDetail(id);
   else renderDeployments();
 }
 
 async function deleteDep(id, name) {
-  if (!confirm(`Delete deployment "${name}"? This will stop the container.`)) return;
-  await api(`/admin/deployments/${id}`, { method: 'DELETE' });
+  if (!confirm(`Delete deployment "${name}"? This will stop the container, remove the image, and drop any provisioned database.`)) return;
+  try {
+    const res = await api(`/admin/deployments/${id}`, { method: 'DELETE' });
+    if (res.warnings) alert('Deleted with warnings:\n' + res.warnings.join('\n'));
+  } catch (e) {
+    alert('Failed to delete: ' + e.message);
+    return;
+  }
   location.hash = '#/deployments';
 }
 

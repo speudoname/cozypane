@@ -413,14 +413,19 @@ function registerMcpConfig() {
 
     if (!config.mcpServers) config.mcpServers = {};
 
-    config.mcpServers.cozypane = {
-      type: 'stdio',
-      command: 'node',
-      args: [mcpServerPath],
-    };
+    if (getToken()) {
+      config.mcpServers.cozypane = {
+        type: 'stdio',
+        command: 'node',
+        args: [mcpServerPath],
+      };
+      console.log('[CozyPane] MCP server registered in ~/.claude.json');
+    } else {
+      delete config.mcpServers.cozypane;
+      console.log('[CozyPane] Not logged in — removed cozypane MCP entry from ~/.claude.json');
+    }
 
     fs.writeFileSync(claudeConfigPath, JSON.stringify(config, null, 2));
-    console.log('[CozyPane] MCP server registered in ~/.claude.json');
   } catch (err) {
     console.error('[CozyPane] Failed to register MCP config:', err);
   }

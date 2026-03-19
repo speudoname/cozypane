@@ -14,6 +14,7 @@ export default function Settings() {
   const [apiKey, setApiKey] = useState('');
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [defaultDir, setDefaultDir] = useState('');
   const [theme, setTheme] = useState(() => {
     try { return localStorage.getItem('cozyPane:theme') || 'cozy-dark'; } catch { return 'cozy-dark'; }
   });
@@ -31,6 +32,7 @@ export default function Settings() {
       setSettings(data);
       setProvider(data.provider);
       setModel(data.model);
+      setDefaultDir(data.defaultProjectDir || '');
     }).catch(() => {
       setMessage({ type: 'error', text: 'Failed to load settings' });
     });
@@ -96,6 +98,37 @@ export default function Settings() {
                 {t.name}
               </div>
             ))}
+          </div>
+        </div>
+
+        <div className="settings-section">
+          <div className="settings-section-title">Default Project Folder</div>
+          <p className="settings-description">
+            New projects will be created in this folder by default.
+          </p>
+          <div style={{ display: 'flex', gap: '0.5em', alignItems: 'center', marginTop: '0.5em' }}>
+            <span className="settings-description" style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', margin: 0 }}>
+              {defaultDir || 'Not set (uses home directory)'}
+            </span>
+            <button className="btn settings-clear-btn" onClick={async () => {
+              const result = await window.cozyPane.fs.pickDirectory();
+              if (result.paths?.[0]) {
+                setDefaultDir(result.paths[0]);
+                await window.cozyPane.settings.setDefaultDir(result.paths[0]);
+                setMessage({ type: 'success', text: 'Default folder updated' });
+              }
+            }}>
+              Browse
+            </button>
+            {defaultDir && (
+              <button className="btn settings-clear-btn" onClick={async () => {
+                setDefaultDir('');
+                await window.cozyPane.settings.setDefaultDir('');
+                setMessage({ type: 'success', text: 'Default folder cleared' });
+              }}>
+                Clear
+              </button>
+            )}
           </div>
         </div>
 

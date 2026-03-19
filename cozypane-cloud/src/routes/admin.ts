@@ -1,7 +1,8 @@
 import type { FastifyInstance } from 'fastify';
 import { query } from '../db/index.js';
 import { adminAuth } from '../middleware/adminAuth.js';
-import { stopContainer, getContainerLogs } from '../services/container.js';
+import { stopContainer, getContainerLogs, removeImage, removeNetworkIfEmpty } from '../services/container.js';
+import { dropDatabase } from '../services/database.js';
 
 export async function adminRoutes(app: FastifyInstance): Promise<void> {
   // All routes require admin auth
@@ -100,17 +101,42 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
   );
 
   app.delete<{ Params: { id: string } }>('/admin/users/:id', async (request, reply) => {
-    // Stop all containers first
+    const userId = parseInt(request.params.id, 10);
+    const errors: string[] = [];
+
+    // Get all deployments for cleanup
     const deps = await query(
-      'SELECT container_id FROM deployments WHERE user_id = $1 AND container_id IS NOT NULL',
-      [request.params.id],
+      'SELECT id, container_id, app_name, db_name, user_id FROM deployments WHERE user_id = $1',
+      [userId],
     );
+
     for (const d of deps.rows) {
-      await stopContainer(d.container_id).catch(() => {});
+      // Stop container
+      if (d.container_id) {
+        try {
+          await stopContainer(d.container_id);
+        } catch (err: any) {
+          errors.push(`container ${d.container_id.slice(0, 12)}: ${err.message}`);
+        }
+      }
+      // Drop provisioned database
+      if (d.db_name) {
+        try {
+          await dropDatabase(d.user_id, d.app_name);
+        } catch (err: any) {
+          errors.push(`database ${d.db_name}: ${err.message}`);
+        }
+      }
+      // Remove Docker image
+      await removeImage(`cozypane/${userId}-${d.app_name}:latest`);
     }
+
+    // Remove user network
+    await removeNetworkIfEmpty(userId);
+
     const result = await query('DELETE FROM users WHERE id = $1 RETURNING id', [request.params.id]);
     if (!result.rows[0]) return reply.code(404).send({ error: 'User not found' });
-    return { ok: true };
+    return { ok: true, ...(errors.length > 0 ? { warnings: errors } : {}) };
   });
 
   // --- Deployments ---
@@ -182,7 +208,11 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
     const result = await query('SELECT container_id FROM deployments WHERE id = $1', [request.params.id]);
     if (!result.rows[0]) return reply.code(404).send({ error: 'Deployment not found' });
     if (result.rows[0].container_id) {
-      await stopContainer(result.rows[0].container_id).catch(() => {});
+      try {
+        await stopContainer(result.rows[0].container_id);
+      } catch (err: any) {
+        return reply.code(500).send({ error: `Failed to stop container: ${err.message}` });
+      }
     }
     await query(`UPDATE deployments SET status = 'stopped', container_id = NULL, updated_at = NOW() WHERE id = $1`, [request.params.id]);
     return { ok: true };
@@ -202,13 +232,49 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
   });
 
   app.delete<{ Params: { id: string } }>('/admin/deployments/:id', async (request, reply) => {
-    const result = await query('SELECT container_id FROM deployments WHERE id = $1', [request.params.id]);
+    const result = await query(
+      'SELECT d.id, d.container_id, d.app_name, d.db_name, d.user_id, u.username FROM deployments d JOIN users u ON u.id = d.user_id WHERE d.id = $1',
+      [request.params.id],
+    );
     if (!result.rows[0]) return reply.code(404).send({ error: 'Deployment not found' });
-    if (result.rows[0].container_id) {
-      await stopContainer(result.rows[0].container_id).catch(() => {});
+
+    const dep = result.rows[0];
+    const errors: string[] = [];
+
+    // Stop and remove container
+    if (dep.container_id) {
+      try {
+        await stopContainer(dep.container_id);
+      } catch (err: any) {
+        errors.push(`container: ${err.message}`);
+      }
     }
-    await query('DELETE FROM deployments WHERE id = $1', [request.params.id]);
-    return { ok: true };
+
+    // Drop provisioned database
+    if (dep.db_name) {
+      try {
+        await dropDatabase(dep.user_id, dep.app_name);
+      } catch (err: any) {
+        errors.push(`database: ${err.message}`);
+      }
+    }
+
+    // Remove Docker image
+    await removeImage(`cozypane/${dep.user_id}-${dep.app_name}:latest`);
+
+    // Delete from DB
+    await query('DELETE FROM deployments WHERE id = $1', [dep.id]);
+
+    // Clean up user network if no more deployments
+    const remaining = await query(
+      'SELECT COUNT(*) as cnt FROM deployments WHERE user_id = $1',
+      [dep.user_id],
+    );
+    if (parseInt(remaining.rows[0].cnt) === 0) {
+      await removeNetworkIfEmpty(dep.user_id);
+    }
+
+    return { ok: true, ...(errors.length > 0 ? { warnings: errors } : {}) };
   });
 
   app.get<{ Params: { id: string }; Querystring: { tail?: string } }>(

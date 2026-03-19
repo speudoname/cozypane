@@ -129,14 +129,72 @@ export async function runContainer(
 export async function stopContainer(containerId: string): Promise<void> {
   try {
     const container = docker.getContainer(containerId);
-    await container.stop({ t: 10 });
-    await container.remove({ force: true });
+    await container.stop({ t: 10 }).catch((err: any) => {
+      // 304 = already stopped, 404 = already gone
+      if (err.statusCode !== 304 && err.statusCode !== 404) throw err;
+    });
+    await container.remove({ force: true }).catch((err: any) => {
+      // 404 = already gone, 409 = removal already in progress
+      if (err.statusCode !== 404 && err.statusCode !== 409) throw err;
+    });
     console.log(`Stopped and removed container: ${containerId}`);
   } catch (err: any) {
     if (err.statusCode !== 404) {
       throw err;
     }
     // Already gone
+  }
+}
+
+/**
+ * Remove a Docker image by tag. Non-fatal — logs warnings.
+ */
+export async function removeImage(imageTag: string): Promise<void> {
+  try {
+    const image = docker.getImage(imageTag);
+    await image.remove({ force: true });
+    console.log(`Removed image: ${imageTag}`);
+  } catch (err: any) {
+    if (err.statusCode !== 404) {
+      console.warn(`Failed to remove image ${imageTag}:`, err.message);
+    }
+  }
+}
+
+/**
+ * Remove a user's Docker network if no containers are connected.
+ */
+export async function removeNetworkIfEmpty(userId: number): Promise<void> {
+  const networkName = `cp-user-${userId}`;
+  try {
+    const networks = await docker.listNetworks({
+      filters: { name: [networkName] },
+    });
+    if (networks.length === 0) return;
+
+    const net = docker.getNetwork(networkName);
+    const info = await net.inspect();
+    const containers = info.Containers || {};
+    const connectedContainers = Object.keys(containers);
+
+    // Only Traefik or nothing — safe to remove
+    const nonTraefik = connectedContainers.filter((id) => {
+      const name = containers[id]?.Name || '';
+      return !name.toLowerCase().includes('traefik');
+    });
+
+    if (nonTraefik.length === 0) {
+      // Disconnect Traefik first if connected
+      for (const id of connectedContainers) {
+        await net.disconnect({ Container: id, Force: true }).catch(() => {});
+      }
+      await net.remove();
+      console.log(`Removed empty network: ${networkName}`);
+    }
+  } catch (err: any) {
+    if (err.statusCode !== 404) {
+      console.warn(`Failed to remove network ${networkName}:`, err.message);
+    }
   }
 }
 

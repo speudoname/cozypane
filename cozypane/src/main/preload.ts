@@ -45,6 +45,7 @@ contextBridge.exposeInMainWorld('cozyPane', {
   settings: {
     get: () => ipcRenderer.invoke('settings:get'),
     set: (data: { provider: string; model: string; apiKey?: string }) => ipcRenderer.invoke('settings:set', data),
+    setDefaultDir: (dir: string) => ipcRenderer.invoke('settings:setDefaultDir', dir),
   },
   deploy: {
     login: () => ipcRenderer.invoke('deploy:login'),

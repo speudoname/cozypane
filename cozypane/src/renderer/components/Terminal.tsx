@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { Terminal as XTerm } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
-import { stripAnsi, TUI_ENTER, TUI_EXIT, decideFocus, detectClaudeExit, analyzeAction, detectDeployUrl, detectLocalUrl, type AiAction } from '../lib/terminalAnalyzer';
+import { stripAnsi, TUI_ENTER, TUI_EXIT, decideFocus, detectClaudeExit, analyzeAction, detectDeployUrl, detectLocalUrls, type AiAction } from '../lib/terminalAnalyzer';
 import CommandInput from './CommandInput';
 import '@xterm/xterm/css/xterm.css';
 
@@ -17,10 +17,11 @@ interface Props {
   onClaudeRunningChange?: (running: boolean) => void;
   onTerminalReady?: (id: string) => void;
   onLocalUrlDetected?: (url: string) => void;
+  onLocalUrlsDetected?: (urls: string[]) => void;
   onProdUrlDetected?: (url: string) => void;
 }
 
-export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, autoCommand, onCwdChange, onActionChange, onClaudeRunningChange, onTerminalReady, onLocalUrlDetected, onProdUrlDetected }: Props) {
+export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, autoCommand, onCwdChange, onActionChange, onClaudeRunningChange, onTerminalReady, onLocalUrlDetected, onLocalUrlsDetected, onProdUrlDetected }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<XTerm | null>(null);
   const [termDragOver, setTermDragOver] = useState(false);
@@ -46,6 +47,8 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, au
   onTerminalReadyRef.current = onTerminalReady;
   const onLocalUrlDetectedRef = useRef(onLocalUrlDetected);
   onLocalUrlDetectedRef.current = onLocalUrlDetected;
+  const onLocalUrlsDetectedRef = useRef(onLocalUrlsDetected);
+  onLocalUrlsDetectedRef.current = onLocalUrlsDetected;
   const onProdUrlDetectedRef = useRef(onProdUrlDetected);
   onProdUrlDetectedRef.current = onProdUrlDetected;
   const isVisibleRef = useRef(isVisible);
@@ -345,6 +348,17 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, au
           setIsChoicePrompt(decision.isChoicePrompt);
         }
 
+        // Detect Claude running from output (covers cases where Claude was launched
+        // outside handleCommandSubmit — e.g., typed directly in terminal, or already running)
+        if (activeProcessRef.current !== 'claude') {
+          const hasClaudePrompt = lines.slice(-5).some(l => /❯\s*$/.test(l.trim()));
+          if (hasClaudePrompt) {
+            activeProcessRef.current = 'claude';
+            setClaudeRunning(true);
+            onClaudeRunningChangeRef.current?.(true);
+          }
+        }
+
         // Detect Claude exiting (moved from per-chunk to debounce handler)
         if (activeProcessRef.current === 'claude' && detectClaudeExit(lines)) {
           activeProcessRef.current = '';
@@ -367,10 +381,14 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, au
         }
 
         // Detect localhost dev server URLs (always, not just during Claude)
-        const localUrl = detectLocalUrl(joined, true);
-        if (localUrl && localUrl !== lastLocalUrlRef.current) {
-          lastLocalUrlRef.current = localUrl;
-          onLocalUrlDetectedRef.current?.(localUrl);
+        const localUrls = detectLocalUrls(joined, true);
+        const latestUrl = localUrls.length > 0 ? localUrls[localUrls.length - 1] : null;
+        if (latestUrl && latestUrl !== lastLocalUrlRef.current) {
+          lastLocalUrlRef.current = latestUrl;
+          onLocalUrlDetectedRef.current?.(latestUrl);
+        }
+        if (localUrls.length > 0) {
+          onLocalUrlsDetectedRef.current?.(localUrls);
         }
       }, 400);
     });

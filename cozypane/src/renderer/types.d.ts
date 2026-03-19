@@ -34,6 +34,7 @@ declare global {
     model: string;
     hasApiKey: boolean;
     providers: Record<string, { name: string; models: { id: string; name: string }[] }>;
+    defaultProjectDir: string;
   }
 
   interface GitFileStatus {
@@ -131,6 +132,7 @@ declare global {
     settings: {
       get: () => Promise<SettingsData>;
       set: (data: { provider: string; model: string; apiKey?: string }) => Promise<{ success?: boolean; error?: string }>;
+      setDefaultDir: (dir: string) => Promise<{ success?: boolean; error?: string }>;
     };
     deploy: {
       login: () => Promise<void>;

@@ -87,7 +87,7 @@ async function extractFromBinary(): Promise<SlashCommand[]> {
     }
 
     const commands = await new Promise<SlashCommand[]>((resolve) => {
-      execFile('strings', [binaryPath], { maxBuffer: 50 * 1024 * 1024 }, (err, stdout) => {
+      execFile('/usr/bin/strings', [binaryPath], { maxBuffer: 50 * 1024 * 1024 }, (err, stdout) => {
         if (err) { resolve([]); return; }
 
         const results: SlashCommand[] = [];

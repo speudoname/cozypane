@@ -52,53 +52,7 @@ const server = new McpServer({
 
 server.tool(
   'cozypane_deploy',
-  `Deploy a single service to CozyPane Cloud. This is triggered when the user says "cozydeploy".
-
-YOU are the intelligence layer. The platform runs whatever Dockerfile you give it. Your job is to:
-1. Analyze the project structure
-2. Decide the deployment strategy (single app vs multi-service)
-3. Create the right Dockerfile(s)
-4. Call this tool once per service
-
-## SINGLE APP (most common)
-For projects with one service (standard web app, API, static site):
-- Create a Dockerfile in the project root
-- Call this tool once with the project directory
-
-## MULTI-SERVICE / MONOREPO
-For projects with multiple services (e.g. frontend/ + backend/, or a monorepo with apps/):
-- Deploy each service SEPARATELY by calling this tool multiple times
-- Use the "group" parameter to link related services (e.g. group="myproject")
-- Deploy backend/API services FIRST, then frontend (so you know the API URL)
-- Pass the API URL to the frontend via the "env" parameter
-- Each service gets its own subdomain: <appName>-<username>.cozypane.com
-
-Example flow for a fullstack app:
-1. Create Dockerfile in backend/ directory
-2. Deploy backend: cozypane_deploy(directory="backend/", appName="myapp-api", group="myapp")
-   → returns url: "https://myapp-api-user.cozypane.com"
-3. Create Dockerfile in frontend/ directory (build with VITE_API_URL or similar)
-4. Deploy frontend: cozypane_deploy(directory="frontend/", appName="myapp-web", group="myapp", env={"VITE_API_URL": "https://myapp-api-user.cozypane.com"})
-
-## DEPLOYMENT CHECKLIST
-- Dockerfile REQUIRED: Always create one before deploying. The platform has no magic — it builds your Dockerfile.
-- Port: Container must expose ONE HTTP port. Default 3000. Do NOT use port 80.
-- Start script: Ensure the app has a production start command (not dev).
-- CORS: Backend must allow the frontend's production origin, OR use relative API paths.
-- Hardcoded URLs: Replace localhost URLs with production URLs or env vars.
-
-## DATABASE
-If the project uses a database (prisma, knex, sequelize, typeorm, drizzle, pg, sqlalchemy, django):
-- Set needsDatabase="postgres" — the platform provisions PostgreSQL and injects DATABASE_URL.
-- Do NOT bundle PostgreSQL in the Dockerfile.
-- Run migrations at container startup (e.g. "npx prisma migrate deploy && node server.js").
-
-## ENV VARS
-Use the "env" parameter to pass environment variables to the container. Common uses:
-- API_URL / VITE_API_URL: Point frontend to backend service
-- Any app config that differs between dev and production
-- Secrets needed at runtime (API keys, etc.)
-Note: DATABASE_URL is automatically injected when needsDatabase is set.`,
+  `Deploy a service to CozyPane Cloud (triggered by "cozydeploy"). Create a Dockerfile first, then call this tool. For multi-service apps call once per service using the "group" parameter; deploy backends before frontends. Set needsDatabase="postgres" if the app needs a database — DATABASE_URL is injected automatically. Use port 3000 (not 80).`,
   {
     directory: z.string().describe('Absolute path to the directory to deploy (can be project root or a subdirectory like backend/)'),
     appName: z.string().describe('App name — becomes the subdomain prefix. Use lowercase alphanumeric and hyphens (2-64 chars). For multi-service: use descriptive names like "myapp-api", "myapp-web"'),

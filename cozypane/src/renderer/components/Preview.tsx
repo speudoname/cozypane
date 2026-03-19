@@ -25,6 +25,7 @@ interface NetworkError {
 
 interface Props {
   localUrl?: string;
+  localUrls?: string[];
   productionUrl?: string;
   cwd: string;
   onSendToTerminal: (command: string) => void;
@@ -43,7 +44,15 @@ const DEVICE_WIDTHS: Record<DeviceMode, number | null> = {
 
 const LEVEL_LABELS = ['verbose', 'info', 'warn', 'error'];
 
-export default function Preview({ localUrl, productionUrl, cwd, onSendToTerminal, deployments = [], claudeRunning }: Props) {
+// Common frontend dev server ports (prefer these when auto-selecting)
+const FRONTEND_PORTS = new Set([5173, 5174, 5175, 3000, 8080, 8081, 4200, 4321, 3001, 5000, 5500, 1234, 9000]);
+
+function getPort(url: string): number {
+  const match = url.match(/:(\d+)/);
+  return match ? parseInt(match[1], 10) : 0;
+}
+
+export default function Preview({ localUrl, localUrls = [], productionUrl, cwd, onSendToTerminal, deployments = [], claudeRunning }: Props) {
   const [device, setDevice] = useState<DeviceMode>('desktop');
   const [errors, setErrors] = useState<PreviewError[]>([]);
   const [consoleLogs, setConsoleLogs] = useState<ConsoleLog[]>([]);
@@ -52,6 +61,7 @@ export default function Preview({ localUrl, productionUrl, cwd, onSendToTerminal
   const [loading, setLoading] = useState(false);
   const [viewMode, setViewMode] = useState<ViewMode>('local');
   const [manualLocalUrl, setManualLocalUrl] = useState('');
+  const [selectedLocalUrl, setSelectedLocalUrl] = useState<string | null>(null);
   const [manualUrlInput, setManualUrlInput] = useState('');
   const [staticUrl, setStaticUrl] = useState<string | null>(null);
   const [sendingToClaude, setSendingToClaude] = useState(false);
@@ -66,7 +76,13 @@ export default function Preview({ localUrl, productionUrl, cwd, onSendToTerminal
   const staticCwdRef = useRef<string>('');
   const devtoolsWriteTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const effectiveLocalUrl = staticUrl || localUrl || manualLocalUrl || null;
+  // When multiple URLs detected, let user pick; auto-select first frontend port
+  const resolvedLocalUrl = selectedLocalUrl && localUrls.includes(selectedLocalUrl)
+    ? selectedLocalUrl
+    : localUrls.length > 1
+      ? (localUrls.find(u => FRONTEND_PORTS.has(getPort(u))) || localUrls[0])
+      : localUrl || null;
+  const effectiveLocalUrl = staticUrl || resolvedLocalUrl || manualLocalUrl || null;
   const effectiveProdUrl = selectedDeploymentUrl || storedProdUrl || productionUrl || null;
 
   useEffect(() => {
@@ -484,6 +500,24 @@ export default function Preview({ localUrl, productionUrl, cwd, onSendToTerminal
             Prod
             {effectiveProdUrl && <span style={dotStyle('#5cb8f0')} />}
           </button>
+          {localUrls.length > 1 && (
+            <select
+              value={effectiveLocalUrl || ''}
+              onChange={e => setSelectedLocalUrl(e.target.value)}
+              style={{
+                padding: '0.15em 0.3em', borderRadius: 3,
+                border: '1px solid var(--border, #2a2b3e)',
+                backgroundColor: 'var(--bg-primary, #1a1b2e)',
+                color: 'var(--text-secondary, #aaa)',
+                fontSize: '0.72em', cursor: 'pointer', maxWidth: 180,
+              }}
+              title="Switch local URL"
+            >
+              {localUrls.map(u => (
+                <option key={u} value={u}>:{getPort(u)}</option>
+              ))}
+            </select>
+          )}
           {matchedDeployments.length > 1 && (
             <select
               value={selectedDeploymentUrl || ''}

@@ -12,6 +12,7 @@ export interface TerminalTab {
   launched: boolean;
   autoCommand?: string;
   previewLocalUrl?: string;
+  previewLocalUrls?: string[];
   previewProdUrl?: string;
 }
 
