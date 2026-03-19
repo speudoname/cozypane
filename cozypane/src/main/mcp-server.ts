@@ -109,11 +109,26 @@ server.tool(
       if (group) formData.append('group', group);
       formData.append('file', blob, 'deploy.tar.gz');
 
-      const result = await apiFetch('/deploy', {
+      let result = await apiFetch('/deploy', {
         method: 'POST',
         body: formData,
-        timeoutMs: 300000, // 5 minutes — Docker builds can be slow
+        timeoutMs: 60000, // 60s for upload + queuing
       });
+
+      // Server returns immediately with status:'building' — poll until done
+      if (result?.status === 'building' && result?.id) {
+        const deployId = result.id;
+        const pollStart = Date.now();
+        const POLL_TIMEOUT = 10 * 60 * 1000; // 10 minutes
+        while (Date.now() - pollStart < POLL_TIMEOUT) {
+          await new Promise(r => setTimeout(r, 5000));
+          const poll = await apiFetch(`/deploy/${encodeURIComponent(deployId)}`, { timeoutMs: 15000 });
+          if (poll?.status !== 'building') {
+            result = poll;
+            break;
+          }
+        }
+      }
 
       // Store the production URL so the Preview panel can find it
       const deployedUrl = (result as any)?.url;

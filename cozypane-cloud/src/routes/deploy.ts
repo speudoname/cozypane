@@ -22,7 +22,7 @@ import { provisionDatabase, dropDatabase } from '../services/database.js';
 const APP_NAME_REGEX = /^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$/;
 
 export async function deployRoutes(app: FastifyInstance): Promise<void> {
-  // POST /deploy — create or redeploy
+  // POST /deploy — create or redeploy (async: returns immediately, build runs in background)
   app.post('/deploy', {
     preHandler: authenticate,
     config: { rateLimit: { max: 5, timeWindow: '1 minute', keyGenerator: (req: any) => req.user?.id?.toString() || req.ip } },
@@ -56,20 +56,18 @@ export async function deployRoutes(app: FastifyInstance): Promise<void> {
     const subdomain = `${appName}-${username}`;
     const domain = process.env.DOMAIN || 'cozypane.com';
 
-    // Save uploaded tar to temp dir
+    // Save uploaded tar to temp dir before doing anything else
     const tempId = randomBytes(8).toString('hex');
     const tempDir = join(tmpdir(), `cozypane-deploy-${tempId}`);
     const extractDir = join(tempDir, 'project');
     mkdirSync(extractDir, { recursive: true });
 
-    let newContainerId: string | undefined;
+    // Save and extract the upload synchronously (must finish before we return)
     try {
-      // Save uploaded tar.gz file
       const tarPath = join(tempDir, 'upload.tar.gz');
       const writeStream = createWriteStream(tarPath);
       await pipeline(data.file, writeStream);
 
-      // Extract tar.gz (gunzip + untar)
       await new Promise<void>((resolve, reject) => {
         const readStream = createReadStream(tarPath);
         const gunzip = createGunzip();
@@ -90,141 +88,69 @@ export async function deployRoutes(app: FastifyInstance): Promise<void> {
         gunzip.on('error', reject);
         readStream.on('error', reject);
       });
-
-      // Detect project type
-      const projectInfo = detectProject(extractDir);
-
-      // Allow port override from client
-      if (portOverride) {
-        const parsed = parseInt(portOverride, 10);
-        if (parsed > 0 && parsed <= 65535) {
-          projectInfo.port = parsed;
-        }
-      }
-
-      // Check per-user deployment limit
-      const countResult = await query(
-        `SELECT COUNT(*) AS cnt FROM deployments WHERE user_id = $1 AND status NOT IN ('failed') AND app_name != $2`,
-        [userId, appName],
-      );
-      if (parseInt(countResult.rows[0].cnt, 10) >= 10) {
-        return reply.code(400).send({ error: 'Deployment limit reached (max 10 active deployments)' });
-      }
-
-      // Upsert deployment record
-      const result = await query(
-        `INSERT INTO deployments (user_id, app_name, subdomain, status, project_type, tier, port, deploy_group)
-         VALUES ($1, $2, $3, 'building', $4, $5, $6, $7)
-         ON CONFLICT (user_id, app_name) DO UPDATE SET
-           status = 'building',
-           project_type = EXCLUDED.project_type,
-           tier = EXCLUDED.tier,
-           port = EXCLUDED.port,
-           deploy_group = EXCLUDED.deploy_group,
-           updated_at = NOW()
-         RETURNING id`,
-        [userId, appName, subdomain, projectInfo.type, tier, projectInfo.port, deployGroup || null],
-      );
-      const deploymentId = result.rows[0].id;
-
-      // Stop old container if redeploying
-      const existing = await query(
-        'SELECT container_id FROM deployments WHERE id = $1 AND container_id IS NOT NULL',
-        [deploymentId],
-      );
-      if (existing.rows.length > 0 && existing.rows[0].container_id) {
-        await stopContainer(existing.rows[0].container_id).catch(() => {});
-      }
-
-      // Build Docker image
-      const { tag: imageTag, buildLog } = await buildImage(extractDir, projectInfo, appName, userId);
-
-      // Store build log (last 50KB to avoid bloating DB)
-      const trimmedLog = buildLog.length > 50000 ? '...' + buildLog.slice(-50000) : buildLog;
-      await query(
-        `UPDATE deployments SET build_log = $1 WHERE id = $2`,
-        [trimmedLog, deploymentId],
-      ).catch(() => {}); // non-fatal
-
-      // Build env vars — client-provided + database
-      const env: Record<string, string> = {};
-      if (envJson) {
-        try {
-          const parsed = JSON.parse(envJson);
-          if (typeof parsed === 'object' && parsed !== null) {
-            for (const [k, v] of Object.entries(parsed)) {
-              if (typeof v === 'string') env[k] = v;
-            }
-          }
-        } catch {
-          // ignore invalid JSON
-        }
-      }
-
-      // Provision database if requested
-      if (needsDatabase === 'postgres') {
-        const db = await provisionDatabase(userId, appName);
-        env.DATABASE_URL = db.connectionString;
-        // Track database info in deployment record
-        await query(
-          `UPDATE deployments SET db_name = $1, db_user = $2, db_host = $3 WHERE id = $4`,
-          [db.name, db.user, db.host, deploymentId],
-        );
-      }
-
-      // Run container
-      newContainerId = await runContainer(
-        imageTag,
-        {
-          id: deploymentId,
-          appName,
-          subdomain,
-          port: projectInfo.port,
-          tier,
-          env,
-        },
-        userId,
-      );
-
-      // Update deployment with container ID and status
-      await query(
-        `UPDATE deployments SET container_id = $1, status = 'running', updated_at = NOW() WHERE id = $2`,
-        [newContainerId, deploymentId],
-      );
-
-      return {
-        id: deploymentId,
-        subdomain,
-        url: `https://${subdomain}.${domain}`,
-        status: 'running',
-        projectType: projectInfo.type,
-        port: projectInfo.port,
-        ...(projectInfo.warnings.length > 0 ? { warnings: projectInfo.warnings } : {}),
-      };
     } catch (err: any) {
-      // Clean up orphaned container if one was started
-      if (newContainerId) {
-        await stopContainer(newContainerId).catch(() => {});
-      }
-
-      // Update deployment status to failed if we have a record
-      const existing = await query(
-        'SELECT id FROM deployments WHERE user_id = $1 AND app_name = $2',
-        [userId, appName],
-      );
-      if (existing.rows.length > 0) {
-        await query(
-          `UPDATE deployments SET status = 'failed', updated_at = NOW() WHERE id = $1`,
-          [existing.rows[0].id],
-        );
-      }
-
-      app.log.error(err);
-      return reply.code(500).send({ error: 'Deploy failed' });
-    } finally {
-      // Clean up temp dir
       rmSync(tempDir, { recursive: true, force: true });
+      return reply.code(400).send({ error: `Failed to process upload: ${err.message}` });
     }
+
+    // Detect project type and validate before creating DB record
+    const projectInfo = detectProject(extractDir);
+    if (portOverride) {
+      const parsed = parseInt(portOverride, 10);
+      if (parsed > 0 && parsed <= 65535) projectInfo.port = parsed;
+    }
+
+    // Check per-user deployment limit
+    const countResult = await query(
+      `SELECT COUNT(*) AS cnt FROM deployments WHERE user_id = $1 AND status NOT IN ('failed') AND app_name != $2`,
+      [userId, appName],
+    );
+    if (parseInt(countResult.rows[0].cnt, 10) >= 10) {
+      rmSync(tempDir, { recursive: true, force: true });
+      return reply.code(400).send({ error: 'Deployment limit reached (max 10 active deployments)' });
+    }
+
+    // Upsert deployment record — status 'building'
+    const result = await query(
+      `INSERT INTO deployments (user_id, app_name, subdomain, status, project_type, tier, port, deploy_group)
+       VALUES ($1, $2, $3, 'building', $4, $5, $6, $7)
+       ON CONFLICT (user_id, app_name) DO UPDATE SET
+         status = 'building',
+         project_type = EXCLUDED.project_type,
+         tier = EXCLUDED.tier,
+         port = EXCLUDED.port,
+         deploy_group = EXCLUDED.deploy_group,
+         build_log = NULL,
+         updated_at = NOW()
+       RETURNING id`,
+      [userId, appName, subdomain, projectInfo.type, tier, projectInfo.port, deployGroup || null],
+    );
+    const deploymentId = result.rows[0].id;
+
+    // Fire-and-forget background build — response is sent immediately
+    buildAndDeploy({
+      deploymentId,
+      extractDir,
+      tempDir,
+      projectInfo,
+      appName,
+      subdomain,
+      tier,
+      userId,
+      needsDatabase,
+      envJson,
+      log: app.log,
+    }).catch(() => {}); // errors are handled inside
+
+    return {
+      id: deploymentId,
+      subdomain,
+      url: `https://${subdomain}.${domain}`,
+      status: 'building',
+      projectType: projectInfo.type,
+      port: projectInfo.port,
+      ...(projectInfo.warnings.length > 0 ? { warnings: projectInfo.warnings } : {}),
+    };
   });
 
   // GET /deploy/list — user's deployments
@@ -465,6 +391,81 @@ export async function deployRoutes(app: FastifyInstance): Promise<void> {
       return { ok: true, deleted: result.rows.length };
     },
   );
+}
+
+async function buildAndDeploy(params: {
+  deploymentId: number;
+  extractDir: string;
+  tempDir: string;
+  projectInfo: ReturnType<typeof detectProject>;
+  appName: string;
+  subdomain: string;
+  tier: string;
+  userId: number;
+  needsDatabase: string | undefined;
+  envJson: string | undefined;
+  log: any;
+}): Promise<void> {
+  const { deploymentId, extractDir, tempDir, projectInfo, appName, subdomain, tier, userId, needsDatabase, envJson, log } = params;
+  let newContainerId: string | undefined;
+
+  try {
+    // Stop old container if redeploying
+    const existing = await query(
+      'SELECT container_id FROM deployments WHERE id = $1 AND container_id IS NOT NULL',
+      [deploymentId],
+    );
+    if (existing.rows.length > 0 && existing.rows[0].container_id) {
+      await stopContainer(existing.rows[0].container_id).catch(() => {});
+    }
+
+    // Build Docker image
+    const { tag: imageTag, buildLog } = await buildImage(extractDir, projectInfo, appName, userId);
+
+    // Store build log (last 50KB to avoid bloating DB)
+    const trimmedLog = buildLog.length > 50000 ? '...' + buildLog.slice(-50000) : buildLog;
+    await query(`UPDATE deployments SET build_log = $1 WHERE id = $2`, [trimmedLog, deploymentId]).catch(() => {});
+
+    // Build env vars
+    const env: Record<string, string> = {};
+    if (envJson) {
+      try {
+        const parsed = JSON.parse(envJson);
+        if (typeof parsed === 'object' && parsed !== null) {
+          for (const [k, v] of Object.entries(parsed)) {
+            if (typeof v === 'string') env[k] = v;
+          }
+        }
+      } catch { /* ignore */ }
+    }
+
+    // Provision database if requested
+    if (needsDatabase === 'postgres') {
+      const db = await provisionDatabase(userId, appName);
+      env.DATABASE_URL = db.connectionString;
+      await query(
+        `UPDATE deployments SET db_name = $1, db_user = $2, db_host = $3 WHERE id = $4`,
+        [db.name, db.user, db.host, deploymentId],
+      );
+    }
+
+    // Run container
+    newContainerId = await runContainer(imageTag, { id: deploymentId, appName, subdomain, port: projectInfo.port, tier, env }, userId);
+
+    await query(
+      `UPDATE deployments SET container_id = $1, status = 'running', updated_at = NOW() WHERE id = $2`,
+      [newContainerId, deploymentId],
+    );
+  } catch (err: any) {
+    if (newContainerId) await stopContainer(newContainerId).catch(() => {});
+    await query(
+      `UPDATE deployments SET status = 'failed', build_log = COALESCE(build_log, '') || $1, updated_at = NOW() WHERE id = $2`,
+      [`\n\nBUILD ERROR: ${err.message}`, deploymentId],
+    ).catch(() => {});
+    log.error(err, `Background build failed for deployment ${deploymentId}`);
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
 }
 
 async function getDeployment(id: string, userId: number) {
