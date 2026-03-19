@@ -51,18 +51,32 @@ export async function createTarball(cwd: string, tmpDir: string): Promise<string
   if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
   const tarPath = path.join(tmpDir, `deploy-${Date.now()}.tar.gz`);
 
-  const excludeArgs = [
-    '--exclude=.git',
-    '--exclude=node_modules',
-    '--exclude=.env',
-    '--exclude=__pycache__',
-    '--exclude=.venv',
-    '--exclude=.DS_Store',
+  // Hard-coded excludes that should always be skipped
+  const alwaysExclude = [
+    '.git', 'node_modules', '.env', '.env.local', '.env.production',
+    '__pycache__', '.venv', 'venv', '.DS_Store',
+    '.next', 'out', 'dist', 'build',
+    '.turbo', '.cache', 'coverage',
   ];
 
-  const gitignorePath = path.join(cwd, '.gitignore');
-  if (fs.existsSync(gitignorePath)) {
-    excludeArgs.push(`--exclude-from=${gitignorePath}`);
+  const excludeArgs = alwaysExclude.map(p => `--exclude=./${p}`);
+
+  // Also parse .dockerignore and .gitignore, normalizing leading-slash patterns
+  // (tar --exclude-from doesn't understand git's leading-slash anchoring)
+  for (const ignoreFile of ['.dockerignore', '.gitignore']) {
+    const ignorePath = path.join(cwd, ignoreFile);
+    if (fs.existsSync(ignorePath)) {
+      const lines = fs.readFileSync(ignorePath, 'utf-8').split('\n');
+      for (const rawLine of lines) {
+        const line = rawLine.trim();
+        if (!line || line.startsWith('#') || line.startsWith('!')) continue;
+        // Normalize: strip leading slash so tar understands it
+        const pattern = line.replace(/^\//, '');
+        if (pattern && !alwaysExclude.includes(pattern.replace(/\/$/, ''))) {
+          excludeArgs.push(`--exclude=./${pattern}`);
+        }
+      }
+    }
   }
 
   await execFileAsync('tar', ['czf', tarPath, ...excludeArgs, '-C', cwd, '.'], { timeout: 120000 });
