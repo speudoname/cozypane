@@ -121,6 +121,18 @@ export async function runContainer(
   // let tenant containers reach each other through the shared network.
 
   await container.start();
+
+  // Connect to internal network so containers can reach the postgres service.
+  // The postgres service lives on the docker-compose "internal" network (named
+  // cozypane-cloud_internal). Without this, DATABASE_URL with host=postgres won't resolve.
+  const INTERNAL_NETWORK = process.env.INTERNAL_NETWORK || 'cozypane-cloud_internal';
+  try {
+    const internalNet = docker.getNetwork(INTERNAL_NETWORK);
+    await internalNet.connect({ Container: container.id });
+  } catch (err) {
+    console.warn(`Could not connect ${containerName} to ${INTERNAL_NETWORK}:`, err);
+  }
+
   console.log(`Started container: ${containerName} (${container.id})`);
 
   return container.id;

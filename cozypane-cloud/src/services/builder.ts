@@ -77,8 +77,8 @@ export async function buildImage(
       t: tag,
       rm: true,
       forcerm: true,
-      memory: 512 * 1024 * 1024,    // 512MB build memory limit
-      cpuquota: 100000,              // 1 CPU worth of quota
+      memory: 2048 * 1024 * 1024,   // 2GB build memory limit (Next.js etc need 1.5GB+)
+      cpuquota: 200000,              // 2 CPU worth of quota
     },
   );
 
