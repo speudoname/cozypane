@@ -553,14 +553,18 @@ export async function deployRoutes(app: FastifyInstance): Promise<void> {
             const oldLabels = info.Config.Labels || {};
             oldLabels[`traefik.http.routers.${routerName}.rule`] = hostRule;
 
-            // Add a separate router for the custom domain with its own cert
-            const safeDomain = domainRow.domain.replace(/\./g, '-');
-            const customRouterName = `cp-custom-${safeDomain}`;
-            oldLabels[`traefik.http.routers.${customRouterName}.rule`] = `Host(\`${domainRow.domain}\`)`;
-            oldLabels[`traefik.http.routers.${customRouterName}.entrypoints`] = 'websecure';
-            oldLabels[`traefik.http.routers.${customRouterName}.tls`] = 'true';
-            oldLabels[`traefik.http.routers.${customRouterName}.tls.certresolver`] = 'cloudflare';
-            oldLabels[`traefik.http.services.${customRouterName}.loadbalancer.server.port`] = String(deployment.port);
+            // Custom domain routers share the same service — having multiple services
+            // on one container makes Traefik fail to auto-link routers to services.
+            // Just point custom domain routers to the main service explicitly.
+            for (const dm of allDomains.rows) {
+              const safeDm = (dm as any).domain.replace(/\./g, '-');
+              const customRouter = `cp-custom-${safeDm}`;
+              oldLabels[`traefik.http.routers.${customRouter}.rule`] = `Host(\`${(dm as any).domain}\`)`;
+              oldLabels[`traefik.http.routers.${customRouter}.entrypoints`] = 'websecure';
+              oldLabels[`traefik.http.routers.${customRouter}.tls`] = 'true';
+              oldLabels[`traefik.http.routers.${customRouter}.tls.certresolver`] = 'cloudflare';
+              oldLabels[`traefik.http.routers.${customRouter}.service`] = routerName;
+            }
 
             // Recreate container with updated labels
             const oldConfig = info.Config;
