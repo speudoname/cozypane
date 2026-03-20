@@ -21,16 +21,16 @@ export async function ensureNetwork(userId: number): Promise<string> {
     await docker.createNetwork({
       Name: networkName,
       Driver: 'bridge',
-      Internal: false, // Needs outbound for package installs etc.
+      Internal: false,
       Options: {
-        'com.docker.network.bridge.enable_icc': 'true', // Allow same-user containers to talk
+        'com.docker.network.bridge.enable_icc': 'true',
       },
     });
     console.log(`Created network: ${networkName}`);
   }
 
-  // Ensure Traefik is connected to this user network so it can route traffic
-  // without needing to put tenant containers on the shared traefik-public network
+  // Connect Traefik to user network so it can route to containers on it.
+  // This is best-effort — containers also get traefik-public as a fallback.
   try {
     const traefikContainers = await docker.listContainers({
       filters: { label: ['traefik.enable=true'], name: ['traefik'] },
@@ -46,11 +46,37 @@ export async function ensureNetwork(userId: number): Promise<string> {
       }
     }
   } catch (err) {
-    // Non-fatal — traefik may connect on its own or be manually connected
     console.warn(`Could not auto-connect Traefik to ${networkName}:`, err);
   }
 
   return networkName;
+}
+
+/**
+ * Connect a container to a Docker network with verification.
+ * Returns true if connected, false if failed.
+ */
+async function connectToNetwork(containerId: string, networkName: string): Promise<boolean> {
+  try {
+    const net = docker.getNetwork(networkName);
+    await net.connect({ Container: containerId });
+
+    // Verify the connection actually worked
+    const container = docker.getContainer(containerId);
+    const info = await container.inspect();
+    const connected = !!info.NetworkSettings?.Networks?.[networkName];
+    if (!connected) {
+      console.error(`Container ${containerId} not on ${networkName} after connect call`);
+    }
+    return connected;
+  } catch (err: any) {
+    // Already connected is fine (HTTP 403 or "already exists")
+    if (err.statusCode === 403 || err.message?.includes('already exists')) {
+      return true;
+    }
+    console.error(`Failed to connect ${containerId} to ${networkName}: ${err.message}`);
+    return false;
+  }
 }
 
 export async function runContainer(
@@ -118,20 +144,25 @@ export async function runContainer(
 
   await container.start();
 
-  // Connect to required networks after start:
-  // 1. traefik-public — Traefik's Docker provider needs this to discover and route to the container
-  // 2. internal — PostgreSQL lives here, needed for DATABASE_URL with host=postgres
-  const INTERNAL_NETWORK = process.env.INTERNAL_NETWORK || 'cozypane-cloud_internal';
-  for (const netName of ['traefik-public', INTERNAL_NETWORK]) {
-    try {
-      const net = docker.getNetwork(netName);
-      await net.connect({ Container: container.id });
-    } catch (err) {
-      console.warn(`Could not connect ${containerName} to ${netName}:`, err);
-    }
+  // Connect to required networks after start.
+  // traefik-public is MANDATORY — without it Traefik can't discover or route to the container.
+  // internal is needed for DATABASE_URL with host=postgres.
+  const traefikOk = await connectToNetwork(container.id, 'traefik-public');
+  if (!traefikOk) {
+    // This is fatal — the container will run but be unreachable. Stop it and fail.
+    await container.stop({ t: 2 }).catch(() => {});
+    await container.remove({ force: true }).catch(() => {});
+    throw new Error(`Failed to connect container to traefik-public network. Container ${containerName} was stopped to prevent a ghost deployment.`);
   }
 
-  console.log(`Started container: ${containerName} (${container.id})`);
+  const INTERNAL_NETWORK = process.env.INTERNAL_NETWORK || 'cozypane-cloud_internal';
+  const internalOk = await connectToNetwork(container.id, INTERNAL_NETWORK);
+  if (!internalOk) {
+    // Non-fatal for apps without databases, but log it
+    console.warn(`Container ${containerName} not connected to ${INTERNAL_NETWORK} — database access may not work`);
+  }
+
+  console.log(`Started container: ${containerName} on traefik-public + ${INTERNAL_NETWORK}`);
 
   return container.id;
 }
@@ -323,7 +354,6 @@ export function execInContainer(containerId: string, ws: WebSocket): void {
 export async function waitForHealthy(
   containerId: string,
   port: number,
-  networkName: string,
   maxWaitMs: number = 60000,
 ): Promise<{ healthy: boolean; error?: string; logs?: string }> {
   const container = docker.getContainer(containerId);
@@ -335,9 +365,10 @@ export async function waitForHealthy(
   const pollInterval = 2000;
 
   while (Date.now() - startTime < maxWaitMs) {
-    // Check if container is still running
     try {
       const info = await container.inspect();
+
+      // Check if container crashed
       if (!info.State.Running) {
         const logs = await getContainerLogs(containerId, 30).catch(() => 'Could not retrieve logs');
         return {
@@ -347,27 +378,47 @@ export async function waitForHealthy(
         };
       }
 
-      // Get container IP on the user network
-      const ip = info.NetworkSettings?.Networks?.[networkName]?.IPAddress;
+      // Find a reachable IP — prefer traefik-public (what Traefik uses),
+      // fall back to any available network IP
+      const networks = info.NetworkSettings?.Networks || {};
+      let ip: string | undefined;
+      if (networks['traefik-public']?.IPAddress) {
+        ip = networks['traefik-public'].IPAddress;
+      } else {
+        // Use first available network IP
+        for (const net of Object.values(networks) as any[]) {
+          if (net?.IPAddress) { ip = net.IPAddress; break; }
+        }
+      }
+
       if (!ip) {
         await new Promise(r => setTimeout(r, pollInterval));
         continue;
       }
 
-      // Try HTTP request
+      // Verify Traefik network is attached — if not, the container is unreachable
+      // even if the health check passes on a different network
+      if (!networks['traefik-public']?.IPAddress) {
+        const logs = await getContainerLogs(containerId, 30).catch(() => 'Could not retrieve logs');
+        return {
+          healthy: false,
+          error: 'Container is running but not connected to traefik-public network — it will be unreachable',
+          logs,
+        };
+      }
+
+      // Try HTTP request on the container's IP
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 3000);
       try {
-        const resp = await fetch(`http://${ip}:${port}/`, { signal: controller.signal });
+        await fetch(`http://${ip}:${port}/`, { signal: controller.signal });
         clearTimeout(timeout);
-        // Any HTTP response (even 404/500) means the server is running
+        // Any HTTP response (even 404/500) = healthy
         return { healthy: true };
       } catch {
         clearTimeout(timeout);
-        // Connection refused or timeout — server not ready yet
       }
     } catch (err: any) {
-      // Container inspect failed — container may have been removed
       return {
         healthy: false,
         error: `Container inspection failed: ${err.message}`,
@@ -377,7 +428,6 @@ export async function waitForHealthy(
     await new Promise(r => setTimeout(r, pollInterval));
   }
 
-  // Timed out — grab logs for diagnostics
   const logs = await getContainerLogs(containerId, 30).catch(() => 'Could not retrieve logs');
   return {
     healthy: false,

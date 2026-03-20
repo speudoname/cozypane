@@ -629,13 +629,23 @@ async function updatePhase(deploymentId: number, phase: string): Promise<void> {
   ).catch(() => {});
 }
 
+function sanitizeErrorMessage(msg: string): string {
+  // Strip internal infrastructure details from error messages shown to users
+  return msg
+    .replace(/\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b/g, '[internal-ip]')  // IPs
+    .replace(/\b[0-9a-f]{64}\b/g, '[container-id]')                          // Full container IDs
+    .replace(/\b[0-9a-f]{12}\b/g, '[container-id]')                          // Short container IDs
+    .replace(/postgresql:\/\/[^@]+@[^/]+\/\S+/g, 'postgresql://[redacted]')   // Connection strings
+    .replace(/password\s*[:=]\s*\S+/gi, 'password=[redacted]');               // Passwords
+}
+
 function makeErrorDetail(phase: string, code: string, message: string, suggestion: string, logs?: string): string {
   return JSON.stringify({
     phase,
     code,
-    message,
+    message: sanitizeErrorMessage(message),
     suggestion,
-    ...(logs ? { logs: logs.slice(-2000) } : {}),
+    ...(logs ? { logs: sanitizeErrorMessage(logs.slice(-2000)) } : {}),
   });
 }
 
@@ -822,14 +832,26 @@ async function buildAndDeploy(params: {
 
     // Phase: health_check
     await updatePhase(deploymentId, 'health_check');
-    const userNetwork = `cp-user-${userId}`;
-    const health = await waitForHealthy(newContainerId, analysis.port, userNetwork);
+    const health = await waitForHealthy(newContainerId, analysis.port);
 
     if (health.healthy) {
       await query(
         `UPDATE deployments SET status = 'running', deploy_phase = NULL, updated_at = NOW() WHERE id = $1`,
         [deploymentId],
       );
+
+      // Regenerate Traefik file provider configs for any verified custom domains.
+      // On redeploy the container is recreated — the Docker service name stays the same
+      // but Traefik needs the file configs to exist for custom domain routing.
+      try {
+        const domainRows = await query(
+          'SELECT domain FROM domains WHERE deployment_id = (SELECT id FROM deployments WHERE user_id = $1 AND app_name = $2) AND verified = TRUE',
+          [userId, appName],
+        );
+        for (const row of domainRows.rows) {
+          writeCustomDomainConfig(subdomain, (row as any).domain, analysis.port);
+        }
+      } catch { /* non-fatal */ }
     } else {
       // Check if container crashed within first few seconds
       const errorCode = health.error?.includes('exited') ? 'APP_CRASH' : 'UNHEALTHY';
