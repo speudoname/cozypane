@@ -141,12 +141,17 @@ export default function DeployPanel({ cwd, onTerminalCommand, claudeRunning, onD
     onTerminalCommand(`cozydeploy ${cwd}`);
   }, [cwd, onTerminalCommand]);
 
-  const handleRedeploy = useCallback(async (id: string) => {
+  const handleRedeploy = useCallback((appName?: string) => {
+    // Full redeploy: re-upload source + rebuild (same as initial deploy)
+    onTerminalCommand(`cozydeploy ${cwd}${appName ? ` --app ${appName}` : ''}`);
+  }, [cwd, onTerminalCommand]);
+
+  const handleRestart = useCallback(async (id: string) => {
     try {
       const result = await window.cozyPane.deploy.redeploy(id);
       setDeployments(prev => prev.map(d => String(d.id) === id ? { ...d, ...result } : d));
     } catch (err: any) {
-      setDeployError(err.message || 'Redeploy failed');
+      setDeployError(err.message || 'Restart failed');
     }
   }, []);
 
@@ -381,26 +386,38 @@ export default function DeployPanel({ cwd, onTerminalCommand, claudeRunning, onD
           </button>
         </div>
 
-        <button
-          onClick={handleDeploy}
-          disabled={claudeRunning}
-          style={{
-            ...primaryBtnStyle,
-            opacity: claudeRunning ? 0.5 : 1,
-            cursor: claudeRunning ? 'not-allowed' : 'pointer',
-            width: '100%',
-          }}
-        >
-          {claudeRunning ? 'Claude is busy...' : 'CozyDeploy'}
-        </button>
-        {claudeRunning && (
-          <div style={{ fontSize: '0.78em', color: 'var(--text-secondary, #888)', marginTop: '0.3em', textAlign: 'center' }}>
-            Wait for Claude to finish, or open a new terminal tab
-          </div>
-        )}
-        <div style={{ fontSize: '0.78em', color: 'var(--text-secondary, #666)', marginTop: '0.3em', textAlign: 'center' }}>
-          Claude will analyze your project and deploy it
-        </div>
+        {(() => {
+          const projectName = (cwd.split('/').pop() || '').toLowerCase();
+          const existingDeploy = deployments.find(d =>
+            d.appName === projectName || d.status === 'running' || d.status === 'unhealthy'
+          );
+          const isRedeploy = !!existingDeploy;
+          return (
+            <>
+              <button
+                onClick={handleDeploy}
+                disabled={claudeRunning}
+                style={{
+                  ...primaryBtnStyle,
+                  opacity: claudeRunning ? 0.5 : 1,
+                  cursor: claudeRunning ? 'not-allowed' : 'pointer',
+                  width: '100%',
+                  backgroundColor: isRedeploy ? 'var(--accent, #7c6fe0)' : 'var(--accent, #7c6fe0)',
+                }}
+              >
+                {claudeRunning ? 'Claude is busy...' : isRedeploy ? 'Redeploy' : 'CozyDeploy'}
+              </button>
+              {claudeRunning && (
+                <div style={{ fontSize: '0.78em', color: 'var(--text-secondary, #888)', marginTop: '0.3em', textAlign: 'center' }}>
+                  Wait for Claude to finish, or open a new terminal tab
+                </div>
+              )}
+              <div style={{ fontSize: '0.78em', color: 'var(--text-secondary, #666)', marginTop: '0.3em', textAlign: 'center' }}>
+                {isRedeploy ? 'Re-upload and rebuild your project' : 'Claude will analyze your project and deploy it'}
+              </div>
+            </>
+          );
+        })()}
         {deployError && (
           <div style={{ color: '#e74c3c', fontSize: '0.82em', marginTop: '0.4em' }}>{deployError}</div>
         )}
@@ -479,8 +496,11 @@ export default function DeployPanel({ cwd, onTerminalCommand, claudeRunning, onD
                 <button onClick={() => handleToggleDomains(String(dep.id))} style={tinyBtnStyle}>
                   {domainViewId === String(dep.id) ? 'Hide Domains' : 'Domains'}
                 </button>
-                <button onClick={() => handleRedeploy(String(dep.id))} style={tinyBtnStyle}>
+                <button onClick={() => handleRedeploy(dep.appName)} style={tinyBtnStyle}>
                   Redeploy
+                </button>
+                <button onClick={() => handleRestart(String(dep.id))} style={tinyBtnStyle}>
+                  Restart
                 </button>
                 {dep.url && dep.status === 'running' && (
                   <button onClick={() => window.open(dep.url, '_blank')} style={tinyBtnStyle}>
