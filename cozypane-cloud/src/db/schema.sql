@@ -49,3 +49,10 @@ ALTER TABLE deployments ADD COLUMN IF NOT EXISTS db_host VARCHAR(255);
 -- Deployment groups (for multi-service apps)
 ALTER TABLE deployments ADD COLUMN IF NOT EXISTS deploy_group VARCHAR(255);
 CREATE INDEX IF NOT EXISTS idx_deployments_group ON deployments(user_id, deploy_group);
+
+-- Server-side intelligence columns
+ALTER TABLE deployments ADD COLUMN IF NOT EXISTS framework VARCHAR(50);
+ALTER TABLE deployments ADD COLUMN IF NOT EXISTS deploy_phase VARCHAR(50);
+ALTER TABLE deployments ADD COLUMN IF NOT EXISTS error_detail TEXT;
+ALTER TABLE deployments ADD COLUMN IF NOT EXISTS detected_port INTEGER;
+ALTER TABLE deployments ADD COLUMN IF NOT EXISTS detected_database BOOLEAN DEFAULT FALSE;

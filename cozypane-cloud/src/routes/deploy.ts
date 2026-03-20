@@ -8,7 +8,7 @@ import { createGunzip } from 'node:zlib';
 import tar from 'tar-fs';
 import { query } from '../db/index.js';
 import { authenticate } from '../middleware/auth.js';
-import { detectProject } from '../services/detector.js';
+import { analyzeProject } from '../services/detector.js';
 import { buildImage } from '../services/builder.js';
 import {
   runContainer,
@@ -16,6 +16,8 @@ import {
   getContainerLogs,
   streamLogs,
   execInContainer,
+  ensureNetwork,
+  waitForHealthy,
 } from '../services/container.js';
 import { provisionDatabase, dropDatabase } from '../services/database.js';
 
@@ -35,9 +37,7 @@ export async function deployRoutes(app: FastifyInstance): Promise<void> {
     // Extract fields from multipart
     const fields = data.fields as Record<string, any>;
     const appName = fieldValue(fields.appName);
-    const tier = fieldValue(fields.tier) || 'small';
-    const portOverride = fieldValue(fields.port);
-    const needsDatabase = fieldValue(fields.needsDatabase);
+    const tierOverride = fieldValue(fields.tier);
     const envJson = fieldValue(fields.env);
     const deployGroup = fieldValue(fields.group);
 
@@ -45,10 +45,6 @@ export async function deployRoutes(app: FastifyInstance): Promise<void> {
       return reply.code(400).send({
         error: 'Invalid app name. Use lowercase alphanumeric characters and hyphens (2-64 chars).',
       });
-    }
-
-    if (!['small', 'medium', 'large'].includes(tier)) {
-      return reply.code(400).send({ error: 'Invalid tier. Must be small, medium, or large.' });
     }
 
     const userId = request.user.id;
@@ -93,11 +89,13 @@ export async function deployRoutes(app: FastifyInstance): Promise<void> {
       return reply.code(400).send({ error: `Failed to process upload: ${err.message}` });
     }
 
-    // Detect project type and validate before creating DB record
-    const projectInfo = detectProject(extractDir);
-    if (portOverride) {
-      const parsed = parseInt(portOverride, 10);
-      if (parsed > 0 && parsed <= 65535) projectInfo.port = parsed;
+    // Run server-side detection
+    const analysis = analyzeProject(extractDir);
+    const tier = tierOverride || analysis.recommendedTier;
+
+    if (!['small', 'medium', 'large'].includes(tier)) {
+      rmSync(tempDir, { recursive: true, force: true });
+      return reply.code(400).send({ error: 'Invalid tier. Must be small, medium, or large.' });
     }
 
     // Check per-user deployment limit
@@ -110,20 +108,26 @@ export async function deployRoutes(app: FastifyInstance): Promise<void> {
       return reply.code(400).send({ error: 'Deployment limit reached (max 10 active deployments)' });
     }
 
-    // Upsert deployment record — status 'building'
+    // Upsert deployment record — status 'building', store analysis metadata
     const result = await query(
-      `INSERT INTO deployments (user_id, app_name, subdomain, status, project_type, tier, port, deploy_group)
-       VALUES ($1, $2, $3, 'building', $4, $5, $6, $7)
+      `INSERT INTO deployments (user_id, app_name, subdomain, status, project_type, tier, port, deploy_group, framework, deploy_phase, detected_port, detected_database)
+       VALUES ($1, $2, $3, 'building', $4, $5, $6, $7, $8, 'detecting', $9, $10)
        ON CONFLICT (user_id, app_name) DO UPDATE SET
          status = 'building',
          project_type = EXCLUDED.project_type,
          tier = EXCLUDED.tier,
          port = EXCLUDED.port,
          deploy_group = EXCLUDED.deploy_group,
+         framework = EXCLUDED.framework,
+         deploy_phase = 'detecting',
+         detected_port = EXCLUDED.detected_port,
+         detected_database = EXCLUDED.detected_database,
+         error_detail = NULL,
          build_log = NULL,
          updated_at = NOW()
        RETURNING id`,
-      [userId, appName, subdomain, projectInfo.type, tier, projectInfo.port, deployGroup || null],
+      [userId, appName, subdomain, analysis.type, tier, analysis.port, deployGroup || null,
+       analysis.framework, analysis.port, analysis.needsDatabase],
     );
     const deploymentId = result.rows[0].id;
 
@@ -132,12 +136,11 @@ export async function deployRoutes(app: FastifyInstance): Promise<void> {
       deploymentId,
       extractDir,
       tempDir,
-      projectInfo,
+      analysis,
       appName,
       subdomain,
       tier,
       userId,
-      needsDatabase,
       envJson,
       log: app.log,
     }).catch(() => {}); // errors are handled inside
@@ -147,16 +150,22 @@ export async function deployRoutes(app: FastifyInstance): Promise<void> {
       subdomain,
       url: `https://${subdomain}.${domain}`,
       status: 'building',
-      projectType: projectInfo.type,
-      port: projectInfo.port,
-      ...(projectInfo.warnings.length > 0 ? { warnings: projectInfo.warnings } : {}),
+      phase: 'detecting',
+      framework: analysis.framework,
+      detectedPort: analysis.port,
+      detectedDatabase: analysis.needsDatabase,
+      recommendedTier: analysis.recommendedTier,
+      projectType: analysis.type,
+      ...(analysis.warnings.length > 0 ? { warnings: analysis.warnings } : {}),
     };
   });
 
   // GET /deploy/list — user's deployments
   app.get('/deploy/list', { preHandler: authenticate }, async (request) => {
     const result = await query(
-      `SELECT id, app_name, subdomain, status, project_type, tier, port, db_name, deploy_group, created_at, updated_at
+      `SELECT id, app_name, subdomain, status, project_type, tier, port, db_name, deploy_group,
+              framework, deploy_phase, error_detail, detected_port, detected_database,
+              created_at, updated_at
        FROM deployments WHERE user_id = $1 ORDER BY deploy_group NULLS LAST, updated_at DESC`,
       [request.user.id],
     );
@@ -173,6 +182,10 @@ export async function deployRoutes(app: FastifyInstance): Promise<void> {
       port: row.port,
       hasDatabase: !!row.db_name,
       group: row.deploy_group || null,
+      framework: row.framework || null,
+      phase: row.deploy_phase || null,
+      detectedPort: row.detected_port || null,
+      detectedDatabase: row.detected_database || false,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     }));
@@ -199,12 +212,25 @@ export async function deployRoutes(app: FastifyInstance): Promise<void> {
 
       const row = result.rows[0];
       const domain = process.env.DOMAIN || 'cozypane.com';
+
+      // Parse error_detail if it's JSON
+      let errorDetail = null;
+      if (row.error_detail) {
+        try { errorDetail = JSON.parse(row.error_detail); } catch { errorDetail = row.error_detail; }
+      }
+
       return {
         id: row.id,
         appName: row.app_name,
         subdomain: row.subdomain,
         url: `https://${row.subdomain}.${domain}`,
         status: row.status,
+        phase: row.deploy_phase || null,
+        framework: row.framework || null,
+        detectedPort: row.detected_port || null,
+        detectedDatabase: row.detected_database || false,
+        recommendedTier: row.tier,
+        errorDetail,
         projectType: row.project_type,
         tier: row.tier,
         port: row.port,
@@ -300,7 +326,7 @@ export async function deployRoutes(app: FastifyInstance): Promise<void> {
         const container = docker.getContainer(deployment.container_id);
         await container.restart({ t: 10 });
         await query(
-          `UPDATE deployments SET status = 'running', updated_at = NOW() WHERE id = $1`,
+          `UPDATE deployments SET status = 'running', deploy_phase = NULL, updated_at = NOW() WHERE id = $1`,
           [deployment.id],
         );
       } catch {
@@ -393,20 +419,72 @@ export async function deployRoutes(app: FastifyInstance): Promise<void> {
   );
 }
 
+async function updatePhase(deploymentId: number, phase: string): Promise<void> {
+  await query(
+    `UPDATE deployments SET deploy_phase = $1, updated_at = NOW() WHERE id = $2`,
+    [phase, deploymentId],
+  ).catch(() => {});
+}
+
+function makeErrorDetail(phase: string, code: string, message: string, suggestion: string, logs?: string): string {
+  return JSON.stringify({
+    phase,
+    code,
+    message,
+    suggestion,
+    ...(logs ? { logs: logs.slice(-2000) } : {}),
+  });
+}
+
+function classifyBuildError(err: any, buildLog: string): { code: string; message: string; suggestion: string } {
+  const errMsg = err?.message || String(err);
+
+  // OOM kill (exit 137)
+  if (errMsg.includes('137') || errMsg.includes('killed') || errMsg.includes('OOM')) {
+    return {
+      code: 'OOM',
+      message: 'Build killed: out of memory',
+      suggestion: 'The project may be too large for the current tier. Try tier: large.',
+    };
+  }
+
+  // npm/yarn install failures
+  if (buildLog.includes('npm ERR!') || buildLog.includes('npm error')) {
+    return {
+      code: 'INSTALL_FAILED',
+      message: 'Package installation failed',
+      suggestion: 'Check that package.json and lock files are valid. Look at build logs for details.',
+    };
+  }
+
+  if (errMsg.includes('timed out')) {
+    return {
+      code: 'TIMEOUT',
+      message: 'Build timed out after 10 minutes',
+      suggestion: 'The build is taking too long. Try simplifying the build or using a larger tier.',
+    };
+  }
+
+  return {
+    code: 'BUILD_FAILED',
+    message: errMsg,
+    suggestion: 'Check build logs with cozypane_get_logs (type="build") for details.',
+  };
+}
+
 async function buildAndDeploy(params: {
   deploymentId: number;
   extractDir: string;
   tempDir: string;
-  projectInfo: ReturnType<typeof detectProject>;
+  analysis: ReturnType<typeof analyzeProject>;
   appName: string;
   subdomain: string;
   tier: string;
   userId: number;
-  needsDatabase: string | undefined;
   envJson: string | undefined;
   log: any;
 }): Promise<void> {
-  const { deploymentId, extractDir, tempDir, projectInfo, appName, subdomain, tier, userId, needsDatabase, envJson, log } = params;
+  const { deploymentId, extractDir, tempDir, analysis, appName, subdomain, tier, userId, envJson, log } = params;
   let newContainerId: string | undefined;
 
   try {
@@ -419,10 +497,25 @@ async function buildAndDeploy(params: {
       await stopContainer(existing.rows[0].container_id).catch(() => {});
     }
 
-    // Build Docker image
-    const { tag: imageTag, buildLog } = await buildImage(extractDir, projectInfo, appName, userId);
+    // Phase: building
+    await updatePhase(deploymentId, 'building');
+    let buildLog = '';
+    let imageTag: string;
+    try {
+      const result = await buildImage(extractDir, analysis, appName, userId);
+      imageTag = result.tag;
+      buildLog = result.buildLog;
+    } catch (err: any) {
+      const errInfo = classifyBuildError(err, buildLog);
+      const errorDetail = makeErrorDetail('build', errInfo.code, errInfo.message, errInfo.suggestion, buildLog);
+      await query(
+        `UPDATE deployments SET status = 'failed', deploy_phase = 'build', error_detail = $1, build_log = $2, updated_at = NOW() WHERE id = $3`,
+        [errorDetail, buildLog.slice(-50000), deploymentId],
+      ).catch(() => {});
+      throw err;
+    }
 
-    // Store build log (last 50KB to avoid bloating DB)
+    // Store build log
     const trimmedLog = buildLog.length > 50000 ? '...' + buildLog.slice(-50000) : buildLog;
     await query(`UPDATE deployments SET build_log = $1 WHERE id = $2`, [trimmedLog, deploymentId]).catch(() => {});
 
@@ -439,8 +532,9 @@ async function buildAndDeploy(params: {
       } catch { /* ignore */ }
     }
 
-    // Provision database if requested
-    if (needsDatabase === 'postgres') {
+    // Phase: provisioning_db (if needed)
+    if (analysis.needsDatabase) {
+      await updatePhase(deploymentId, 'provisioning_db');
       const db = await provisionDatabase(userId, appName);
       env.DATABASE_URL = db.connectionString;
       await query(
@@ -449,19 +543,53 @@ async function buildAndDeploy(params: {
       );
     }
 
-    // Run container
-    newContainerId = await runContainer(imageTag, { id: deploymentId, appName, subdomain, port: projectInfo.port, tier, env }, userId);
+    // Phase: starting
+    await updatePhase(deploymentId, 'starting');
+    newContainerId = await runContainer(
+      imageTag,
+      { id: deploymentId, appName, subdomain, port: analysis.port, tier, env },
+      userId,
+    );
 
     await query(
-      `UPDATE deployments SET container_id = $1, status = 'running', updated_at = NOW() WHERE id = $2`,
+      `UPDATE deployments SET container_id = $1 WHERE id = $2`,
       [newContainerId, deploymentId],
-    );
+    ).catch(() => {});
+
+    // Phase: health_check
+    await updatePhase(deploymentId, 'health_check');
+    const userNetwork = `cp-user-${userId}`;
+    const health = await waitForHealthy(newContainerId, analysis.port, userNetwork);
+
+    if (health.healthy) {
+      await query(
+        `UPDATE deployments SET status = 'running', deploy_phase = NULL, updated_at = NOW() WHERE id = $1`,
+        [deploymentId],
+      );
+    } else {
+      // Check if container crashed within first few seconds
+      const errorCode = health.error?.includes('exited') ? 'APP_CRASH' : 'UNHEALTHY';
+      const suggestion = errorCode === 'APP_CRASH'
+        ? 'The app crashed on startup. Check runtime logs with cozypane_get_logs for errors.'
+        : 'The server started but is not responding to HTTP requests. Verify it listens on the correct port.';
+      const errorDetail = makeErrorDetail('health_check', errorCode, health.error || 'Health check failed', suggestion, health.logs);
+
+      await query(
+        `UPDATE deployments SET status = 'unhealthy', deploy_phase = 'health_check', error_detail = $1, updated_at = NOW() WHERE id = $2`,
+        [errorDetail, deploymentId],
+      );
+    }
   } catch (err: any) {
     if (newContainerId) await stopContainer(newContainerId).catch(() => {});
-    await query(
-      `UPDATE deployments SET status = 'failed', build_log = COALESCE(build_log, '') || $1, updated_at = NOW() WHERE id = $2`,
-      [`\n\nBUILD ERROR: ${err.message}`, deploymentId],
-    ).catch(() => {});
+
+    // Only update if not already set by phase-specific error handling above
+    const current = await query('SELECT status FROM deployments WHERE id = $1', [deploymentId]).catch(() => null);
+    if (current?.rows?.[0]?.status === 'building') {
+      await query(
+        `UPDATE deployments SET status = 'failed', build_log = COALESCE(build_log, '') || $1, updated_at = NOW() WHERE id = $2`,
+        [`\n\nBUILD ERROR: ${err.message}`, deploymentId],
+      ).catch(() => {});
+    }
     log.error(err, `Background build failed for deployment ${deploymentId}`);
   } finally {
     rmSync(tempDir, { recursive: true, force: true });

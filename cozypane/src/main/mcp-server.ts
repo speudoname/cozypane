@@ -52,17 +52,15 @@ const server = new McpServer({
 
 server.tool(
   'cozypane_deploy',
-  `Deploy a service to CozyPane Cloud (triggered by "cozydeploy"). Create a Dockerfile first, then call this tool. For multi-service apps call once per service using the "group" parameter; deploy backends before frontends. Set needsDatabase="postgres" if the app needs a database — DATABASE_URL is injected automatically. Use port 3000 (not 80).`,
+  'Deploy a project to CozyPane Cloud. Auto-detects framework, port, and database. No Dockerfile needed.',
   {
-    directory: z.string().describe('Absolute path to the directory to deploy (can be project root or a subdirectory like backend/)'),
-    appName: z.string().describe('App name — becomes the subdomain prefix. Use lowercase alphanumeric and hyphens (2-64 chars). For multi-service: use descriptive names like "myapp-api", "myapp-web"'),
-    tier: z.enum(['small', 'medium', 'large']).optional().describe('Deployment tier: small (256MB/0.5CPU), medium (512MB/1CPU), large (1GB/2CPU). Default: small'),
-    port: z.number().int().min(1).max(65535).optional().describe('Port the container listens on (default: 3000). Do NOT use port 80.'),
-    needsDatabase: z.enum(['postgres']).optional().describe('Set to "postgres" if this service needs a database. Platform provisions PostgreSQL and injects DATABASE_URL.'),
-    env: z.record(z.string(), z.string()).optional().describe('Environment variables to pass to the container. Example: {"API_URL": "https://myapp-api-user.cozypane.com", "NODE_ENV": "production"}'),
-    group: z.string().optional().describe('Group name for multi-service deployments. All services in a group can be managed together (list, delete). Example: "myproject"'),
+    directory: z.string().describe('Absolute path to the project directory'),
+    appName: z.string().describe('App name — becomes subdomain: <appName>-<user>.cozypane.com'),
+    env: z.record(z.string(), z.string()).optional().describe('Environment variables for the container'),
+    group: z.string().optional().describe('Group name for multi-service deploys'),
+    tier: z.enum(['small', 'medium', 'large']).optional().describe('Override auto-detected tier'),
   },
-  async ({ directory, appName, tier, port, needsDatabase, env, group }) => {
+  async ({ directory, appName, env, group, tier }) => {
     if (!APP_NAME_REGEX.test(appName)) {
       return {
         content: [{
@@ -80,17 +78,6 @@ server.tool(
       };
     }
 
-    // Check for Dockerfile — warn but don't block
-    if (!fs.existsSync(path.join(directory, 'Dockerfile'))) {
-      return {
-        content: [{
-          type: 'text' as const,
-          text: `No Dockerfile found in ${directory}. You MUST create a production Dockerfile before deploying. The platform builds and runs your Dockerfile as-is — there is no auto-detection fallback.\n\nCreate a Dockerfile, then call cozypane_deploy again.`,
-        }],
-        isError: true,
-      };
-    }
-
     try {
       const tarPath = await createTarball(directory);
       const tarBuffer = fs.readFileSync(tarPath);
@@ -103,8 +90,6 @@ server.tool(
       const formData = new FormData();
       formData.append('appName', appName);
       if (tier) formData.append('tier', tier);
-      if (port) formData.append('port', String(port));
-      if (needsDatabase) formData.append('needsDatabase', needsDatabase);
       if (env && Object.keys(env).length > 0) formData.append('env', JSON.stringify(env));
       if (group) formData.append('group', group);
       formData.append('file', blob, 'deploy.tar.gz');
@@ -127,6 +112,12 @@ server.tool(
             result = poll;
             break;
           }
+          // Show phase progress
+          const phase = poll.phase || 'building';
+          const framework = poll.framework ? ` (${poll.framework})` : '';
+          const db = poll.detectedDatabase ? ' + PostgreSQL' : '';
+          // Log progress (visible in MCP debug)
+          process.stderr.write(`Deploying... [${phase}]${framework}${db}\n`);
         }
       }
 
@@ -143,10 +134,23 @@ server.tool(
         } catch {}
       }
 
+      // Build a human-readable result
+      const r = result as any;
+      let statusLine = '';
+      if (r?.status === 'running') {
+        statusLine = `Deployed successfully! ${r.url}`;
+      } else if (r?.status === 'unhealthy') {
+        const suggestion = r.errorDetail?.suggestion || 'Check logs with cozypane_get_logs for details.';
+        statusLine = `Deployment unhealthy: ${r.errorDetail?.message || 'health check failed'}. ${suggestion}`;
+      } else if (r?.status === 'failed') {
+        const suggestion = r.errorDetail?.suggestion || 'Check build logs with cozypane_get_logs (type="build").';
+        statusLine = `Deploy failed: ${r.errorDetail?.message || 'unknown error'}. ${suggestion}`;
+      }
+
       return {
         content: [{
           type: 'text' as const,
-          text: JSON.stringify(result, null, 2),
+          text: statusLine ? `${statusLine}\n\n${JSON.stringify(result, null, 2)}` : JSON.stringify(result, null, 2),
         }],
       };
     } catch (err: any) {

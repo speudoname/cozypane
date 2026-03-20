@@ -320,6 +320,75 @@ export function execInContainer(containerId: string, ws: WebSocket): void {
 }
 
 /**
+ * Wait for a container to become healthy (responding to HTTP requests).
+ */
+export async function waitForHealthy(
+  containerId: string,
+  port: number,
+  networkName: string,
+  maxWaitMs: number = 60000,
+): Promise<{ healthy: boolean; error?: string; logs?: string }> {
+  const container = docker.getContainer(containerId);
+
+  // Wait 2s for initial boot
+  await new Promise(r => setTimeout(r, 2000));
+
+  const startTime = Date.now();
+  const pollInterval = 2000;
+
+  while (Date.now() - startTime < maxWaitMs) {
+    // Check if container is still running
+    try {
+      const info = await container.inspect();
+      if (!info.State.Running) {
+        const logs = await getContainerLogs(containerId, 30).catch(() => 'Could not retrieve logs');
+        return {
+          healthy: false,
+          error: `Container exited with code ${info.State.ExitCode}`,
+          logs,
+        };
+      }
+
+      // Get container IP on the user network
+      const ip = info.NetworkSettings?.Networks?.[networkName]?.IPAddress;
+      if (!ip) {
+        await new Promise(r => setTimeout(r, pollInterval));
+        continue;
+      }
+
+      // Try HTTP request
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 3000);
+      try {
+        const resp = await fetch(`http://${ip}:${port}/`, { signal: controller.signal });
+        clearTimeout(timeout);
+        // Any HTTP response (even 404/500) means the server is running
+        return { healthy: true };
+      } catch {
+        clearTimeout(timeout);
+        // Connection refused or timeout — server not ready yet
+      }
+    } catch (err: any) {
+      // Container inspect failed — container may have been removed
+      return {
+        healthy: false,
+        error: `Container inspection failed: ${err.message}`,
+      };
+    }
+
+    await new Promise(r => setTimeout(r, pollInterval));
+  }
+
+  // Timed out — grab logs for diagnostics
+  const logs = await getContainerLogs(containerId, 30).catch(() => 'Could not retrieve logs');
+  return {
+    healthy: false,
+    error: `Health check timed out after ${maxWaitMs / 1000}s — server not responding on port ${port}`,
+    logs,
+  };
+}
+
+/**
  * Redact internal infrastructure details from log output.
  * Strips container IDs and internal Docker network IPs.
  */
