@@ -759,6 +759,8 @@ async function buildAndDeploy(params: {
       imageTag = result.tag;
       buildLog = result.buildLog;
     } catch (err: any) {
+      // buildImage attaches partial log to the error object
+      buildLog = err.buildLog || buildLog;
       const errInfo = classifyBuildError(err, buildLog);
       const errorDetail = makeErrorDetail('build', errInfo.code, errInfo.message, errInfo.suggestion, buildLog);
       await query(

@@ -116,21 +116,19 @@ export async function runContainer(
     },
   });
 
-  // Traefik discovers this container via its user network (ensureNetwork connects
-  // Traefik to each user network). We do NOT connect to traefik-public, which would
-  // let tenant containers reach each other through the shared network.
-
   await container.start();
 
-  // Connect to internal network so containers can reach the postgres service.
-  // The postgres service lives on the docker-compose "internal" network (named
-  // cozypane-cloud_internal). Without this, DATABASE_URL with host=postgres won't resolve.
+  // Connect to required networks after start:
+  // 1. traefik-public — Traefik's Docker provider needs this to discover and route to the container
+  // 2. internal — PostgreSQL lives here, needed for DATABASE_URL with host=postgres
   const INTERNAL_NETWORK = process.env.INTERNAL_NETWORK || 'cozypane-cloud_internal';
-  try {
-    const internalNet = docker.getNetwork(INTERNAL_NETWORK);
-    await internalNet.connect({ Container: container.id });
-  } catch (err) {
-    console.warn(`Could not connect ${containerName} to ${INTERNAL_NETWORK}:`, err);
+  for (const netName of ['traefik-public', INTERNAL_NETWORK]) {
+    try {
+      const net = docker.getNetwork(netName);
+      await net.connect({ Container: container.id });
+    } catch (err) {
+      console.warn(`Could not connect ${containerName} to ${netName}:`, err);
+    }
   }
 
   console.log(`Started container: ${containerName} (${container.id})`);

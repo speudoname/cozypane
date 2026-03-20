@@ -370,7 +370,13 @@ export async function buildImage(
     setTimeout(() => reject(new Error('Build timed out after 10 minutes')), BUILD_TIMEOUT_MS);
   });
 
-  await Promise.race([buildPromise, timeoutPromise]);
+  try {
+    await Promise.race([buildPromise, timeoutPromise]);
+  } catch (err: any) {
+    // Attach partial build log to the error so callers can store it
+    err.buildLog = buildLines.join('');
+    throw err;
+  }
 
   return { tag, buildLog: buildLines.join('') };
 }
