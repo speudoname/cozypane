@@ -535,12 +535,21 @@ async function buildAndDeploy(params: {
     // Phase: provisioning_db (if needed)
     if (analysis.needsDatabase) {
       await updatePhase(deploymentId, 'provisioning_db');
-      const db = await provisionDatabase(userId, appName);
-      env.DATABASE_URL = db.connectionString;
-      await query(
-        `UPDATE deployments SET db_name = $1, db_user = $2, db_host = $3 WHERE id = $4`,
-        [db.name, db.user, db.host, deploymentId],
-      );
+      try {
+        const db = await provisionDatabase(userId, appName);
+        env.DATABASE_URL = db.connectionString;
+        await query(
+          `UPDATE deployments SET db_name = $1, db_user = $2, db_host = $3 WHERE id = $4`,
+          [db.name, db.user, db.host, deploymentId],
+        );
+      } catch (err: any) {
+        const errorDetail = makeErrorDetail('provisioning_db', 'DB_PROVISION_FAILED', err.message || 'Database provisioning failed', 'Platform failed to create database. Try redeploying or contact support.');
+        await query(
+          `UPDATE deployments SET status = 'failed', deploy_phase = 'provisioning_db', error_detail = $1, updated_at = NOW() WHERE id = $2`,
+          [errorDetail, deploymentId],
+        ).catch(() => {});
+        throw err;
+      }
     }
 
     // Phase: starting

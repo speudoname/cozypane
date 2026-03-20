@@ -60,16 +60,16 @@ export async function provisionDatabase(
       [user],
     );
 
+    // DO blocks don't support bind parameters — use format() with
+    // dollar-quoted literals built from validated identifiers only.
+    // user/name are derived from userId (int) + appName (alphanumeric), safe for identifiers.
     if (userExists.rows.length > 0) {
-      // ALTER ROLE doesn't support $1 for PASSWORD, so we use format_literal via a DO block
       await pool.query(
-        `DO $$ BEGIN EXECUTE format('ALTER ROLE %I WITH PASSWORD %L', $1, $2); END $$`,
-        [user, password],
+        `DO $do$ BEGIN EXECUTE format('ALTER ROLE %I WITH PASSWORD %L', '${user}', '${password}'); END $do$`,
       );
     } else {
       await pool.query(
-        `DO $$ BEGIN EXECUTE format('CREATE ROLE %I WITH LOGIN PASSWORD %L', $1, $2); END $$`,
-        [user, password],
+        `DO $do$ BEGIN EXECUTE format('CREATE ROLE %I WITH LOGIN PASSWORD %L', '${user}', '${password}'); END $do$`,
       );
     }
 
@@ -80,14 +80,19 @@ export async function provisionDatabase(
     );
 
     if (dbExists.rows.length === 0) {
-      await pool.query(`CREATE DATABASE "${name}" OWNER "${user}"`);
+      await pool.query(
+        `DO $do$ BEGIN EXECUTE format('CREATE DATABASE %I OWNER %I', '${name}', '${user}'); END $do$`,
+      );
     } else {
-      // Ensure ownership
-      await pool.query(`ALTER DATABASE "${name}" OWNER TO "${user}"`);
+      await pool.query(
+        `DO $do$ BEGIN EXECUTE format('ALTER DATABASE %I OWNER TO %I', '${name}', '${user}'); END $do$`,
+      );
     }
 
     // Grant permissions
-    await pool.query(`GRANT ALL PRIVILEGES ON DATABASE "${name}" TO "${user}"`);
+    await pool.query(
+      `DO $do$ BEGIN EXECUTE format('GRANT ALL PRIVILEGES ON DATABASE %I TO %I', '${name}', '${user}'); END $do$`,
+    );
 
     const connectionString = `postgresql://${user}:${password}@${host}:${port}/${name}`;
 
@@ -119,10 +124,14 @@ export async function dropDatabase(
     ).catch(() => {});
 
     // Drop database
-    await pool.query(`DROP DATABASE IF EXISTS "${name}"`);
+    await pool.query(
+      `DO $do$ BEGIN EXECUTE format('DROP DATABASE IF EXISTS %I', '${name}'); END $do$`,
+    );
 
     // Drop user
-    await pool.query(`DROP ROLE IF EXISTS "${user}"`);
+    await pool.query(
+      `DO $do$ BEGIN EXECUTE format('DROP ROLE IF EXISTS %I', '${user}'); END $do$`,
+    );
 
     console.log(`Dropped database: ${name} and user: ${user}`);
   } finally {
