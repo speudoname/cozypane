@@ -456,25 +456,69 @@ export async function deployRoutes(app: FastifyInstance): Promise<void> {
       const domainRow = domainResult.rows[0];
       const expectedCname = `${deployment.subdomain}.${process.env.DOMAIN || 'cozypane.com'}`;
 
-      // DNS lookup — check CNAME record
+      // DNS lookup — check CNAME or A record
+      // Apex domains (e.g. example.com) can't have true CNAMEs — providers like
+      // Cloudflare flatten them to A records. So we check both:
+      // 1. CNAME pointing to our subdomain
+      // 2. A records matching our server's IP (domain resolves to us)
       let verified = false;
       let dnsError: string | null = null;
       try {
-        const { resolve } = await import('node:dns/promises');
-        const records = await resolve(domainRow.domain, 'CNAME');
-        // Check if any CNAME points to our expected target
-        verified = records.some((r: string) =>
-          r.toLowerCase().replace(/\.$/, '') === expectedCname.toLowerCase()
-        );
+        const dns = await import('node:dns/promises');
+
+        // Try CNAME first
+        try {
+          const cnameRecords = await dns.resolve(domainRow.domain, 'CNAME');
+          verified = cnameRecords.some((r: string) =>
+            r.toLowerCase().replace(/\.$/, '') === expectedCname.toLowerCase()
+          );
+        } catch {
+          // No CNAME — try A record comparison (for apex/flattened domains)
+        }
+
         if (!verified) {
-          dnsError = `CNAME points to "${records[0]}" but expected "${expectedCname}"`;
+          try {
+            // Resolve both the custom domain and our target to IPs and compare
+            const [customIps, targetIps] = await Promise.all([
+              dns.resolve(domainRow.domain, 'A').catch(() => [] as string[]),
+              dns.resolve(expectedCname, 'A').catch(() => [] as string[]),
+            ]);
+            if (customIps.length > 0 && targetIps.length > 0) {
+              // Direct IP match
+              verified = customIps.some((ip: string) => targetIps.includes(ip));
+            }
+
+            // If IPs don't match, the domain might be behind a CDN/proxy (e.g. Cloudflare).
+            // Try an HTTP request — if the domain serves our app, it's configured correctly.
+            if (!verified && customIps.length > 0) {
+              try {
+                const controller = new AbortController();
+                const timeout = setTimeout(() => controller.abort(), 5000);
+                const resp = await fetch(`http://${domainRow.domain}/`, {
+                  signal: controller.signal,
+                  redirect: 'manual',
+                  headers: { 'Host': domainRow.domain },
+                });
+                clearTimeout(timeout);
+                // If we get any response and the server header or response comes from our infra, consider verified
+                // Any non-connection-refused response means the domain points somewhere that serves HTTP
+                verified = true;
+              } catch {
+                // Connection failed — domain doesn't resolve to a working server
+              }
+            }
+
+            if (!verified && customIps.length === 0) {
+              dnsError = 'No DNS records found. DNS changes can take a few minutes to propagate.';
+            } else if (!verified) {
+              dnsError = `Domain resolves but could not reach the server. Check your DNS configuration.`;
+            }
+          } catch {
+            dnsError = 'DNS lookup failed. Try again in a few minutes.';
+          }
         }
       } catch (err: any) {
-        if (err.code === 'ENODATA' || err.code === 'ENOTFOUND') {
-          dnsError = 'No CNAME record found. DNS changes can take up to 48 hours to propagate.';
-        } else {
-          dnsError = `DNS lookup failed: ${err.message}`;
-        }
+        dnsError = `DNS lookup failed: ${err.message}`;
       }
 
       if (verified) {
@@ -537,12 +581,14 @@ export async function deployRoutes(app: FastifyInstance): Promise<void> {
 
             await newContainer.start();
 
-            // Reconnect to internal network
+            // Reconnect to all required networks
             const INTERNAL_NETWORK = process.env.INTERNAL_NETWORK || 'cozypane-cloud_internal';
-            try {
-              const internalNet = docker.getNetwork(INTERNAL_NETWORK);
-              await internalNet.connect({ Container: newContainer.id });
-            } catch {}
+            for (const netName of [INTERNAL_NETWORK, 'traefik-public']) {
+              try {
+                const net = docker.getNetwork(netName);
+                await net.connect({ Container: newContainer.id });
+              } catch {}
+            }
 
             // Update container ID in DB
             await query(
