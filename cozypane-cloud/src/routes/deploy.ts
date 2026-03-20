@@ -1,5 +1,5 @@
 import type { FastifyInstance } from 'fastify';
-import { createReadStream, createWriteStream, mkdirSync, rmSync } from 'node:fs';
+import { createReadStream, createWriteStream, mkdirSync, rmSync, writeFileSync, unlinkSync, existsSync } from 'node:fs';
 import { join, normalize, isAbsolute } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomBytes } from 'node:crypto';
@@ -525,85 +525,9 @@ export async function deployRoutes(app: FastifyInstance): Promise<void> {
         // Mark verified
         await query('UPDATE domains SET verified = TRUE WHERE id = $1', [domainRow.id]);
 
-        // Update container Traefik labels to add the custom domain
-        if (deployment.container_id) {
-          try {
-            const Docker = (await import('dockerode')).default;
-            const docker = new Docker({ socketPath: '/var/run/docker.sock' });
-            const container = docker.getContainer(deployment.container_id);
-            const info = await container.inspect();
-
-            // Get all verified domains for this deployment
-            const allDomains = await query(
-              'SELECT domain FROM domains WHERE deployment_id = $1 AND verified = TRUE',
-              [deployment.id],
-            );
-
-            // Build updated Host rule with all domains
-            const routerName = `cp-${deployment.subdomain}`;
-            const mainDomain = process.env.DOMAIN || 'cozypane.com';
-            const hosts = [
-              `\`${deployment.subdomain}.${mainDomain}\``,
-              ...allDomains.rows.map((d: any) => `\`${d.domain}\``),
-            ];
-            const hostRule = `Host(${hosts.join(', ')})`;
-
-            // We can't update labels on a running container — need to recreate.
-            // Instead, stop + recreate with new labels.
-            const oldLabels = info.Config.Labels || {};
-            oldLabels[`traefik.http.routers.${routerName}.rule`] = hostRule;
-
-            // Custom domain routers share the same service — having multiple services
-            // on one container makes Traefik fail to auto-link routers to services.
-            // Just point custom domain routers to the main service explicitly.
-            for (const dm of allDomains.rows) {
-              const safeDm = (dm as any).domain.replace(/\./g, '-');
-              const customRouter = `cp-custom-${safeDm}`;
-              oldLabels[`traefik.http.routers.${customRouter}.rule`] = `Host(\`${(dm as any).domain}\`)`;
-              oldLabels[`traefik.http.routers.${customRouter}.entrypoints`] = 'websecure';
-              oldLabels[`traefik.http.routers.${customRouter}.tls`] = 'true';
-              oldLabels[`traefik.http.routers.${customRouter}.tls.certresolver`] = 'cloudflare';
-              oldLabels[`traefik.http.routers.${customRouter}.service`] = routerName;
-            }
-
-            // Recreate container with updated labels
-            const oldConfig = info.Config;
-            const oldHostConfig = info.HostConfig;
-            const networkMode = oldHostConfig.NetworkMode;
-
-            await container.stop({ t: 5 }).catch(() => {});
-            await container.remove({ force: true }).catch(() => {});
-
-            const newContainer = await docker.createContainer({
-              Image: oldConfig.Image,
-              name: info.Name.replace(/^\//, ''),
-              Env: oldConfig.Env,
-              Labels: oldLabels,
-              ExposedPorts: oldConfig.ExposedPorts,
-              HostConfig: oldHostConfig,
-            });
-
-            await newContainer.start();
-
-            // Reconnect to all required networks
-            const INTERNAL_NETWORK = process.env.INTERNAL_NETWORK || 'cozypane-cloud_internal';
-            for (const netName of [INTERNAL_NETWORK, 'traefik-public']) {
-              try {
-                const net = docker.getNetwork(netName);
-                await net.connect({ Container: newContainer.id });
-              } catch {}
-            }
-
-            // Update container ID in DB
-            await query(
-              'UPDATE deployments SET container_id = $1, updated_at = NOW() WHERE id = $2',
-              [newContainer.id, deployment.id],
-            );
-          } catch (err: any) {
-            app.log.warn(`Failed to update container labels for custom domain: ${err.message}`);
-            // Domain is verified in DB even if container update fails — next redeploy will pick it up
-          }
-        }
+        // Write Traefik file provider config — no container restart needed.
+        // Traefik watches the dynamic config directory and picks up changes automatically.
+        writeCustomDomainConfig(deployment.subdomain, domainRow.domain, deployment.port);
       }
 
       return {
@@ -633,6 +557,9 @@ export async function deployRoutes(app: FastifyInstance): Promise<void> {
       if (result.rows.length === 0) {
         return reply.code(404).send({ error: 'Domain not found' });
       }
+
+      // Remove Traefik file provider config
+      removeCustomDomainConfig(result.rows[0].domain);
 
       return { ok: true, domain: result.rows[0].domain };
     },
@@ -710,6 +637,56 @@ function makeErrorDetail(phase: string, code: string, message: string, suggestio
     suggestion,
     ...(logs ? { logs: logs.slice(-2000) } : {}),
   });
+}
+
+// --- Traefik file provider for custom domains ---
+// Writes/removes YAML configs in the shared volume. Traefik watches and auto-reloads.
+// No container restart needed.
+
+const TRAEFIK_DYNAMIC_DIR = process.env.TRAEFIK_DYNAMIC_DIR || '/traefik-dynamic';
+
+function customDomainConfigPath(domain: string): string {
+  const safe = domain.replace(/[^a-z0-9.-]/g, '-');
+  return join(TRAEFIK_DYNAMIC_DIR, `custom-${safe}.yml`);
+}
+
+function writeCustomDomainConfig(subdomain: string, domain: string, port: number): void {
+  const routerName = `cp-${subdomain}`;
+  const safeDomain = domain.replace(/\./g, '-');
+  const customRouter = `cp-custom-${safeDomain}`;
+
+  // The service is defined by Docker labels on the container (Docker provider).
+  // File provider routers can reference Docker provider services via @docker suffix.
+  const yaml = `http:
+  routers:
+    ${customRouter}:
+      rule: "Host(\`${domain}\`)"
+      entrypoints:
+        - websecure
+      tls:
+        certResolver: cloudflare
+      service: ${routerName}@docker
+`;
+
+  try {
+    mkdirSync(TRAEFIK_DYNAMIC_DIR, { recursive: true });
+    writeFileSync(customDomainConfigPath(domain), yaml);
+    console.log(`Wrote Traefik config for custom domain: ${domain}`);
+  } catch (err: any) {
+    console.warn(`Failed to write Traefik config for ${domain}: ${err.message}`);
+  }
+}
+
+function removeCustomDomainConfig(domain: string): void {
+  try {
+    const filePath = customDomainConfigPath(domain);
+    if (existsSync(filePath)) {
+      unlinkSync(filePath);
+      console.log(`Removed Traefik config for custom domain: ${domain}`);
+    }
+  } catch (err: any) {
+    console.warn(`Failed to remove Traefik config for ${domain}: ${err.message}`);
+  }
 }
 
 function classifyBuildError(err: any, buildLog: string): { code: string; message: string; suggestion: string } {
