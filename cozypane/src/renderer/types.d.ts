@@ -56,15 +56,24 @@ declare global {
     name: string;
   }
 
+  interface CustomDomain {
+    id: number;
+    domain: string;
+    verified: boolean;
+    cname: string;
+    createdAt?: string;
+  }
+
   interface Deployment {
     id: number;
     appName: string;
     subdomain: string;
-    status: 'building' | 'running' | 'stopped' | 'error' | 'failed';
+    status: 'building' | 'running' | 'stopped' | 'error' | 'failed' | 'unhealthy';
     projectType: string;
     tier: string;
     url: string;
     hasDatabase?: boolean;
+    customDomains?: CustomDomain[];
     createdAt: string;
     updatedAt: string;
   }

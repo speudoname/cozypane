@@ -219,6 +219,47 @@ export function registerDeployHandlers(getWindow: () => BrowserWindow | null) {
     }
   });
 
+  // Custom domain management
+  ipcMain.handle('deploy:addDomain', async (_event, deployId: string, domain: string) => {
+    try {
+      return await apiFetch(`/deploy/${encodeURIComponent(deployId)}/domains`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ domain }),
+      });
+    } catch (err: any) {
+      return { error: err.message || 'Failed to add domain' };
+    }
+  });
+
+  ipcMain.handle('deploy:verifyDomain', async (_event, deployId: string, domainId: string) => {
+    try {
+      return await apiFetch(`/deploy/${encodeURIComponent(deployId)}/domains/${encodeURIComponent(domainId)}/verify`, {
+        method: 'POST',
+      });
+    } catch (err: any) {
+      return { error: err.message || 'Failed to verify domain' };
+    }
+  });
+
+  ipcMain.handle('deploy:removeDomain', async (_event, deployId: string, domainId: string) => {
+    try {
+      return await apiFetch(`/deploy/${encodeURIComponent(deployId)}/domains/${encodeURIComponent(domainId)}`, {
+        method: 'DELETE',
+      });
+    } catch (err: any) {
+      return { error: err.message || 'Failed to remove domain' };
+    }
+  });
+
+  ipcMain.handle('deploy:listDomains', async (_event, deployId: string) => {
+    try {
+      return await apiFetch(`/deploy/${encodeURIComponent(deployId)}/domains`);
+    } catch (err: any) {
+      return { error: err.message || 'Failed to list domains' };
+    }
+  });
+
 }
 
 export async function processProtocolUrl(url: string, getWindow: () => BrowserWindow | null): Promise<void> {

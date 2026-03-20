@@ -390,6 +390,232 @@ export async function deployRoutes(app: FastifyInstance): Promise<void> {
     },
   );
 
+  // --- Custom domain management ---
+
+  // POST /deploy/:id/domains — add a custom domain
+  app.post<{ Params: { id: string }; Body: { domain: string } }>(
+    '/deploy/:id/domains',
+    { preHandler: authenticate },
+    async (request, reply) => {
+      const deployment = await getDeployment(request.params.id, request.user.id);
+      if (!deployment) {
+        return reply.code(404).send({ error: 'Deployment not found' });
+      }
+
+      const domainName = ((request.body as any)?.domain || '').trim().toLowerCase();
+      if (!domainName || !/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/.test(domainName)) {
+        return reply.code(400).send({ error: 'Invalid domain name' });
+      }
+
+      // Check domain isn't already taken
+      const existing = await query('SELECT id FROM domains WHERE domain = $1', [domainName]);
+      if (existing.rows.length > 0) {
+        return reply.code(409).send({ error: 'Domain already in use' });
+      }
+
+      const result = await query(
+        'INSERT INTO domains (deployment_id, domain) VALUES ($1, $2) RETURNING id, domain, verified, created_at',
+        [deployment.id, domainName],
+      );
+
+      const row = result.rows[0];
+      const cname = `${deployment.subdomain}.${process.env.DOMAIN || 'cozypane.com'}`;
+
+      return {
+        id: row.id,
+        domain: row.domain,
+        verified: row.verified,
+        dnsInstructions: {
+          type: 'CNAME',
+          name: domainName,
+          value: cname,
+          message: `Add a CNAME record pointing "${domainName}" to "${cname}". Then click Verify.`,
+        },
+      };
+    },
+  );
+
+  // POST /deploy/:id/domains/:domainId/verify — verify DNS and activate
+  app.post<{ Params: { id: string; domainId: string } }>(
+    '/deploy/:id/domains/:domainId/verify',
+    { preHandler: authenticate },
+    async (request, reply) => {
+      const deployment = await getDeployment(request.params.id, request.user.id);
+      if (!deployment) {
+        return reply.code(404).send({ error: 'Deployment not found' });
+      }
+
+      const domainResult = await query(
+        'SELECT * FROM domains WHERE id = $1 AND deployment_id = $2',
+        [request.params.domainId, deployment.id],
+      );
+      if (domainResult.rows.length === 0) {
+        return reply.code(404).send({ error: 'Domain not found' });
+      }
+
+      const domainRow = domainResult.rows[0];
+      const expectedCname = `${deployment.subdomain}.${process.env.DOMAIN || 'cozypane.com'}`;
+
+      // DNS lookup — check CNAME record
+      let verified = false;
+      let dnsError: string | null = null;
+      try {
+        const { resolve } = await import('node:dns/promises');
+        const records = await resolve(domainRow.domain, 'CNAME');
+        // Check if any CNAME points to our expected target
+        verified = records.some((r: string) =>
+          r.toLowerCase().replace(/\.$/, '') === expectedCname.toLowerCase()
+        );
+        if (!verified) {
+          dnsError = `CNAME points to "${records[0]}" but expected "${expectedCname}"`;
+        }
+      } catch (err: any) {
+        if (err.code === 'ENODATA' || err.code === 'ENOTFOUND') {
+          dnsError = 'No CNAME record found. DNS changes can take up to 48 hours to propagate.';
+        } else {
+          dnsError = `DNS lookup failed: ${err.message}`;
+        }
+      }
+
+      if (verified) {
+        // Mark verified
+        await query('UPDATE domains SET verified = TRUE WHERE id = $1', [domainRow.id]);
+
+        // Update container Traefik labels to add the custom domain
+        if (deployment.container_id) {
+          try {
+            const Docker = (await import('dockerode')).default;
+            const docker = new Docker({ socketPath: '/var/run/docker.sock' });
+            const container = docker.getContainer(deployment.container_id);
+            const info = await container.inspect();
+
+            // Get all verified domains for this deployment
+            const allDomains = await query(
+              'SELECT domain FROM domains WHERE deployment_id = $1 AND verified = TRUE',
+              [deployment.id],
+            );
+
+            // Build updated Host rule with all domains
+            const routerName = `cp-${deployment.subdomain}`;
+            const mainDomain = process.env.DOMAIN || 'cozypane.com';
+            const hosts = [
+              `\`${deployment.subdomain}.${mainDomain}\``,
+              ...allDomains.rows.map((d: any) => `\`${d.domain}\``),
+            ];
+            const hostRule = `Host(${hosts.join(', ')})`;
+
+            // We can't update labels on a running container — need to recreate.
+            // Instead, stop + recreate with new labels.
+            const oldLabels = info.Config.Labels || {};
+            oldLabels[`traefik.http.routers.${routerName}.rule`] = hostRule;
+
+            // Add a separate router for the custom domain with its own cert
+            const safeDomain = domainRow.domain.replace(/\./g, '-');
+            const customRouterName = `cp-custom-${safeDomain}`;
+            oldLabels[`traefik.http.routers.${customRouterName}.rule`] = `Host(\`${domainRow.domain}\`)`;
+            oldLabels[`traefik.http.routers.${customRouterName}.entrypoints`] = 'websecure';
+            oldLabels[`traefik.http.routers.${customRouterName}.tls`] = 'true';
+            oldLabels[`traefik.http.routers.${customRouterName}.tls.certresolver`] = 'cloudflare';
+            oldLabels[`traefik.http.services.${customRouterName}.loadbalancer.server.port`] = String(deployment.port);
+
+            // Recreate container with updated labels
+            const oldConfig = info.Config;
+            const oldHostConfig = info.HostConfig;
+            const networkMode = oldHostConfig.NetworkMode;
+
+            await container.stop({ t: 5 }).catch(() => {});
+            await container.remove({ force: true }).catch(() => {});
+
+            const newContainer = await docker.createContainer({
+              Image: oldConfig.Image,
+              name: info.Name.replace(/^\//, ''),
+              Env: oldConfig.Env,
+              Labels: oldLabels,
+              ExposedPorts: oldConfig.ExposedPorts,
+              HostConfig: oldHostConfig,
+            });
+
+            await newContainer.start();
+
+            // Reconnect to internal network
+            const INTERNAL_NETWORK = process.env.INTERNAL_NETWORK || 'cozypane-cloud_internal';
+            try {
+              const internalNet = docker.getNetwork(INTERNAL_NETWORK);
+              await internalNet.connect({ Container: newContainer.id });
+            } catch {}
+
+            // Update container ID in DB
+            await query(
+              'UPDATE deployments SET container_id = $1, updated_at = NOW() WHERE id = $2',
+              [newContainer.id, deployment.id],
+            );
+          } catch (err: any) {
+            app.log.warn(`Failed to update container labels for custom domain: ${err.message}`);
+            // Domain is verified in DB even if container update fails — next redeploy will pick it up
+          }
+        }
+      }
+
+      return {
+        id: domainRow.id,
+        domain: domainRow.domain,
+        verified,
+        error: dnsError,
+      };
+    },
+  );
+
+  // DELETE /deploy/:id/domains/:domainId — remove a custom domain
+  app.delete<{ Params: { id: string; domainId: string } }>(
+    '/deploy/:id/domains/:domainId',
+    { preHandler: authenticate },
+    async (request, reply) => {
+      const deployment = await getDeployment(request.params.id, request.user.id);
+      if (!deployment) {
+        return reply.code(404).send({ error: 'Deployment not found' });
+      }
+
+      const result = await query(
+        'DELETE FROM domains WHERE id = $1 AND deployment_id = $2 RETURNING domain',
+        [request.params.domainId, deployment.id],
+      );
+
+      if (result.rows.length === 0) {
+        return reply.code(404).send({ error: 'Domain not found' });
+      }
+
+      return { ok: true, domain: result.rows[0].domain };
+    },
+  );
+
+  // GET /deploy/:id/domains — list domains for a deployment
+  app.get<{ Params: { id: string } }>(
+    '/deploy/:id/domains',
+    { preHandler: authenticate },
+    async (request, reply) => {
+      const deployment = await getDeployment(request.params.id, request.user.id);
+      if (!deployment) {
+        return reply.code(404).send({ error: 'Deployment not found' });
+      }
+
+      const result = await query(
+        'SELECT id, domain, verified, created_at FROM domains WHERE deployment_id = $1 ORDER BY created_at',
+        [deployment.id],
+      );
+
+      const cname = `${deployment.subdomain}.${process.env.DOMAIN || 'cozypane.com'}`;
+      return {
+        domains: result.rows.map((r: any) => ({
+          id: r.id,
+          domain: r.domain,
+          verified: r.verified,
+          createdAt: r.created_at,
+          cname,
+        })),
+      };
+    },
+  );
+
   // DELETE /deploy/group/:group — delete all deployments in a group
   app.delete<{ Params: { group: string } }>(
     '/deploy/group/:group',

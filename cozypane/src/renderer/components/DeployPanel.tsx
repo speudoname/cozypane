@@ -14,6 +14,7 @@ const STATUS_COLORS: Record<string, string> = {
   stopped: 'var(--danger, #e74c3c)',
   error: 'var(--danger, #e74c3c)',
   failed: 'var(--danger, #e74c3c)',
+  unhealthy: 'var(--warning, #e6b800)',
 };
 
 export default function DeployPanel({ cwd, onTerminalCommand, claudeRunning, onDeploymentsLoaded }: Props) {
@@ -24,6 +25,11 @@ export default function DeployPanel({ cwd, onTerminalCommand, claudeRunning, onD
   const [logViewId, setLogViewId] = useState<string | null>(null);
   const [logs, setLogs] = useState<string>('');
   const [logsLoading, setLogsLoading] = useState(false);
+  const [domainViewId, setDomainViewId] = useState<string | null>(null);
+  const [domains, setDomains] = useState<CustomDomain[]>([]);
+  const [newDomain, setNewDomain] = useState('');
+  const [domainLoading, setDomainLoading] = useState(false);
+  const [domainError, setDomainError] = useState<string | null>(null);
   const [cozyMode, setCozyMode] = useState(false);
   const [cozyModeLoading, setCozyModeLoading] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -151,6 +157,78 @@ export default function DeployPanel({ cwd, onTerminalCommand, claudeRunning, onD
       setDeployments(prev => prev.filter(d => d.id !== id));
     } catch (err: any) {
       setDeployError(err.message || 'Delete failed');
+    }
+  }, []);
+
+  const handleToggleDomains = useCallback(async (id: string) => {
+    if (domainViewId === id) {
+      setDomainViewId(null);
+      setDomains([]);
+      setDomainError(null);
+      return;
+    }
+    setDomainViewId(id);
+    setDomainLoading(true);
+    setDomainError(null);
+    try {
+      const result = await window.cozyPane.deploy.listDomains(id);
+      if (result?.error) { setDomainError(result.error); setDomains([]); }
+      else setDomains(result?.domains || []);
+    } catch (err: any) {
+      setDomainError(err.message);
+    } finally {
+      setDomainLoading(false);
+    }
+  }, [domainViewId]);
+
+  const handleAddDomain = useCallback(async (deployId: string) => {
+    const domain = newDomain.trim().toLowerCase();
+    if (!domain) return;
+    setDomainLoading(true);
+    setDomainError(null);
+    try {
+      const result = await window.cozyPane.deploy.addDomain(deployId, domain);
+      if (result?.error) { setDomainError(result.error); return; }
+      setNewDomain('');
+      // Refresh domains list
+      const list = await window.cozyPane.deploy.listDomains(deployId);
+      setDomains(list?.domains || []);
+    } catch (err: any) {
+      setDomainError(err.message);
+    } finally {
+      setDomainLoading(false);
+    }
+  }, [newDomain]);
+
+  const handleVerifyDomain = useCallback(async (deployId: string, domainId: string) => {
+    setDomainLoading(true);
+    setDomainError(null);
+    try {
+      const result = await window.cozyPane.deploy.verifyDomain(deployId, String(domainId));
+      if (result?.error && !result?.verified) {
+        setDomainError(result.error);
+      }
+      // Refresh domains list
+      const list = await window.cozyPane.deploy.listDomains(deployId);
+      setDomains(list?.domains || []);
+    } catch (err: any) {
+      setDomainError(err.message);
+    } finally {
+      setDomainLoading(false);
+    }
+  }, []);
+
+  const handleRemoveDomain = useCallback(async (deployId: string, domainId: string) => {
+    setDomainLoading(true);
+    setDomainError(null);
+    try {
+      await window.cozyPane.deploy.removeDomain(deployId, String(domainId));
+      const list = await window.cozyPane.deploy.listDomains(deployId);
+      setDomains(list?.domains || []);
+    } catch (err: any) {
+      setDomainError(err.message);
+    } finally {
+      setDomainLoading(false);
     }
   }, []);
 
@@ -398,6 +476,9 @@ export default function DeployPanel({ cwd, onTerminalCommand, claudeRunning, onD
                 <button onClick={() => handleViewLogs(String(dep.id))} style={tinyBtnStyle}>
                   {logViewId === String(dep.id) ? 'Hide Logs' : 'Logs'}
                 </button>
+                <button onClick={() => handleToggleDomains(String(dep.id))} style={tinyBtnStyle}>
+                  {domainViewId === String(dep.id) ? 'Hide Domains' : 'Domains'}
+                </button>
                 <button onClick={() => handleRedeploy(String(dep.id))} style={tinyBtnStyle}>
                   Redeploy
                 </button>
@@ -415,6 +496,83 @@ export default function DeployPanel({ cwd, onTerminalCommand, claudeRunning, onD
               {logViewId === String(dep.id) && (
                 <div style={logBoxStyle}>
                   {logsLoading ? 'Loading logs...' : (logs || 'No logs available')}
+                </div>
+              )}
+
+              {/* Custom domains */}
+              {domainViewId === String(dep.id) && (
+                <div style={{ marginTop: '0.5em', padding: '0.5em', borderRadius: 4, border: '1px solid var(--border, #2a2b3e)', backgroundColor: 'var(--bg-primary, #1a1b2e)' }}>
+                  <div style={{ fontSize: '0.8em', fontWeight: 600, marginBottom: '0.4em', color: 'var(--text-primary, #e0e0e0)' }}>
+                    Custom Domains
+                  </div>
+
+                  {domainLoading && <div style={{ fontSize: '0.78em', color: 'var(--text-secondary, #888)' }}>Loading...</div>}
+
+                  {/* Existing domains */}
+                  {domains.map(d => (
+                    <div key={d.id} style={{ padding: '0.3em 0', borderBottom: '1px solid var(--border, #2a2b3e)22' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                        <span style={{ fontSize: '0.82em', color: 'var(--text-primary, #e0e0e0)' }}>{d.domain}</span>
+                        <div style={{ display: 'flex', gap: '0.3em', alignItems: 'center' }}>
+                          {d.verified ? (
+                            <span style={{ fontSize: '0.72em', color: '#4caf50', fontWeight: 600 }}>Connected</span>
+                          ) : (
+                            <button
+                              onClick={() => handleVerifyDomain(String(dep.id), String(d.id))}
+                              disabled={domainLoading}
+                              style={{ ...tinyBtnStyle, color: 'var(--accent, #7c6fe0)' }}
+                            >
+                              Verify
+                            </button>
+                          )}
+                          <button
+                            onClick={() => handleRemoveDomain(String(dep.id), String(d.id))}
+                            disabled={domainLoading}
+                            style={{ ...tinyBtnStyle, color: '#e74c3c', padding: '1px 5px' }}
+                          >
+                            x
+                          </button>
+                        </div>
+                      </div>
+                      {!d.verified && d.cname && (
+                        <div style={{ fontSize: '0.72em', color: 'var(--text-secondary, #777)', marginTop: '0.2em', fontFamily: 'monospace' }}>
+                          CNAME {d.domain} &rarr; {d.cname}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+
+                  {/* Add domain form */}
+                  <div style={{ display: 'flex', gap: '0.3em', marginTop: '0.4em' }}>
+                    <input
+                      type="text"
+                      value={newDomain}
+                      onChange={e => setNewDomain(e.target.value)}
+                      placeholder="example.com"
+                      onKeyDown={e => e.key === 'Enter' && handleAddDomain(String(dep.id))}
+                      style={{
+                        flex: 1,
+                        padding: '3px 6px',
+                        borderRadius: 3,
+                        border: '1px solid var(--border, #2a2b3e)',
+                        backgroundColor: 'var(--bg-secondary, #1e1f32)',
+                        color: 'var(--text-primary, #e0e0e0)',
+                        fontSize: '0.78em',
+                        outline: 'none',
+                      }}
+                    />
+                    <button
+                      onClick={() => handleAddDomain(String(dep.id))}
+                      disabled={domainLoading || !newDomain.trim()}
+                      style={{ ...tinyBtnStyle, color: 'var(--accent, #7c6fe0)' }}
+                    >
+                      Add
+                    </button>
+                  </div>
+
+                  {domainError && (
+                    <div style={{ fontSize: '0.72em', color: '#e74c3c', marginTop: '0.3em' }}>{domainError}</div>
+                  )}
                 </div>
               )}
             </div>
