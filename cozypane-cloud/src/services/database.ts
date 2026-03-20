@@ -79,20 +79,16 @@ export async function provisionDatabase(
       [name],
     );
 
+    // CREATE/ALTER/DROP DATABASE cannot run inside functions or DO blocks — must be top-level.
+    // name/user are sanitized to [a-z0-9_] so double-quoting is safe.
     if (dbExists.rows.length === 0) {
-      await pool.query(
-        `DO $do$ BEGIN EXECUTE format('CREATE DATABASE %I OWNER %I', '${name}', '${user}'); END $do$`,
-      );
+      await pool.query(`CREATE DATABASE "${name}" OWNER "${user}"`);
     } else {
-      await pool.query(
-        `DO $do$ BEGIN EXECUTE format('ALTER DATABASE %I OWNER TO %I', '${name}', '${user}'); END $do$`,
-      );
+      await pool.query(`ALTER DATABASE "${name}" OWNER TO "${user}"`);
     }
 
     // Grant permissions
-    await pool.query(
-      `DO $do$ BEGIN EXECUTE format('GRANT ALL PRIVILEGES ON DATABASE %I TO %I', '${name}', '${user}'); END $do$`,
-    );
+    await pool.query(`GRANT ALL PRIVILEGES ON DATABASE "${name}" TO "${user}"`);
 
     const connectionString = `postgresql://${user}:${password}@${host}:${port}/${name}`;
 
@@ -123,15 +119,9 @@ export async function dropDatabase(
       [name],
     ).catch(() => {});
 
-    // Drop database
-    await pool.query(
-      `DO $do$ BEGIN EXECUTE format('DROP DATABASE IF EXISTS %I', '${name}'); END $do$`,
-    );
-
-    // Drop user
-    await pool.query(
-      `DO $do$ BEGIN EXECUTE format('DROP ROLE IF EXISTS %I', '${user}'); END $do$`,
-    );
+    // DROP DATABASE must be top-level (cannot run inside DO blocks)
+    await pool.query(`DROP DATABASE IF EXISTS "${name}"`);
+    await pool.query(`DROP ROLE IF EXISTS "${user}"`);
 
     console.log(`Dropped database: ${name} and user: ${user}`);
   } finally {
