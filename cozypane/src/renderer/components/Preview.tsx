@@ -82,8 +82,16 @@ export default function Preview({ localUrl, localUrls = [], productionUrl, cwd, 
     : localUrls.length > 1
       ? (localUrls.find(u => FRONTEND_PORTS.has(getPort(u))) || localUrls[0])
       : localUrl || null;
-  const effectiveLocalUrl = staticUrl || resolvedLocalUrl || manualLocalUrl || null;
-  const effectiveProdUrl = selectedDeploymentUrl || storedProdUrl || productionUrl || null;
+  const rawLocalUrl = staticUrl || resolvedLocalUrl || manualLocalUrl || null;
+  const rawProdUrl = selectedDeploymentUrl || storedProdUrl || productionUrl || null;
+
+  // Validate URLs before passing to webview — Electron's webview crashes on invalid src
+  const isValidUrl = (url: string | null): url is string => {
+    if (!url) return false;
+    try { new URL(url); return true; } catch { return false; }
+  };
+  const effectiveLocalUrl = isValidUrl(rawLocalUrl) ? rawLocalUrl : null;
+  const effectiveProdUrl = isValidUrl(rawProdUrl) ? rawProdUrl : null;
 
   useEffect(() => {
     if (effectiveLocalUrl && !effectiveProdUrl) setViewMode('local');
@@ -355,6 +363,14 @@ export default function Preview({ localUrl, localUrls = [], productionUrl, cwd, 
     if (viewMode === 'production' || viewMode === 'split') prodWebviewRef.current?.reload();
   }, [viewMode]);
 
+  const hardReload = useCallback(() => {
+    setErrors([]);
+    setConsoleLogs([]);
+    setNetworkErrors([]);
+    if (viewMode === 'local' || viewMode === 'split') localWebviewRef.current?.reloadIgnoringCache();
+    if (viewMode === 'production' || viewMode === 'split') prodWebviewRef.current?.reloadIgnoringCache();
+  }, [viewMode]);
+
   const deviceWidth = DEVICE_WIDTHS[device];
 
   useEffect(() => {
@@ -541,9 +557,14 @@ export default function Preview({ localUrl, localUrls = [], productionUrl, cwd, 
           </button>
         </div>
 
-        <button onClick={reload} style={toolBtnStyle} title="Reload">
-          {loading ? '...' : '\u21BB'}
-        </button>
+        <div style={{ display: 'flex', gap: '0.15em' }}>
+          <button onClick={reload} style={toolBtnStyle} title="Reload">
+            {loading ? '...' : '\u21BB'}
+          </button>
+          <button onClick={hardReload} style={{ ...toolBtnStyle, fontWeight: 700 }} title="Hard Reload (clear cache)">
+            {loading ? '...' : '\u21BB!'}
+          </button>
+        </div>
 
         <div style={{ display: 'flex', gap: '0.15em' }}>
           {(['phone', 'tablet', 'desktop'] as DeviceMode[]).map(d => (

@@ -11,6 +11,7 @@ import { registerSettingsHandlers } from './settings';
 import { registerGitHandlers } from './git';
 import { registerDeployHandlers, processProtocolUrl, getToken, getGithubToken, getAskpassHelperPath, writeAskpassHelper, API_BASE } from './deploy';
 import { registerPreviewHandlers } from './preview';
+import { registerUpdateCheckerHandlers, startPeriodicCheck, stopPeriodicCheck } from './update-checker';
 
 // Global error handlers
 process.on('uncaughtException', (err) => {
@@ -273,6 +274,7 @@ registerSettingsHandlers();
 registerGitHandlers();
 registerDeployHandlers(getWindow);
 registerPreviewHandlers();
+registerUpdateCheckerHandlers(getWindow);
 
 // File picker dialog
 ipcMain.handle('fs:pickFile', async () => {
@@ -461,6 +463,7 @@ app.whenReady().then(() => {
   buildMenu();
   createWindow();
   setupAutoUpdater();
+  startPeriodicCheck(getWindow);
   registerMcpConfig();
   // Write askpass helper if GitHub token exists (for git push/pull auth)
   if (getGithubToken()) writeAskpassHelper();
@@ -506,5 +509,6 @@ app.on('before-quit', (e) => {
   } else {
     killAllPtys();
     closeWatcher();
+    stopPeriodicCheck();
   }
 });

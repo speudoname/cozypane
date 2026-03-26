@@ -108,6 +108,12 @@ declare global {
     subProjects?: SubProject[];
   }
 
+  interface UpdateInfo {
+    brewOutdated: { name: string; current: string; latest: string }[];
+    claudeUpdate: { current: string; latest: string } | null;
+    checkedAt: number;
+  }
+
   interface CozyPaneAPI {
     getPathForFile: (file: File) => string;
     terminal: {
@@ -164,6 +170,12 @@ declare global {
       storeUrl: (cwd: string, data: { productionUrl?: string; lastDevCommand?: string }) => Promise<{ success?: boolean }>;
       writeDevToolsData: (data: object) => Promise<void>;
       captureScreenshot: (base64Png: string) => Promise<string>;
+    };
+    updates: {
+      check: () => Promise<UpdateInfo>;
+      getLast: () => Promise<UpdateInfo | null>;
+      getCommand: (opts: { brew: boolean; claude: boolean }) => Promise<string>;
+      onAvailable: (callback: (info: UpdateInfo) => void) => () => void;
     };
     onMenuAction: (channel: string, callback: (...args: any[]) => void) => () => void;
     git: {

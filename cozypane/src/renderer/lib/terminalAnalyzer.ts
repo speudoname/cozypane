@@ -218,6 +218,7 @@ export function detectLocalUrls(rollingBuffer: string, preStripped = false): str
           .replace(/\/\/0\.0\.0\.0:/, '//localhost:')
           .replace(/\/\/127\.0\.0\.1:/, '//localhost:')
           .replace(/\/\/\[::\]:/, '//localhost:')
+          .replace(/[.,;:!?]+$/, '')  // strip trailing punctuation
           .replace(/\/+$/, '');
         if (!seen.has(url)) {
           seen.add(url);

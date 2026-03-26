@@ -10,6 +10,7 @@ import DeployPanel from './components/DeployPanel';
 import Preview from './components/Preview';
 import ErrorBoundary from './components/ErrorBoundary';
 import TabLauncher from './components/TabLauncher';
+import UpdateBanner from './components/UpdateBanner';
 import { enableCozyMode } from './lib/cozyMode';
 
 import CommandPalette from './components/CommandPalette';
@@ -534,6 +535,18 @@ export default function App() {
     { id: 'theme-light', label: 'Theme: Light', category: 'Theme', action: () => applyTheme('cozy-light') },
   ], [addTerminalTab, sendTerminalCommand, applyTheme]);
 
+  // Run update command in a new terminal tab
+  const handleRunUpdate = useCallback((command: string) => {
+    setTerminalTabs(prev => {
+      const home = prev.find(t => t.cwd)?.cwd || '';
+      const newTab = makeTerminalTab(home, terminalCounterRef.current++, true);
+      newTab.customLabel = 'Updates';
+      newTab.autoCommand = command;
+      setActiveTerminalId(newTab.id);
+      return [...prev, newTab];
+    });
+  }, []);
+
   const handleDirtyChange = useCallback((filePath: string, isDirty: boolean) => {
     setOpenTabs(prev => prev.map(t =>
       t.path === filePath ? { ...t, dirty: isDirty } : t
@@ -563,7 +576,7 @@ export default function App() {
     }
 
     if (rightPanelTab === 'deploy') {
-      return <DeployPanel cwd={cwd} onTerminalCommand={sendTerminalCommand} claudeRunning={isClaudeRunning} onDeploymentsLoaded={setDeployments} />;
+      return <DeployPanel cwd={cwd} onTerminalCommand={sendTerminalCommand} claudeRunning={isClaudeRunning} aiAction={aiAction} onDeploymentsLoaded={setDeployments} />;
     }
 
     // Preview tab — show diff viewer or editor
@@ -682,6 +695,8 @@ export default function App() {
           )}
         </div>
       </div>
+
+      <UpdateBanner onRunUpdate={handleRunUpdate} />
 
       <div className="main-content">
         {/* Overlay prevents webview from stealing mouse events during resize */}

@@ -1,10 +1,12 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { isCozyModeEnabled, enableCozyMode, disableCozyMode } from '../lib/cozyMode';
+import type { AiAction } from '../lib/terminalAnalyzer';
 
 interface Props {
   cwd: string;
   onTerminalCommand: (command: string) => void;
   claudeRunning: boolean;
+  aiAction: AiAction;
   onDeploymentsLoaded?: (deployments: Deployment[]) => void;
 }
 
@@ -17,7 +19,7 @@ const STATUS_COLORS: Record<string, string> = {
   unhealthy: 'var(--warning, #e6b800)',
 };
 
-export default function DeployPanel({ cwd, onTerminalCommand, claudeRunning, onDeploymentsLoaded }: Props) {
+export default function DeployPanel({ cwd, onTerminalCommand, claudeRunning, aiAction, onDeploymentsLoaded }: Props) {
   const [auth, setAuth] = useState<DeployAuth>({ authenticated: false });
   const [loading, setLoading] = useState(true);
   const [deployments, setDeployments] = useState<Deployment[]>([]);
@@ -392,22 +394,23 @@ export default function DeployPanel({ cwd, onTerminalCommand, claudeRunning, onD
             d.appName === projectName || d.status === 'running' || d.status === 'unhealthy'
           );
           const isRedeploy = !!existingDeploy;
+          const claudeBusy = claudeRunning && aiAction !== 'idle';
           return (
             <>
               <button
                 onClick={handleDeploy}
-                disabled={claudeRunning}
+                disabled={claudeBusy}
                 style={{
                   ...primaryBtnStyle,
-                  opacity: claudeRunning ? 0.5 : 1,
-                  cursor: claudeRunning ? 'not-allowed' : 'pointer',
+                  opacity: claudeBusy ? 0.5 : 1,
+                  cursor: claudeBusy ? 'not-allowed' : 'pointer',
                   width: '100%',
                   backgroundColor: isRedeploy ? 'var(--accent, #7c6fe0)' : 'var(--accent, #7c6fe0)',
                 }}
               >
-                {claudeRunning ? 'Claude is busy...' : isRedeploy ? 'Redeploy' : 'CozyDeploy'}
+                {claudeBusy ? 'Claude is busy...' : isRedeploy ? 'Redeploy' : 'CozyDeploy'}
               </button>
-              {claudeRunning && (
+              {claudeBusy && (
                 <div style={{ fontSize: '0.78em', color: 'var(--text-secondary, #888)', marginTop: '0.3em', textAlign: 'center' }}>
                   Wait for Claude to finish, or open a new terminal tab
                 </div>

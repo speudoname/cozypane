@@ -77,12 +77,22 @@ contextBridge.exposeInMainWorld('cozyPane', {
     writeDevToolsData: (data: object) => ipcRenderer.invoke('preview:writeDevToolsData', data),
     captureScreenshot: (base64Png: string) => ipcRenderer.invoke('preview:captureScreenshot', base64Png),
   },
+  updates: {
+    check: () => ipcRenderer.invoke('updates:check'),
+    getLast: () => ipcRenderer.invoke('updates:getLast'),
+    getCommand: (opts: { brew: boolean; claude: boolean }) => ipcRenderer.invoke('updates:getCommand', opts),
+    onAvailable: (callback: (info: any) => void) => {
+      const listener = (_event: any, info: any) => callback(info);
+      ipcRenderer.on('updates:available', listener);
+      return () => ipcRenderer.removeListener('updates:available', listener);
+    },
+  },
   onMenuAction: (channel: string, callback: (...args: any[]) => void) => {
     const ALLOWED_CHANNELS = new Set([
       'menu:new-tab', 'menu:close-tab', 'menu:toggle-panels', 'menu:toggle-layout',
       'menu:settings', 'menu:clear-terminal', 'menu:split-view',
       'menu:zoom-in', 'menu:zoom-out', 'menu:zoom-reset',
-      'updater:status', 'deploy:auth-success', 'deploy:auth-error', 'github:auth-changed',
+      'updater:status', 'updates:available', 'deploy:auth-success', 'deploy:auth-error', 'github:auth-changed',
     ]);
     if (!ALLOWED_CHANNELS.has(channel)) return () => {};
     const listener = (_event: any, ...args: any[]) => callback(...args);

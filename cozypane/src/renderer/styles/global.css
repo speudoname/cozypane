@@ -2404,3 +2404,125 @@ html, body, #root {
 .theme-swatch.active {
   border-color: var(--accent);
 }
+
+/* ── Update Banner ── */
+.update-banner {
+  background: rgba(92, 224, 168, 0.08);
+  border-bottom: 1px solid rgba(92, 224, 168, 0.2);
+  padding: 6px 16px;
+  font-size: 12px;
+  color: var(--text);
+  flex-shrink: 0;
+}
+
+.update-banner-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.update-banner-icon {
+  color: #5ce0a8;
+  font-weight: bold;
+  font-size: 14px;
+}
+
+.update-banner-text {
+  flex: 1;
+  color: var(--text-muted);
+}
+
+.update-banner-actions {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+}
+
+.update-btn {
+  background: rgba(92, 224, 168, 0.15);
+  color: #5ce0a8;
+  border: 1px solid rgba(92, 224, 168, 0.3);
+  padding: 2px 10px;
+  border-radius: 4px;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.update-btn:hover {
+  background: rgba(92, 224, 168, 0.25);
+}
+
+.update-btn-secondary {
+  background: transparent;
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.update-btn-secondary:hover {
+  color: var(--text);
+  border-color: var(--text-muted);
+}
+
+.update-btn-dismiss {
+  background: transparent;
+  color: var(--text-muted);
+  border: none;
+  padding: 2px 6px;
+  font-size: 12px;
+  cursor: pointer;
+  opacity: 0.6;
+}
+
+.update-btn-dismiss:hover {
+  opacity: 1;
+}
+
+.update-banner-details {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid rgba(92, 224, 168, 0.1);
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.update-detail-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 1px 0;
+}
+
+.update-detail-sub {
+  padding-left: 16px;
+  opacity: 0.7;
+}
+
+.update-detail-name {
+  font-weight: 500;
+  min-width: 120px;
+}
+
+.update-detail-version {
+  color: var(--text-muted);
+  font-size: 11px;
+  flex: 1;
+}
+
+.update-btn-sm {
+  background: rgba(92, 224, 168, 0.1);
+  color: #5ce0a8;
+  border: 1px solid rgba(92, 224, 168, 0.2);
+  padding: 1px 8px;
+  border-radius: 3px;
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.update-btn-sm:hover {
+  background: rgba(92, 224, 168, 0.2);
+}
