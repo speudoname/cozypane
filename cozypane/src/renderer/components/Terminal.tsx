@@ -212,6 +212,10 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, au
       });
     };
 
+    // Flag to distinguish user-initiated scroll-down (wheel) from
+    // write-triggered scroll events. Only wheel sets this; it auto-clears.
+    const userScrollingDown = { active: false };
+
     term.element?.addEventListener('wheel', (e) => {
       if (e.deltaY < 0 && followOutputRef.current) {
         // User scrolling up — accumulate delta and only disengage after meaningful scroll.
@@ -235,13 +239,14 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, au
           if (sd.timer) { window.clearTimeout(sd.timer); sd.timer = 0; }
         }
       } else if (e.deltaY > 0 && !followOutputRef.current) {
-        // User scrolling down while disengaged — check synchronously (no RAF)
-        // to avoid races where baseY grows between event and callback.
+        // User scrolling down while disengaged — signal onScroll handler
+        // that re-engagement is allowed, then clear the flag after a brief
+        // window so that write-triggered onScroll events don't re-engage.
+        userScrollingDown.active = true;
+        setTimeout(() => { userScrollingDown.active = false; }, 150);
+
         if (!termRef.current) return;
         const buf = termRef.current.buffer.active;
-        // Use generous threshold: within one screen of bottom → re-engage.
-        // This matches the onScroll handler and ensures re-engagement even
-        // during fast streaming where baseY grows between frames.
         if (buf.viewportY >= buf.baseY - Math.max(50, termRef.current.rows)) {
           followOutputRef.current = true;
           setScrolledUp(false);
@@ -250,18 +255,15 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, au
       }
     }, { passive: true });
 
-    // Re-engage follow mode when the viewport reaches near the bottom.
-    // onScroll fires synchronously (no RAF delay), so viewportY and baseY are
-    // consistent — the RAF-based wheel-down approach had a race where baseY
-    // grew between the wheel event and the deferred check, making re-engagement
-    // impossible during fast streaming.
-    term.onScroll((viewportY: number) => {
-      if (followOutputRef.current) return; // already following
+    // Re-engage follow mode when the viewport reaches near the bottom,
+    // but ONLY when the user is actively scrolling (wheel events set this flag).
+    // We must not re-engage on onScroll alone because term.write() also fires
+    // onScroll as baseY grows — that would yank the user back to the bottom
+    // while they're trying to read scrollback during fast streaming.
+    term.onScroll(() => {
+      if (followOutputRef.current || !userScrollingDown.active) return;
       const buf = term.buffer.active;
-      // Within a full screen of the bottom → re-engage auto-scroll.
-      // Generous threshold ensures the user can catch up during fast streaming
-      // where baseY jumps 50+ lines between frames.
-      if (viewportY >= buf.baseY - Math.max(50, term.rows)) {
+      if (buf.viewportY >= buf.baseY - Math.max(50, term.rows)) {
         followOutputRef.current = true;
         setScrolledUp(false);
       }
