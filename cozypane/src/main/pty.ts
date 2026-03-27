@@ -1,5 +1,5 @@
 import { ipcMain, BrowserWindow } from 'electron';
-import { exec, execFile } from 'child_process';
+import { execFile } from 'child_process';
 import { promisify } from 'util';
 import os from 'os';
 import fs from 'fs';
@@ -11,6 +11,10 @@ const pty = require('node-pty');
 const ptyMap = new Map<string, { process: any; cwd: string }>();
 let nextId = 1;
 let getDeployEnv: () => Record<string, string> = () => ({});
+
+// Per-PTY CWD cache to avoid spawning ps+lsof every 400ms
+const cwdCache = new Map<number, { cwd: string | null; ts: number }>();
+const CWD_CACHE_TTL = 2000; // 2 seconds
 
 function getShell(): string {
   if (process.platform === 'win32') {
@@ -73,13 +77,13 @@ function parseLsofCwd(output: string): string | null {
 
 function lsofCwd(targetPid: string): Promise<string | null> {
   return new Promise(resolve => {
-    exec(`/usr/sbin/lsof -a -p ${targetPid} -d cwd -Fn 2>/dev/null`, { timeout: 3000 }, (err, stdout) => {
+    execFile('/usr/sbin/lsof', ['-a', '-p', targetPid, '-d', 'cwd', '-Fn'], { timeout: 3000 }, (err, stdout) => {
       resolve(err || !stdout ? null : parseLsofCwd(stdout));
     });
   });
 }
 
-async function getCwdForPid(pid: number): Promise<string | null> {
+async function getCwdForPidUncached(pid: number): Promise<string | null> {
   if (process.platform === 'linux') {
     return fs.promises.readlink(`/proc/${pid}/cwd`).catch(() => null);
   }
@@ -105,6 +109,14 @@ async function getCwdForPid(pid: number): Promise<string | null> {
   }
 }
 
+async function getCwdForPid(pid: number): Promise<string | null> {
+  const cached = cwdCache.get(pid);
+  if (cached && Date.now() - cached.ts < CWD_CACHE_TTL) return cached.cwd;
+  const cwd = await getCwdForPidUncached(pid);
+  cwdCache.set(pid, { cwd, ts: Date.now() });
+  return cwd;
+}
+
 export function registerPtyHandlers(getWindow: () => BrowserWindow | null, envGetter?: () => Record<string, string>) {
   if (envGetter) getDeployEnv = envGetter;
   ipcMain.on('terminal:write', (_event, id: string, data: string) => {
@@ -128,7 +140,7 @@ export function registerPtyHandlers(getWindow: () => BrowserWindow | null, envGe
   ipcMain.handle('terminal:close', (_event, id: string) => {
     const entry = ptyMap.get(id);
     if (entry) {
-      try { entry.process.kill(); } catch {}
+      try { entry.process.kill(); } catch (err) { console.error('[CozyPane] PTY kill error:', err); }
       ptyMap.delete(id);
     }
   });

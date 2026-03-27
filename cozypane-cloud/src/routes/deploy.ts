@@ -832,7 +832,7 @@ async function buildAndDeploy(params: {
 
     // Phase: health_check
     await updatePhase(deploymentId, 'health_check');
-    const health = await waitForHealthy(newContainerId, analysis.port);
+    const health = await waitForHealthy(newContainerId, analysis.port, 120000);
 
     if (health.healthy) {
       await query(
@@ -864,6 +864,25 @@ async function buildAndDeploy(params: {
         `UPDATE deployments SET status = 'unhealthy', deploy_phase = 'health_check', error_detail = $1, updated_at = NOW() WHERE id = $2`,
         [errorDetail, deploymentId],
       );
+
+      // For non-crash cases, schedule a delayed re-check — the server may come up
+      // after migrations or slow startup. Don't block the response.
+      if (errorCode === 'UNHEALTHY') {
+        const reCheckId = newContainerId;
+        const reCheckPort = analysis.port;
+        const reCheckDeployId = deploymentId;
+        setTimeout(async () => {
+          try {
+            const reCheck = await waitForHealthy(reCheckId, reCheckPort, 60000);
+            if (reCheck.healthy) {
+              await query(
+                `UPDATE deployments SET status = 'running', deploy_phase = NULL, error_detail = NULL, updated_at = NOW() WHERE id = $1 AND status = 'unhealthy'`,
+                [reCheckDeployId],
+              );
+            }
+          } catch { /* non-fatal background check */ }
+        }, 5000);
+      }
     }
   } catch (err: any) {
     if (newContainerId) await stopContainer(newContainerId).catch(() => {});

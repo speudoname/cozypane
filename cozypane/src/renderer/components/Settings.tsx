@@ -88,15 +88,17 @@ export default function Settings() {
           <div className="settings-section-title">Theme</div>
           <div className="theme-picker">
             {THEMES.map(t => (
-              <div
+              <button
                 key={t.id}
                 className={`theme-swatch ${theme === t.id ? 'active' : ''}`}
                 style={{ background: t.bg, color: t.fg }}
                 onClick={() => handleThemeChange(t.id)}
                 title={t.name}
+                aria-pressed={theme === t.id}
+                aria-label={t.name}
               >
                 {t.name}
-              </div>
+              </button>
             ))}
           </div>
         </div>

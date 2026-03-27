@@ -4,9 +4,18 @@ import os from 'os';
 import fs from 'fs';
 import { getSlashCommands } from './slash-commands';
 
+function assertSafePath(filePath: string): void {
+  const resolved = path.resolve(filePath);
+  const homeDir = os.homedir();
+  if (!resolved.startsWith(homeDir + path.sep) && resolved !== homeDir) {
+    throw new Error(`Path not permitted: ${resolved}`);
+  }
+}
+
 export function registerFsHandlers() {
   ipcMain.handle('fs:readdir', async (_event, dirPath: string) => {
     try {
+      assertSafePath(dirPath);
       const entries = await fs.promises.readdir(dirPath, { withFileTypes: true });
       return entries
         .filter(entry => entry.name !== '.git')
@@ -28,6 +37,7 @@ export function registerFsHandlers() {
 
   ipcMain.handle('fs:readfile', async (_event, filePath: string) => {
     try {
+      assertSafePath(filePath);
       const stat = await fs.promises.stat(filePath);
       if (stat.size > 1024 * 1024) {
         return { error: 'File too large to preview (>1MB)' };
@@ -42,6 +52,7 @@ export function registerFsHandlers() {
   // Read binary file as base64 (for images, etc.)
   ipcMain.handle('fs:readBinary', async (_event, filePath: string) => {
     try {
+      assertSafePath(filePath);
       const stat = await fs.promises.stat(filePath);
       if (stat.size > 20 * 1024 * 1024) {
         return { error: 'File too large to preview (>20MB)' };
@@ -66,6 +77,7 @@ export function registerFsHandlers() {
 
   ipcMain.handle('fs:writefile', async (_event, filePath: string, content: string) => {
     try {
+      assertSafePath(filePath);
       await fs.promises.writeFile(filePath, content, 'utf-8');
       return { success: true };
     } catch (err: any) {

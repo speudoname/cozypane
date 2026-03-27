@@ -81,11 +81,10 @@ RUN ${installCmd(pm)}
 COPY . .
 RUN ${pm === 'npm' ? 'npm run' : pm} build
 
-FROM nginx:alpine
+FROM nginxinc/nginx-unprivileged:alpine
 COPY --from=builder /app/dist /usr/share/nginx/html
-RUN printf 'server {\\n  listen 8080;\\n  location / {\\n    root /usr/share/nginx/html;\\n    try_files $uri /index.html;\\n  }\\n}\\n' > /etc/nginx/conf.d/default.conf
+RUN echo 'server { listen 8080; root /usr/share/nginx/html; index index.html; location / { try_files $uri $uri/ /index.html; } }' > /etc/nginx/conf.d/default.conf
 EXPOSE 8080
-CMD ["nginx", "-g", "daemon off;"]
 `;
 }
 
@@ -190,11 +189,10 @@ CMD ${analysis.migrationCommand ? `sh -c "${migrationPrefix(analysis)}/server"` 
 }
 
 function staticDockerfile(): string {
-  return `FROM nginx:alpine
+  return `FROM nginxinc/nginx-unprivileged:alpine
 COPY . /usr/share/nginx/html
-RUN printf 'server {\\n  listen 8080;\\n  location / {\\n    root /usr/share/nginx/html;\\n    try_files $uri /index.html;\\n  }\\n}\\n' > /etc/nginx/conf.d/default.conf
+RUN echo 'server { listen 8080; root /usr/share/nginx/html; index index.html; location / { try_files $uri $uri/ /index.html; } }' > /etc/nginx/conf.d/default.conf
 EXPOSE 8080
-CMD ["nginx", "-g", "daemon off;"]
 `;
 }
 

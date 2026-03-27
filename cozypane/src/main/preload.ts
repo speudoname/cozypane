@@ -76,6 +76,7 @@ contextBridge.exposeInMainWorld('cozyPane', {
     storeUrl: (cwd: string, data: { productionUrl?: string; lastDevCommand?: string }) => ipcRenderer.invoke('preview:storeUrl', cwd, data),
     writeDevToolsData: (data: object) => ipcRenderer.invoke('preview:writeDevToolsData', data),
     captureScreenshot: (base64Png: string) => ipcRenderer.invoke('preview:captureScreenshot', base64Png),
+    suggestPort: (preferredPort?: number) => ipcRenderer.invoke('preview:suggestPort', preferredPort),
   },
   updates: {
     check: () => ipcRenderer.invoke('updates:check'),

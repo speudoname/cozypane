@@ -337,7 +337,9 @@ ipcMain.handle('fs:clipboardFilePaths', async () => {
           paths.push(m[1]);
         }
         if (paths.length > 0) return { paths };
-      } catch {}
+      } catch (err) {
+        console.warn('[CozyPane] Could not parse clipboard file paths:', err, text?.slice(0, 200));
+      }
     }
   }
   return { paths: [] };
@@ -411,7 +413,10 @@ function registerMcpConfig() {
       if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
         config = parsed;
       }
-    } catch {}
+    } catch (err) {
+      console.error('[CozyPane] ~/.claude.json is malformed — skipping MCP registration to avoid data loss:', err);
+      return;
+    }
 
     if (!config.mcpServers) config.mcpServers = {};
 

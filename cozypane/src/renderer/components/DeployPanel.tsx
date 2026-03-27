@@ -288,7 +288,7 @@ export default function DeployPanel({ cwd, onTerminalCommand, claudeRunning, aiA
               {cozyModeLoading ? 'Enabling...' : 'Enable Cozy Mode'}
             </button>
             {deployError && (
-              <div style={{ color: '#e74c3c', fontSize: '0.82em', marginTop: '0.6em' }}>{deployError}</div>
+              <div style={{ color: 'var(--danger)', fontSize: '0.82em', marginTop: '0.6em' }}>{deployError}</div>
             )}
           </div>
         </div>
@@ -363,6 +363,9 @@ export default function DeployPanel({ cwd, onTerminalCommand, claudeRunning, aiA
           <button
             onClick={handleCozyModeToggle}
             disabled={cozyModeLoading}
+            role="switch"
+            aria-checked={cozyMode}
+            aria-label="Toggle Cozy Mode"
             style={{
               width: 38,
               height: 20,
@@ -422,7 +425,7 @@ export default function DeployPanel({ cwd, onTerminalCommand, claudeRunning, aiA
           );
         })()}
         {deployError && (
-          <div style={{ color: '#e74c3c', fontSize: '0.82em', marginTop: '0.4em' }}>{deployError}</div>
+          <div style={{ color: 'var(--danger)', fontSize: '0.82em', marginTop: '0.4em' }}>{deployError}</div>
         )}
       </div>
 
@@ -510,7 +513,7 @@ export default function DeployPanel({ cwd, onTerminalCommand, claudeRunning, aiA
                     Visit
                   </button>
                 )}
-                <button onClick={() => handleDelete(dep.id)} style={{ ...tinyBtnStyle, color: '#e74c3c' }}>
+                <button onClick={() => handleDelete(dep.id)} style={{ ...tinyBtnStyle, color: 'var(--danger)' }}>
                   Delete
                 </button>
               </div>
@@ -538,7 +541,7 @@ export default function DeployPanel({ cwd, onTerminalCommand, claudeRunning, aiA
                         <span style={{ fontSize: '0.82em', color: 'var(--text-primary, #e0e0e0)' }}>{d.domain}</span>
                         <div style={{ display: 'flex', gap: '0.3em', alignItems: 'center' }}>
                           {d.verified ? (
-                            <span style={{ fontSize: '0.72em', color: '#4caf50', fontWeight: 600 }}>Connected</span>
+                            <span style={{ fontSize: '0.72em', color: 'var(--success)', fontWeight: 600 }}>Connected</span>
                           ) : (
                             <button
                               onClick={() => handleVerifyDomain(String(dep.id), String(d.id))}
@@ -551,7 +554,7 @@ export default function DeployPanel({ cwd, onTerminalCommand, claudeRunning, aiA
                           <button
                             onClick={() => handleRemoveDomain(String(dep.id), String(d.id))}
                             disabled={domainLoading}
-                            style={{ ...tinyBtnStyle, color: '#e74c3c', padding: '1px 5px' }}
+                            style={{ ...tinyBtnStyle, color: 'var(--danger)', padding: '1px 5px' }}
                           >
                             x
                           </button>
@@ -594,7 +597,7 @@ export default function DeployPanel({ cwd, onTerminalCommand, claudeRunning, aiA
                   </div>
 
                   {domainError && (
-                    <div style={{ fontSize: '0.72em', color: '#e74c3c', marginTop: '0.3em' }}>{domainError}</div>
+                    <div style={{ fontSize: '0.72em', color: 'var(--danger)', marginTop: '0.3em' }}>{domainError}</div>
                   )}
                 </div>
               )}

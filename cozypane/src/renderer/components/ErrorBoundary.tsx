@@ -32,16 +32,16 @@ export default class ErrorBoundary extends React.Component<Props, State> {
         return (
           <div style={{
             display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
-            height: '100%', background: '#1a1b2e', color: '#e4e4f0', fontFamily: 'monospace', padding: '1.5em',
+            height: '100%', background: 'var(--bg-primary)', color: 'var(--text-primary)', fontFamily: 'monospace', padding: '1.5em',
           }}>
             <div style={{ fontSize: '1em', marginBottom: 8 }}>{this.props.panel} crashed</div>
-            <pre style={{ color: '#f06c7e', fontSize: 12, maxWidth: '90%', overflow: 'auto', marginBottom: 14, textAlign: 'center' }}>
+            <pre style={{ color: 'var(--danger)', fontSize: 12, maxWidth: '90%', overflow: 'auto', marginBottom: 14, textAlign: 'center' }}>
               {this.state.error?.message}
             </pre>
             <button
               onClick={this.handleRetry}
               style={{
-                padding: '6px 16px', background: '#7c6ef0', color: '#fff',
+                padding: '6px 16px', background: 'var(--accent)', color: '#fff',
                 border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 13,
               }}
             >
@@ -54,16 +54,16 @@ export default class ErrorBoundary extends React.Component<Props, State> {
       return (
         <div style={{
           display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
-          height: '100vh', background: '#1a1b2e', color: '#e4e4f0', fontFamily: 'monospace',
+          height: '100vh', background: 'var(--bg-primary)', color: 'var(--text-primary)', fontFamily: 'monospace',
         }}>
           <h2 style={{ marginBottom: 12 }}>Something went wrong</h2>
-          <pre style={{ color: '#f06c7e', fontSize: 13, maxWidth: '80%', overflow: 'auto', marginBottom: 20 }}>
+          <pre style={{ color: 'var(--danger)', fontSize: 13, maxWidth: '80%', overflow: 'auto', marginBottom: 20 }}>
             {this.state.error?.message}
           </pre>
           <button
             onClick={() => window.location.reload()}
             style={{
-              padding: '8px 20px', background: '#7c6ef0', color: '#fff',
+              padding: '8px 20px', background: 'var(--accent)', color: '#fff',
               border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 14,
             }}
           >

@@ -322,6 +322,12 @@ export function analyzeProject(dir: string): ProjectAnalysis {
     if (analysis.recommendedTier === 'small' && analysis.needsDatabase) {
       analysis.recommendedTier = 'medium';
     }
+    // Read EXPOSE port from user's Dockerfile so health checks and Traefik use the right port
+    const dockerfileContent = readFileSafe(join(dir, 'Dockerfile')) || '';
+    const exposeMatch = dockerfileContent.match(/^EXPOSE\s+(\d+)/m);
+    if (exposeMatch) {
+      analysis.port = parseInt(exposeMatch[1], 10);
+    }
   }
 
   return analysis;

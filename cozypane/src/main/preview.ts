@@ -113,7 +113,11 @@ function loadPreviewUrls(): Record<string, { productionUrl?: string; lastDevComm
 }
 
 function savePreviewUrls(data: Record<string, any>) {
-  fs.writeFileSync(getPreviewUrlsPath(), JSON.stringify(data, null, 2));
+  try {
+    fs.writeFileSync(getPreviewUrlsPath(), JSON.stringify(data, null, 2));
+  } catch (err) {
+    console.error('[CozyPane] Failed to save preview URLs:', err);
+  }
 }
 
 // --- Project detection (for static HTML serving) ---
@@ -197,14 +201,47 @@ export function registerPreviewHandlers() {
   });
 
   ipcMain.handle('preview:writeDevToolsData', async (_event, data: object) => {
-    const filePath = path.join(app.getPath('userData'), 'preview-devtools.json');
-    fs.writeFileSync(filePath, JSON.stringify(data, null, 2));
+    try {
+      const filePath = path.join(app.getPath('userData'), 'preview-devtools.json');
+      fs.writeFileSync(filePath, JSON.stringify(data, null, 2));
+    } catch (err: any) {
+      return { error: err.message || 'Failed to write devtools data' };
+    }
   });
 
   ipcMain.handle('preview:captureScreenshot', async (_event, base64Png: string) => {
-    const filePath = path.join(app.getPath('userData'), 'preview-screenshot.png');
-    fs.writeFileSync(filePath, Buffer.from(base64Png, 'base64'));
-    return filePath;
+    try {
+      const filePath = path.join(app.getPath('userData'), 'preview-screenshot.png');
+      fs.writeFileSync(filePath, Buffer.from(base64Png, 'base64'));
+      return filePath;
+    } catch (err: any) {
+      return { error: err.message || 'Failed to capture screenshot' };
+    }
+  });
+
+  ipcMain.handle('preview:suggestPort', async (_event, preferredPort?: number) => {
+    // Check a preferred port first, then fall back to common dev ports
+    const portsToTry = preferredPort
+      ? [preferredPort, 3000, 5173, 8080, 4200, 4321, 5000, 8000]
+      : [3000, 5173, 8080, 4200, 4321, 5000, 8000];
+    const seen = new Set<number>();
+    for (const port of portsToTry) {
+      if (seen.has(port)) continue;
+      seen.add(port);
+      const free = await new Promise<boolean>((resolve) => {
+        const s = net.createServer();
+        s.listen(port, '127.0.0.1', () => { s.close(() => resolve(true)); });
+        s.on('error', () => resolve(false));
+      });
+      if (free) return { port };
+    }
+    // All common ports taken — find any free one
+    try {
+      const port = await findFreePort(3000);
+      return { port };
+    } catch {
+      return { port: 3000 };
+    }
   });
 
   // Cleanup on quit

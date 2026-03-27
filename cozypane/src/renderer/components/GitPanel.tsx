@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 
 interface RemoteInfo {
   hasRemote: boolean;
@@ -16,9 +16,7 @@ interface Props {
   claudeRunning: boolean;
 }
 
-function shellEscape(s: string): string {
-  return "'" + s.replace(/'/g, "'\\''") + "'";
-}
+import { shellEscape } from '../lib/shellUtils';
 
 export default function GitPanel({ cwd, onDiffClick, onBranchChange, activityEvents, onTerminalCommand, claudeRunning }: Props) {
   const [isRepo, setIsRepo] = useState(false);
@@ -220,9 +218,15 @@ export default function GitPanel({ cwd, onDiffClick, onBranchChange, activityEve
     onDiffClick(filePath, result.before ?? '', result.after ?? '');
   };
 
-  const aiTouchedFiles = files.filter(f => {
-    return activityEvents.some(e => e.path.endsWith(f.path) || f.path.endsWith(e.name));
-  });
+  const aiTouchedPaths = useMemo(() => {
+    const s = new Set<string>();
+    for (const e of activityEvents) { s.add(e.path); s.add(e.name); }
+    return s;
+  }, [activityEvents]);
+
+  const aiTouchedFiles = useMemo(() =>
+    files.filter(f => aiTouchedPaths.has(f.path) || aiTouchedPaths.has(f.path.split('/').pop() ?? '')),
+  [files, aiTouchedPaths]);
 
   const handleRevertAll = () => {
     const paths = aiTouchedFiles.map(f => shellEscape(f.path)).join(' ');

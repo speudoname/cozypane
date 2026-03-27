@@ -5,7 +5,7 @@ import crypto from 'crypto';
 import { encryptString, decryptString } from './crypto';
 import { apiFetch as sharedApiFetch, createTarball as sharedCreateTarball, APP_NAME_REGEX } from './deploy-shared';
 
-let pendingOAuthState: string | null = null;
+const pendingOAuthStates = new Map<string, number>(); // state → expiry timestamp (ms)
 
 export const API_BASE = process.env.COZYPANE_API_URL || 'https://api.cozypane.com';
 
@@ -41,20 +41,16 @@ function clearAuth() {
   } catch {}
 }
 
-// Use shared encrypt/decrypt from crypto.ts
-const encryptToken = encryptString;
-const decryptToken = decryptString;
-
 export function getToken(): string {
   const auth = readAuth();
   if (!auth) return '';
-  return decryptToken(auth.encryptedToken);
+  return decryptString(auth.encryptedToken);
 }
 
 export function getGithubToken(): string {
   const auth = readAuth();
   if (!auth?.encryptedGithubToken) return '';
-  return decryptToken(auth.encryptedGithubToken);
+  return decryptString(auth.encryptedGithubToken);
 }
 
 export function getAskpassHelperPath(): string {
@@ -120,7 +116,7 @@ export function registerDeployHandlers(getWindow: () => BrowserWindow | null) {
     const clientId = 'Ov23liUojbnQSvCY9Eq9';
     const redirectUri = encodeURIComponent('cozypane://auth/callback');
     const state = crypto.randomUUID();
-    pendingOAuthState = state;
+    pendingOAuthStates.set(state, Date.now() + 5 * 60 * 1000); // 5-min expiry
     const oauthUrl = `https://github.com/login/oauth/authorize?client_id=${clientId}&redirect_uri=${redirectUri}&scope=repo,read:user&state=${state}`;
     await shell.openExternal(oauthUrl);
   });
@@ -132,7 +128,7 @@ export function registerDeployHandlers(getWindow: () => BrowserWindow | null) {
 
   ipcMain.handle('deploy:getAuth', async () => {
     const auth = readAuth();
-    if (!auth || !decryptToken(auth.encryptedToken)) {
+    if (!auth || !decryptString(auth.encryptedToken)) {
       return { authenticated: false };
     }
     return {
@@ -269,19 +265,15 @@ export async function processProtocolUrl(url: string, getWindow: () => BrowserWi
     if (parsed.hostname === 'auth' && parsed.pathname.startsWith('/callback')) {
       // Verify OAuth state to prevent CSRF
       const returnedState = parsed.searchParams.get('state');
-      console.log('[CozyPane] OAuth state check — pending:', !!pendingOAuthState, 'match:', returnedState === pendingOAuthState);
-      if (!pendingOAuthState || returnedState !== pendingOAuthState) {
-        console.error('[CozyPane] OAuth state mismatch — possible CSRF attempt');
-        // If user already has auth but no github token, the state may have been cleared
-        // by a page reload or app restart. Allow re-auth if state is null (not mismatched).
-        if (pendingOAuthState && returnedState !== pendingOAuthState) {
-          pendingOAuthState = null;
-          return;
-        }
-        // State was null (cleared by restart) — proceed anyway for better UX
-        console.log('[CozyPane] Allowing callback despite null pending state');
+      const expiry = returnedState ? pendingOAuthStates.get(returnedState) : undefined;
+      const isValid = expiry !== undefined && Date.now() < expiry;
+      console.log('[CozyPane] OAuth state check — known:', isValid, 'returned:', !!returnedState);
+      if (!isValid) {
+        console.error('[CozyPane] OAuth state mismatch or expired — rejecting callback');
+        if (returnedState) pendingOAuthStates.delete(returnedState);
+        return;
       }
-      pendingOAuthState = null;
+      pendingOAuthStates.delete(returnedState!);
 
       const code = parsed.searchParams.get('code');
       if (code) {
@@ -297,12 +289,12 @@ export async function processProtocolUrl(url: string, getWindow: () => BrowserWi
           const data = await result.json() as { token: string; githubToken?: string; user: { username: string; avatarUrl: string } };
           console.log('[CozyPane] OAuth success — has githubToken:', !!data.githubToken, 'user:', data.user?.username);
           const authData: StoredAuth = {
-            encryptedToken: encryptToken(data.token),
+            encryptedToken: encryptString(data.token),
             username: data.user.username,
             avatarUrl: data.user.avatarUrl,
           };
           if (data.githubToken) {
-            authData.encryptedGithubToken = encryptToken(data.githubToken);
+            authData.encryptedGithubToken = encryptString(data.githubToken);
             writeAskpassHelper();
           }
           writeAuth(authData);

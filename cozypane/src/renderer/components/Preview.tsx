@@ -64,8 +64,12 @@ export default function Preview({ localUrl, localUrls = [], productionUrl, cwd, 
   const [selectedLocalUrl, setSelectedLocalUrl] = useState<string | null>(null);
   const [manualUrlInput, setManualUrlInput] = useState('');
   const [staticUrl, setStaticUrl] = useState<string | null>(null);
+  const [staticError, setStaticError] = useState<string | null>(null);
   const [sendingToClaude, setSendingToClaude] = useState(false);
   const [claudeWarning, setClaudeWarning] = useState(false);
+  const [projectInfo, setProjectInfo] = useState<{ type: string | null; devCommand: string | null } | null>(null);
+  const [suggestedPort, setSuggestedPort] = useState<number | null>(null);
+  const [startingDev, setStartingDev] = useState(false);
 
   const [matchedDeployments, setMatchedDeployments] = useState<Deployment[]>([]);
   const [selectedDeploymentUrl, setSelectedDeploymentUrl] = useState<string | null>(null);
@@ -129,6 +133,7 @@ export default function Preview({ localUrl, localUrls = [], productionUrl, cwd, 
       window.cozyPane.preview.stopStatic(staticCwdRef.current).catch(() => {});
       staticCwdRef.current = '';
       setStaticUrl(null);
+      setStaticError(null);
     }
     if (localUrl) return;
     let cancelled = false;
@@ -139,13 +144,41 @@ export default function Preview({ localUrl, localUrls = [], productionUrl, cwd, 
         if (projectResult?.serveStatic) {
           const result = await window.cozyPane.preview.serveStatic(cwd);
           if (cancelled) return;
-          staticCwdRef.current = cwd;
-          setStaticUrl(`http://localhost:${result.port}`);
+          if (result.error) {
+            setStaticError(`Could not start static server: ${result.error}`);
+          } else {
+            staticCwdRef.current = cwd;
+            setStaticUrl(`http://localhost:${result.port}`);
+          }
         }
-      } catch {}
+      } catch (e) {
+        if (!cancelled) setStaticError(`Could not start static server: ${String(e)}`);
+      }
     })();
     return () => { cancelled = true; };
   }, [cwd, localUrl]);
+
+  // Detect project type and suggest port when no dev server is running
+  useEffect(() => {
+    if (!cwd || effectiveLocalUrl) { setProjectInfo(null); return; }
+    let cancelled = false;
+    (async () => {
+      try {
+        const [info, stored, portResult] = await Promise.all([
+          window.cozyPane.preview.detectProject(cwd),
+          window.cozyPane.preview.getStoredUrl(cwd),
+          window.cozyPane.preview.suggestPort(),
+        ]);
+        if (cancelled) return;
+        const devCommand = stored?.lastDevCommand || info?.devCommand || null;
+        setProjectInfo({ type: info?.type || null, devCommand });
+        setSuggestedPort(portResult?.port || 3000);
+      } catch {
+        if (!cancelled) { setProjectInfo(null); setSuggestedPort(null); }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [cwd, effectiveLocalUrl]);
 
   // Debounced auto-write devtools data for MCP bridge (2s)
   useEffect(() => {
@@ -359,17 +392,40 @@ export default function Preview({ localUrl, localUrls = [], productionUrl, cwd, 
     setErrors([]);
     setConsoleLogs([]);
     setNetworkErrors([]);
-    if (viewMode === 'local' || viewMode === 'split') localWebviewRef.current?.reload();
-    if (viewMode === 'production' || viewMode === 'split') prodWebviewRef.current?.reload();
-  }, [viewMode]);
-
-  const hardReload = useCallback(() => {
-    setErrors([]);
-    setConsoleLogs([]);
-    setNetworkErrors([]);
+    // Always ignore cache — prevents stale error responses (e.g. cached 503) from persisting
     if (viewMode === 'local' || viewMode === 'split') localWebviewRef.current?.reloadIgnoringCache();
     if (viewMode === 'production' || viewMode === 'split') prodWebviewRef.current?.reloadIgnoringCache();
   }, [viewMode]);
+
+  const goBack = useCallback(() => {
+    if (viewMode === 'local' || viewMode === 'split') localWebviewRef.current?.goBack();
+    if (viewMode === 'production' || viewMode === 'split') prodWebviewRef.current?.goBack();
+  }, [viewMode]);
+
+  const goForward = useCallback(() => {
+    if (viewMode === 'local' || viewMode === 'split') localWebviewRef.current?.goForward();
+    if (viewMode === 'production' || viewMode === 'split') prodWebviewRef.current?.goForward();
+  }, [viewMode]);
+
+  const goHome = useCallback(() => {
+    setErrors([]);
+    setConsoleLogs([]);
+    setNetworkErrors([]);
+    if (viewMode === 'local' || viewMode === 'split') {
+      const wv = localWebviewRef.current;
+      if (wv && effectiveLocalUrl) {
+        // Navigate to localhost root (e.g. http://localhost:5173)
+        try { const u = new URL(effectiveLocalUrl); wv.src = u.origin; } catch { wv.src = effectiveLocalUrl; }
+      }
+    }
+    if (viewMode === 'production' || viewMode === 'split') {
+      const wv = prodWebviewRef.current;
+      if (wv && effectiveProdUrl) {
+        // Navigate to domain root (e.g. https://myapp.com)
+        try { const u = new URL(effectiveProdUrl); wv.src = u.origin; } catch { wv.src = effectiveProdUrl; }
+      }
+    }
+  }, [viewMode, effectiveLocalUrl, effectiveProdUrl]);
 
   const deviceWidth = DEVICE_WIDTHS[device];
 
@@ -457,23 +513,79 @@ export default function Preview({ localUrl, localUrls = [], productionUrl, cwd, 
     </div>
   );
 
+  const startDevServer = useCallback(async () => {
+    if (!projectInfo?.devCommand || !suggestedPort) return;
+    setStartingDev(true);
+    const cmd = projectInfo.devCommand;
+    // Remember the command for next time
+    if (cwd) window.cozyPane.preview.storeUrl(cwd, { lastDevCommand: cmd }).catch(() => {});
+    // Append --port flag for frameworks that support it
+    const portFlag = cmd.includes('vite') || cmd.includes('next') || cmd.includes('nuxi')
+      ? ` --port ${suggestedPort}`
+      : cmd.includes('flask') ? ` --port ${suggestedPort}`
+      : cmd.includes('runserver') ? ` ${suggestedPort}`
+      : cmd.includes('ng serve') ? ` --port ${suggestedPort}`
+      : '';
+    onSendToTerminal(cmd + portFlag);
+    // Reset after a delay — the URL detection will pick up the server
+    setTimeout(() => setStartingDev(false), 5000);
+  }, [projectInfo, suggestedPort, cwd, onSendToTerminal]);
+
   const renderEmptyState = () => (
     <div style={{
       display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
       height: '100%', color: 'var(--text-secondary, #888)', gap: '1em', padding: '2em',
     }}>
-      <div style={{ fontSize: '1.1em', color: 'var(--text-primary, #e0e0e0)', textAlign: 'center' }}>
-        {viewMode === 'production' ? 'No production URL' : 'No dev server running'}
-      </div>
-      {viewMode !== 'production' && (
-        <div style={{ fontSize: '0.82em', color: 'var(--text-secondary, #888)', textAlign: 'center', maxWidth: 380 }}>
-          Run your dev server in the terminal — preview will auto-connect when it starts.
+      {staticError && (
+        <div style={{
+          fontSize: '0.82em', color: 'var(--danger, #f06c7e)', textAlign: 'center', maxWidth: 380,
+          background: 'rgba(240, 108, 126, 0.1)', padding: '0.6em 1em', borderRadius: 6,
+        }}>
+          {staticError}
         </div>
       )}
-      {viewMode === 'production' && (
-        <div style={{ fontSize: '0.82em', color: 'var(--text-secondary, #888)', textAlign: 'center', maxWidth: 380 }}>
-          Deploy your project to see the production preview, or enter a URL below.
-        </div>
+      {viewMode === 'production' ? (
+        <>
+          <div style={{ fontSize: '1.1em', color: 'var(--text-primary, #e0e0e0)', textAlign: 'center' }}>
+            No production URL
+          </div>
+          <div style={{ fontSize: '0.82em', color: 'var(--text-secondary, #888)', textAlign: 'center', maxWidth: 380 }}>
+            Deploy your project to see the production preview, or enter a URL below.
+          </div>
+        </>
+      ) : (
+        <>
+          <div style={{ fontSize: '1.1em', color: 'var(--text-primary, #e0e0e0)', textAlign: 'center' }}>
+            No dev server running
+          </div>
+          {projectInfo?.devCommand ? (
+            <>
+              <div style={{ fontSize: '0.82em', color: 'var(--text-secondary, #888)', textAlign: 'center', maxWidth: 380 }}>
+                Detected <span style={{ color: 'var(--accent, #7c6fe0)', fontWeight: 600 }}>{projectInfo.type}</span> project
+                {suggestedPort ? <> — port <span style={{ color: 'var(--text-primary, #e0e0e0)', fontWeight: 600 }}>{suggestedPort}</span> is available</> : null}
+              </div>
+              <button
+                onClick={startDevServer}
+                disabled={startingDev}
+                style={{
+                  padding: '10px 24px', borderRadius: 8, border: 'none',
+                  backgroundColor: 'var(--accent, #7c6fe0)', color: '#fff',
+                  fontSize: '0.9em', fontWeight: 600, cursor: startingDev ? 'wait' : 'pointer',
+                  opacity: startingDev ? 0.7 : 1, marginTop: '0.3em',
+                }}
+              >
+                {startingDev ? 'Starting...' : `Start Dev Server`}
+              </button>
+              <div style={{ fontSize: '0.72em', color: 'var(--text-muted, #666)', fontFamily: 'var(--font-mono)' }}>
+                {projectInfo.devCommand}{suggestedPort ? ` (port ${suggestedPort})` : ''}
+              </div>
+            </>
+          ) : (
+            <div style={{ fontSize: '0.82em', color: 'var(--text-secondary, #888)', textAlign: 'center', maxWidth: 380 }}>
+              Run your dev server in the terminal — preview will auto-connect when it starts.
+            </div>
+          )}
+        </>
       )}
       <div style={{ display: 'flex', gap: '0.3em', width: '100%', maxWidth: 400, marginTop: '0.5em' }}>
         <input
@@ -558,11 +670,11 @@ export default function Preview({ localUrl, localUrls = [], productionUrl, cwd, 
         </div>
 
         <div style={{ display: 'flex', gap: '0.15em' }}>
+          <button onClick={goBack} style={toolBtnStyle} title="Back">&#x2190;</button>
+          <button onClick={goForward} style={toolBtnStyle} title="Forward">&#x2192;</button>
+          <button onClick={goHome} style={toolBtnStyle} title="Home (server root)">&#x2302;</button>
           <button onClick={reload} style={toolBtnStyle} title="Reload">
             {loading ? '...' : '\u21BB'}
-          </button>
-          <button onClick={hardReload} style={{ ...toolBtnStyle, fontWeight: 700 }} title="Hard Reload (clear cache)">
-            {loading ? '...' : '\u21BB!'}
           </button>
         </div>
 

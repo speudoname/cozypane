@@ -31,28 +31,33 @@ function getSettingsPath(): string {
   return path.join(app.getPath('userData'), 'settings.json');
 }
 
+const DEFAULT_SETTINGS: StoredSettings = { provider: 'anthropic', model: 'claude-sonnet-4-20250514', encryptedKey: '' };
+let cachedSettings: StoredSettings | null = null;
+
 function readSettings(): StoredSettings {
+  if (cachedSettings) return cachedSettings;
   try {
     const data = fs.readFileSync(getSettingsPath(), 'utf-8');
-    return JSON.parse(data);
+    cachedSettings = JSON.parse(data);
+    return cachedSettings!;
   } catch {
-    return { provider: 'anthropic', model: 'claude-sonnet-4-20250514', encryptedKey: '' };
+    cachedSettings = { ...DEFAULT_SETTINGS };
+    return cachedSettings;
   }
 }
 
 function writeSettings(settings: StoredSettings) {
+  cachedSettings = settings;
   const dir = path.dirname(getSettingsPath());
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(getSettingsPath(), JSON.stringify(settings, null, 2));
+  // Write async to avoid blocking the main process event loop
+  fs.promises.writeFile(getSettingsPath(), JSON.stringify(settings, null, 2), { mode: 0o600 })
+    .catch(err => console.error('[CozyPane] Failed to persist settings:', err));
 }
-
-// Use shared encrypt/decrypt from crypto.ts
-const encryptKey = encryptString;
-const decryptKey = decryptString;
 
 export async function callLlm(prompt: string, maxTokens: number): Promise<{ text?: string; error?: string }> {
   const settings = readSettings();
-  const apiKey = decryptKey(settings.encryptedKey);
+  const apiKey = decryptString(settings.encryptedKey);
   if (!apiKey) return { error: 'No API key configured. Add one in Settings.' };
 
   if (settings.provider === 'anthropic') {
@@ -111,7 +116,7 @@ export async function callLlm(prompt: string, maxTokens: number): Promise<{ text
 export function registerSettingsHandlers() {
   ipcMain.handle('settings:get', () => {
     const settings = readSettings();
-    const apiKey = decryptKey(settings.encryptedKey);
+    const apiKey = decryptString(settings.encryptedKey);
     return {
       provider: settings.provider,
       model: settings.model,
@@ -148,10 +153,11 @@ export function registerSettingsHandlers() {
       let encryptedKey = current.encryptedKey;
 
       if (data.apiKey !== undefined) {
-        encryptedKey = encryptKey(data.apiKey);
+        encryptedKey = encryptString(data.apiKey);
       }
 
       writeSettings({
+        ...current,
         provider: data.provider,
         model: data.model,
         encryptedKey,

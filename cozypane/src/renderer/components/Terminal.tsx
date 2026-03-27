@@ -3,6 +3,7 @@ import { Terminal as XTerm } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import { stripAnsi, TUI_ENTER, TUI_EXIT, decideFocus, detectClaudeExit, analyzeAction, detectDeployUrl, detectLocalUrls, type AiAction } from '../lib/terminalAnalyzer';
+import { shellEscape } from '../lib/shellUtils';
 import CommandInput from './CommandInput';
 import '@xterm/xterm/css/xterm.css';
 
@@ -36,6 +37,7 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, au
   const rollingBufferRef = useRef<string[]>([]);
   const lastDeployUrlRef = useRef('');
   const lastLocalUrlRef = useRef('');
+  const lastLocalUrlsRef = useRef<string[]>([]);
   const activeProcessRef = useRef('');
   const onCwdChangeRef = useRef(onCwdChange);
   onCwdChangeRef.current = onCwdChange;
@@ -90,12 +92,26 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, au
     const id = terminalIdRef.current;
     if (!fitAddonRef.current || !termRef.current || !id) return;
     try {
+      // Snapshot relative position before fit() rewraps the buffer.
+      // viewportY is rows-from-bottom when user has scrolled up; preserve that.
+      const term = termRef.current;
+      const bufBefore = term.buffer.active;
+      const rowsFromBottom = followOutputRef.current
+        ? 0
+        : Math.max(0, bufBefore.baseY - bufBefore.viewportY);
+
       fitAddonRef.current.fit();
-      window.cozyPane.terminal.resize(id, termRef.current.cols, termRef.current.rows);
+      window.cozyPane.terminal.resize(id, term.cols, term.rows);
+
       // After fit(), xterm rewraps lines which shifts viewportY. Re-anchor to
-      // the bottom if we were following so the user doesn't see a jump.
-      if (followOutputRef.current && termRef.current) {
-        termRef.current.scrollToBottom();
+      // the correct position so the user doesn't see a jump.
+      const bufAfter = term.buffer.active;
+      if (followOutputRef.current) {
+        term.scrollToBottom();
+      } else {
+        // Restore approximate rows-from-bottom position.
+        const targetViewportY = Math.max(0, bufAfter.baseY - rowsFromBottom);
+        term.scrollToLine(targetViewportY);
       }
     } catch {}
   }, []);
@@ -390,7 +406,11 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, au
           onLocalUrlDetectedRef.current?.(latestUrl);
         }
         if (localUrls.length > 0) {
-          onLocalUrlsDetectedRef.current?.(localUrls);
+          const prev = lastLocalUrlsRef.current;
+          if (localUrls.length !== prev.length || localUrls.some((u, i) => u !== prev[i])) {
+            lastLocalUrlsRef.current = localUrls;
+            onLocalUrlsDetectedRef.current?.(localUrls);
+          }
         }
       }, 400);
     });
@@ -514,7 +534,7 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, au
       if (focusRef.current === 'input') {
         window.dispatchEvent(new CustomEvent('cozyPane:fileDrop', { detail: { paths, terminalId: id } }));
       } else {
-        const escaped = paths.map(p => "'" + p.replace(/'/g, "'\\''") + "'").join(' ');
+        const escaped = paths.map(p => shellEscape(p)).join(' ');
         window.cozyPane.terminal.write(id, escaped);
       }
     }
@@ -569,6 +589,7 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, au
           isChoicePrompt={isChoicePrompt}
           focusTick={focusTick}
           onTextChange={(text) => { inputTextRef.current = text; }}
+          fontSize={fontSize}
         />
       )}
       {!tuiMode && (

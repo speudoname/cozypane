@@ -12,14 +12,15 @@ interface SlashCommand {
 // Cache for binary extraction (keyed by mtime)
 let binaryCache: { mtime: number; commands: SlashCommand[] } | null = null;
 
-// MCP tool names and internal commands to filter out
+// Internal commands and non-slash-command names to filter out.
+// Note: names containing underscores are also filtered (MCP tools use underscores,
+// real slash commands use hyphens or plain words — zero overlap).
 const FILTERED_NAMES = new Set([
-  'form_input', 'get_page_text', 'gif_creator', 'javascript_tool', 'navigate',
-  'read_console_messages', 'read_network_requests', 'read_page', 'resize_window',
-  'shortcuts_execute', 'shortcuts_list', 'switch_browser', 'update_plan',
-  'upload_image', 'sharp', 'pyright', 'explain_command',
-  'bridge-kick', 'heapdump', 'thinkback-play', 'command', 'count', 'duration',
-  'definition', 'files', 'sleep', 'srun', 'nohup', 'time', 'timeout', 'install',
+  'bridge-kick', 'heapdump', 'thinkback-play',
+  'command', 'count', 'definition', 'duration', 'files',
+  'sleep', 'srun', 'nohup', 'time', 'timeout', 'install',
+  'scroll', 'type', 'wait', 'zoom', 'navigate', 'batch',
+  'debug', 'alias',
 ]);
 
 /**
@@ -98,6 +99,8 @@ async function extractFromBinary(): Promise<SlashCommand[]> {
           const name = match[1];
           const desc = match[2];
           if (FILTERED_NAMES.has(name)) continue;
+          // MCP tools use underscores, slash commands use hyphens/plain words
+          if (name.includes('_')) continue;
           // Skip single-character names and very short generic names
           if (name.length <= 2) continue;
           results.push({ cmd: '/' + name, desc, source: 'built-in' });

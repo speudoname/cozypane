@@ -160,6 +160,10 @@ declare global {
       logs: (id: string) => Promise<string>;
       delete: (id: string) => Promise<{ success: boolean }>;
       redeploy: (id: string) => Promise<Deployment>;
+      addDomain: (deployId: string, domain: string) => Promise<{ success?: boolean; error?: string }>;
+      verifyDomain: (deployId: string, domainId: string) => Promise<{ success?: boolean; verified?: boolean; error?: string }>;
+      removeDomain: (deployId: string, domainId: string) => Promise<{ success?: boolean; error?: string }>;
+      listDomains: (deployId: string) => Promise<{ domains?: CustomDomain[]; error?: string }>;
       onProtocolCallback: (callback: (url: string) => void) => () => void;
     };
     preview: {
@@ -170,6 +174,7 @@ declare global {
       storeUrl: (cwd: string, data: { productionUrl?: string; lastDevCommand?: string }) => Promise<{ success?: boolean }>;
       writeDevToolsData: (data: object) => Promise<void>;
       captureScreenshot: (base64Png: string) => Promise<string>;
+      suggestPort: (preferredPort?: number) => Promise<{ port: number }>;
     };
     updates: {
       check: () => Promise<UpdateInfo>;

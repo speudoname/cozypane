@@ -1,5 +1,5 @@
 import { ipcMain } from 'electron';
-import { exec, execFile } from 'child_process';
+import { execFile } from 'child_process';
 import fs from 'fs/promises';
 import path from 'path';
 import { callLlm } from './settings';
@@ -103,6 +103,8 @@ export function registerGitHandlers() {
 
   ipcMain.handle('git:diffFile', async (_event, cwd: string, filePath: string) => {
     try {
+      const resolved = path.resolve(cwd, filePath);
+      if (!resolved.startsWith(path.resolve(cwd) + path.sep)) return { error: 'Invalid path' };
       let before = '';
       try {
         before = await gitExecFile(['show', `HEAD:${filePath}`], cwd);
@@ -139,12 +141,21 @@ export function registerGitHandlers() {
     return result;
   });
 
+  const ALLOWED_WRAP_PREFIXES = ['git push', 'git pull', 'git fetch'];
+
   ipcMain.handle('git:wrapCommand', async (_event, cmd: string) => {
+    // Only inject tokens for safe git commands — reject arbitrary shell strings
+    const trimmed = cmd.trim();
+    if (!ALLOWED_WRAP_PREFIXES.some(p => trimmed === p || trimmed.startsWith(p + ' '))) {
+      return cmd; // pass through unchanged, no token injection
+    }
     const ghToken = getGithubToken();
     if (!ghToken) return cmd;
     const helper = getAskpassHelperPath();
     if (process.platform === 'win32') {
-      return `set "COZYPANE_GH_TOKEN=${ghToken}" && set "GIT_ASKPASS=${helper}" && ${cmd}`;
+      // Escape CMD special characters to prevent injection
+      const esc = (s: string) => s.replace(/["%^&|<>]/g, '^$&');
+      return `set "COZYPANE_GH_TOKEN=${esc(ghToken)}" && set "GIT_ASKPASS=${esc(helper)}" && ${cmd}`;
     }
     // Shell-quote values to prevent injection
     const q = (s: string) => "'" + s.replace(/'/g, "'\\''") + "'";
@@ -165,6 +176,7 @@ export function registerGitHandlers() {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({ name, private: isPrivate, auto_init: false }),
+        signal: AbortSignal.timeout(15000),
       });
 
       if (!res.ok) {
@@ -207,6 +219,7 @@ export function registerGitHandlers() {
           Authorization: `Bearer ${ghToken}`,
           Accept: 'application/vnd.github+json',
         },
+        signal: AbortSignal.timeout(15000),
       });
 
       if (!res.ok) return { repos: [], error: `GitHub API error (${res.status})` };

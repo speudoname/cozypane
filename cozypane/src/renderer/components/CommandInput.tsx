@@ -1,4 +1,5 @@
 import React, { useRef, useEffect, useState, useCallback } from 'react';
+import { shellEscape } from '../lib/shellUtils';
 
 interface SlashCommand {
   cmd: string;
@@ -18,11 +19,9 @@ interface Props {
   isChoicePrompt?: boolean;
   focusTick?: number;
   onTextChange?: (text: string) => void;
+  fontSize?: number;
 }
 
-function shellEscape(p: string): string {
-  return "'" + p.replace(/'/g, "'\\''") + "'";
-}
 
 const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg', 'ico']);
 
@@ -34,7 +33,7 @@ function isImageFile(name: string): boolean {
   return IMAGE_EXTS.has(getFileExt(name));
 }
 
-export default function CommandInput({ onSubmit, onRawKey, visible, history, onFocus, isFocused, showSlashCommands, dynamicSlashCommands, terminalId, isChoicePrompt, focusTick, onTextChange }: Props) {
+export default function CommandInput({ onSubmit, onRawKey, visible, history, onFocus, isFocused, showSlashCommands, dynamicSlashCommands, terminalId, isChoicePrompt, focusTick, onTextChange, fontSize }: Props) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [value, setValue] = useState('');
   const [historyIndex, setHistoryIndex] = useState(-1);
@@ -372,6 +371,7 @@ export default function CommandInput({ onSubmit, onRawKey, visible, history, onF
         <textarea
           ref={textareaRef}
           className={`command-input ${isFocused ? 'focused' : 'dimmed'} ${dragOver ? 'drag-over' : ''}`}
+          style={fontSize ? { fontSize: `${fontSize}px` } : undefined}
           onDragOver={e => { e.preventDefault(); setDragOver(true); }}
           onDragLeave={() => setDragOver(false)}
           onDrop={e => {
@@ -407,13 +407,11 @@ export default function CommandInput({ onSubmit, onRawKey, visible, history, onF
           spellCheck={false}
           autoComplete="off"
         />
-      </div>
-      {!value.includes('\n') && (
         <div className="command-input-hint">
           <span>Enter to run</span>
-          <span>Shift+Enter newline</span>
+          {!value.includes('\n') && <span>Shift+Enter newline</span>}
         </div>
-      )}
+      </div>
 
       {dragOver && (
         <div className="drop-overlay">

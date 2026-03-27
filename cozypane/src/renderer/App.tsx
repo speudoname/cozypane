@@ -506,7 +506,9 @@ export default function App() {
   const sendTerminalCommand = useCallback((command: string) => {
     const tab = terminalTabsRef.current.find(t => t.id === activeTerminalIdRef.current);
     if (tab?.ptyId) {
-      window.cozyPane.terminal.write(tab.ptyId, command + '\r');
+      const text = command.replace(/\n/g, '\r');
+      // Wrap in bracketed paste so the terminal treats it as one pasted block
+      window.cozyPane.terminal.write(tab.ptyId, `\x1b[200~${text}\x1b[201~\r`);
     }
   }, []);
 
@@ -559,24 +561,26 @@ export default function App() {
 
   const renderBottomPanel = () => {
     if (rightPanelTab === 'settings') {
-      return <Settings />;
+      return <ErrorBoundary panel="Settings"><Settings /></ErrorBoundary>;
     }
 
     if (rightPanelTab === 'git') {
       return (
-        <GitPanel
-          cwd={cwd}
-          onDiffClick={handleGitDiffClick}
-          onBranchChange={setGitBranch}
-          activityEvents={activityEvents}
-          onTerminalCommand={sendTerminalCommand}
-          claudeRunning={isClaudeRunning}
-        />
+        <ErrorBoundary panel="Git">
+          <GitPanel
+            cwd={cwd}
+            onDiffClick={handleGitDiffClick}
+            onBranchChange={setGitBranch}
+            activityEvents={activityEvents}
+            onTerminalCommand={sendTerminalCommand}
+            claudeRunning={isClaudeRunning}
+          />
+        </ErrorBoundary>
       );
     }
 
     if (rightPanelTab === 'deploy') {
-      return <DeployPanel cwd={cwd} onTerminalCommand={sendTerminalCommand} claudeRunning={isClaudeRunning} aiAction={aiAction} onDeploymentsLoaded={setDeployments} />;
+      return <ErrorBoundary panel="Deploy"><DeployPanel cwd={cwd} onTerminalCommand={sendTerminalCommand} claudeRunning={isClaudeRunning} aiAction={aiAction} onDeploymentsLoaded={setDeployments} /></ErrorBoundary>;
     }
 
     // Preview tab — show diff viewer or editor
@@ -810,7 +814,7 @@ export default function App() {
                 <div className="panel-section" style={{ flex: sidebarRatio, fontSize: sidebarFontSize }}
                   onMouseEnter={() => { hoverZoneRef.current = 'sidebar'; }}
                 >
-                  <Sidebar {...sidebarProps} />
+                  <ErrorBoundary panel="Sidebar"><Sidebar {...sidebarProps} /></ErrorBoundary>
                 </div>
                 <div className="resize-handle-h" onMouseDown={handleSplitResizeStart} />
                 <div className="panel-section preview-section" style={{ flex: 1 - sidebarRatio, fontSize: panelFontSize }}
@@ -826,7 +830,7 @@ export default function App() {
                   <div className="panel-section" style={{ flex: 1, fontSize: sidebarFontSize }}
                     onMouseEnter={() => { hoverZoneRef.current = 'sidebar'; }}
                   >
-                    <Sidebar {...sidebarProps} />
+                    <ErrorBoundary panel="Sidebar"><Sidebar {...sidebarProps} /></ErrorBoundary>
                   </div>
                 </div>
                 <div className="right-panel preview-panel" style={{ width: panelWidth }}>
@@ -852,7 +856,6 @@ export default function App() {
             <div className="right-panel preview-panel" style={{ width: previewWidth }}>
               <ErrorBoundary panel="Preview">
                 <Preview
-                  key={activeTerminalId}
                   localUrl={previewLocalUrl}
                   localUrls={previewLocalUrls}
                   productionUrl={previewProdUrl}

@@ -230,12 +230,3 @@ export function detectLocalUrls(rollingBuffer: string, preStripped = false): str
   return results;
 }
 
-/**
- * Detect localhost/dev server URLs in terminal output.
- * Returns the most recently detected URL, or null.
- * @deprecated Use detectLocalUrls for multi-URL support
- */
-export function detectLocalUrl(rollingBuffer: string, preStripped = false): string | null {
-  const urls = detectLocalUrls(rollingBuffer, preStripped);
-  return urls.length > 0 ? urls[urls.length - 1] : null;
-}

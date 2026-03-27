@@ -621,14 +621,14 @@ html, body, #root {
 }
 
 .command-input-hint {
-  position: absolute;
-  right: 16px;
-  bottom: 14px;
   display: flex;
+  justify-content: flex-end;
   gap: 12px;
   font-size: 10px;
   color: var(--text-muted);
   pointer-events: none;
+  padding: 2px 4px 0;
+  flex-shrink: 0;
 }
 
 /* Slash command suggestions */
@@ -2395,6 +2395,8 @@ html, body, #root {
   font-size: 10px;
   font-weight: 600;
   transition: border-color 0.15s;
+  background: none;
+  padding: 0;
 }
 
 .theme-swatch:hover {
@@ -2422,7 +2424,7 @@ html, body, #root {
 }
 
 .update-banner-icon {
-  color: #5ce0a8;
+  color: var(--success);
   font-weight: bold;
   font-size: 14px;
 }
@@ -2440,7 +2442,7 @@ html, body, #root {
 
 .update-btn {
   background: rgba(92, 224, 168, 0.15);
-  color: #5ce0a8;
+  color: var(--success);
   border: 1px solid rgba(92, 224, 168, 0.3);
   padding: 2px 10px;
   border-radius: 4px;
@@ -2515,7 +2517,7 @@ html, body, #root {
 
 .update-btn-sm {
   background: rgba(92, 224, 168, 0.1);
-  color: #5ce0a8;
+  color: var(--success);
   border: 1px solid rgba(92, 224, 168, 0.2);
   padding: 1px 8px;
   border-radius: 3px;
