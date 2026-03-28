@@ -253,7 +253,9 @@ export default function Preview({ localUrl, localUrls = [], productionUrl, cwd, 
     };
 
     const handleDidFailLoad = (e: any) => {
-      if (e.errorCode === -3) return;
+      // -3 = ERR_ABORTED (navigation cancelled, not an error)
+      // -102 = ERR_CONNECTION_REFUSED (fires for stale sub-paths during tab restore before server responds)
+      if (e.errorCode === -3 || e.errorCode === -102) return;
       setErrors(prev => [...prev.slice(-19), {
         type: 'load',
         message: `Page failed to load: ${e.errorDescription}`,
@@ -496,42 +498,6 @@ export default function Preview({ localUrl, localUrls = [], productionUrl, cwd, 
           {...(/^https?:\/\/(localhost|127\.0\.0\.1)(:|\/|$)/.test(url) ? { webpreferences: 'allowRunningInsecureContent=true' } : {})}
         />
 
-        {errors.length > 0 && !drawerOpen && (
-          <button
-            onClick={sendDevToolsToClaude}
-            disabled={sendingToClaude}
-            style={{
-              position: 'absolute', bottom: 12, right: 12,
-              padding: '6px 12px', borderRadius: 20, border: 'none',
-              backgroundColor: '#e74c3c', color: '#fff',
-              fontSize: '0.75em', fontWeight: 600,
-              cursor: sendingToClaude ? 'wait' : 'pointer',
-              display: 'flex', alignItems: 'center', gap: '6px',
-              boxShadow: '0 2px 8px rgba(0,0,0,0.4)',
-              opacity: sendingToClaude ? 0.7 : 1, zIndex: 10,
-            }}
-          >
-            <span style={{
-              display: 'inline-block', minWidth: 18, height: 18,
-              lineHeight: '18px', textAlign: 'center', borderRadius: '50%',
-              backgroundColor: 'rgba(255,255,255,0.25)', fontSize: '0.9em',
-            }}>
-              {errors.length}
-            </span>
-            {sendingToClaude ? 'Sending...' : 'Fix with Claude'}
-          </button>
-        )}
-
-        {claudeWarning && (
-          <div style={{
-            position: 'absolute', bottom: 48, right: 12,
-            padding: '6px 12px', borderRadius: 6,
-            backgroundColor: '#e6b80099', color: '#1a1b2e',
-            fontSize: '0.72em', fontWeight: 600, zIndex: 11,
-          }}>
-            Claude is not running in the terminal
-          </div>
-        )}
       </div>
     </div>
   );
@@ -784,6 +750,16 @@ export default function Preview({ localUrl, localUrls = [], productionUrl, cwd, 
           </>
         )}
       </div>
+
+      {claudeWarning && (
+        <div style={{
+          padding: '5px 10px', fontSize: '0.72em', fontWeight: 600,
+          backgroundColor: '#e6b80022', color: '#e6b800',
+          borderTop: '1px solid #e6b80044', textAlign: 'center',
+        }}>
+          Claude is not running in the terminal
+        </div>
+      )}
 
       <div style={{ borderTop: '1px solid var(--border, #2a2b3e)', backgroundColor: 'var(--bg-secondary, #161822)' }}>
         <div
