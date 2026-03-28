@@ -72,6 +72,9 @@ export default function Preview({ localUrl, localUrls = [], productionUrl, cwd, 
   const prodWebviewRef = useRef<any>(null);
   const staticCwdRef = useRef<string>('');
   const devtoolsWriteTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Track the URL we intentionally loaded so we don't re-navigate when webview browses to a sub-path
+  const lastLoadedLocalUrlRef = useRef<string | null>(null);
+  const lastLoadedProdUrlRef = useRef<string | null>(null);
 
   // When multiple URLs detected, let user pick; auto-select first frontend port
   const resolvedLocalUrl = selectedLocalUrl && localUrls.includes(selectedLocalUrl)
@@ -95,7 +98,7 @@ export default function Preview({ localUrl, localUrls = [], productionUrl, cwd, 
     else if (!effectiveLocalUrl && effectiveProdUrl) setViewMode('production');
   }, [effectiveLocalUrl, effectiveProdUrl]);
 
-  // On tab switch (cwd changes): restore saved console state for the incoming tab
+  // On tab switch (cwd changes): restore saved console state and navigate to root
   const prevCwdRef = useRef(cwd);
   useEffect(() => {
     if (prevCwdRef.current === cwd) return;
@@ -103,6 +106,9 @@ export default function Preview({ localUrl, localUrls = [], productionUrl, cwd, 
     setErrors(initialErrorsRef.current);
     setConsoleLogs(initialConsoleLogsRef.current);
     setNetworkErrors(initialNetworkErrorsRef.current);
+    // Reset the last-loaded tracking so the URL effects will re-navigate to root on next render
+    lastLoadedLocalUrlRef.current = null;
+    lastLoadedProdUrlRef.current = null;
   }, [cwd]);
 
   // Notify parent whenever console state changes so it can persist per-tab.
@@ -442,12 +448,18 @@ export default function Preview({ localUrl, localUrls = [], productionUrl, cwd, 
 
   useEffect(() => {
     const wv = localWebviewRef.current;
-    if (wv && effectiveLocalUrl && wv.src !== effectiveLocalUrl) wv.src = effectiveLocalUrl;
+    if (wv && effectiveLocalUrl && lastLoadedLocalUrlRef.current !== effectiveLocalUrl) {
+      lastLoadedLocalUrlRef.current = effectiveLocalUrl;
+      wv.src = effectiveLocalUrl;
+    }
   }, [effectiveLocalUrl]);
 
   useEffect(() => {
     const wv = prodWebviewRef.current;
-    if (wv && effectiveProdUrl && wv.src !== effectiveProdUrl) wv.src = effectiveProdUrl;
+    if (wv && effectiveProdUrl && lastLoadedProdUrlRef.current !== effectiveProdUrl) {
+      lastLoadedProdUrlRef.current = effectiveProdUrl;
+      wv.src = effectiveProdUrl;
+    }
   }, [effectiveProdUrl]);
 
   const hasDevToolsData = consoleLogs.length > 0 || networkErrors.length > 0 || errors.length > 0;
