@@ -52,10 +52,10 @@ const server = new McpServer({
 
 server.tool(
   'cozypane_deploy',
-  'Deploy a project to CozyPane Cloud. Auto-detects framework, port, and database. No Dockerfile needed.',
+  'Deploy a project to CozyPane Cloud. Auto-detects framework, port, and database. No Dockerfile needed. IMPORTANT: Before deploying, always call cozypane_list_deployments first to check if an app with this directory\'s folder name already exists. If it does, reuse the exact same appName to update it rather than creating a duplicate. Only use a new appName if no match is found.',
   {
     directory: z.string().describe('Absolute path to the project directory'),
-    appName: z.string().describe('App name — becomes subdomain: <appName>-<user>.cozypane.com'),
+    appName: z.string().describe('App name — becomes subdomain: <appName>-<user>.cozypane.com. Must match existing deployment appName if one exists for this project.'),
     env: z.record(z.string(), z.string()).optional().describe('Environment variables for the container'),
     group: z.string().optional().describe('Group name for multi-service deploys'),
     tier: z.enum(['small', 'medium', 'large']).optional().describe('Override auto-detected tier'),
@@ -76,6 +76,28 @@ server.tool(
         content: [{ type: 'text' as const, text: `Directory not found: ${directory}` }],
         isError: true,
       };
+    }
+
+    // Deduplication: check if a deployment already exists for this folder name.
+    // If an existing deployment matches the folder name but was given a different appName,
+    // use the existing appName to avoid creating duplicates.
+    try {
+      const folderName = path.basename(directory).toLowerCase();
+      const existing = await apiFetch('/deploy/list', { timeoutMs: 10000 });
+      if (Array.isArray(existing)) {
+        const match = existing.find((d: any) => d.appName === folderName || d.appName === appName);
+        if (match && match.appName !== appName) {
+          return {
+            content: [{
+              type: 'text' as const,
+              text: `A deployment named "${match.appName}" already exists for this project (${match.url}). Re-deploying to "${match.appName}" instead of creating a new "${appName}". Call cozypane_deploy again with appName="${match.appName}" to update it.`,
+            }],
+            isError: false,
+          };
+        }
+      }
+    } catch {
+      // Non-fatal: proceed with the given appName if list fails
     }
 
     try {
@@ -121,6 +143,33 @@ server.tool(
         }
       }
 
+      // Auto-recover from health-check timeout on first deploy (common with Next.js cold starts).
+      // The build succeeded but the health checker timed out before the server warmed up.
+      // A container restart gives it a clean boot with no build overhead, which passes easily.
+      const r = result as any;
+      if (r?.status === 'unhealthy' && r?.id) {
+        const msg: string = r.errorDetail?.message || '';
+        const isColdStartTimeout = /health check timed out|not responding|timed out after/i.test(msg);
+        if (isColdStartTimeout) {
+          process.stderr.write('Health check timed out (likely cold-start). Restarting container...\n');
+          try {
+            await apiFetch(`/deploy/${encodeURIComponent(r.id)}/redeploy`, { method: 'POST', timeoutMs: 15000 });
+            const retryStart = Date.now();
+            const RETRY_TIMEOUT = 3 * 60 * 1000;
+            while (Date.now() - retryStart < RETRY_TIMEOUT) {
+              await new Promise(res => setTimeout(res, 5000));
+              const poll = await apiFetch(`/deploy/${encodeURIComponent(r.id)}`, { timeoutMs: 15000 });
+              if (poll?.status === 'running' || poll?.status === 'failed') {
+                result = poll;
+                break;
+              }
+            }
+          } catch {
+            // If restart fails, fall through to report original unhealthy status
+          }
+        }
+      }
+
       // Store the production URL so the Preview panel can find it
       const deployedUrl = (result as any)?.url;
       if (deployedUrl) {
@@ -134,17 +183,17 @@ server.tool(
         } catch {}
       }
 
-      // Build a human-readable result
-      const r = result as any;
+      // Build a human-readable result (re-cast result since it may have been updated by retry)
+      const finalResult = result as any;
       let statusLine = '';
-      if (r?.status === 'running') {
-        statusLine = `Deployed successfully! ${r.url}`;
-      } else if (r?.status === 'unhealthy') {
-        const suggestion = r.errorDetail?.suggestion || 'Check logs with cozypane_get_logs for details.';
-        statusLine = `Deployment unhealthy: ${r.errorDetail?.message || 'health check failed'}. ${suggestion}`;
-      } else if (r?.status === 'failed') {
-        const suggestion = r.errorDetail?.suggestion || 'Check build logs with cozypane_get_logs (type="build").';
-        statusLine = `Deploy failed: ${r.errorDetail?.message || 'unknown error'}. ${suggestion}`;
+      if (finalResult?.status === 'running') {
+        statusLine = `Deployed successfully! ${finalResult.url}`;
+      } else if (finalResult?.status === 'unhealthy') {
+        const suggestion = finalResult.errorDetail?.suggestion || 'Check logs with cozypane_get_logs for details.';
+        statusLine = `Deployment unhealthy: ${finalResult.errorDetail?.message || 'health check failed'}. ${suggestion}`;
+      } else if (finalResult?.status === 'failed') {
+        const suggestion = finalResult.errorDetail?.suggestion || 'Check build logs with cozypane_get_logs (type="build").';
+        statusLine = `Deploy failed: ${finalResult.errorDetail?.message || 'unknown error'}. ${suggestion}`;
       }
 
       return {

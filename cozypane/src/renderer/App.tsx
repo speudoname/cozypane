@@ -1,4 +1,5 @@
 import React, { useState, useCallback, useRef, useEffect, useMemo } from 'react';
+import { Eye, GitBranch, Rocket, Settings2 } from 'lucide-react';
 import Sidebar from './components/Sidebar';
 import FilePreview from './components/FilePreview';
 import Terminal from './components/Terminal';
@@ -16,7 +17,7 @@ import { enableCozyMode } from './lib/cozyMode';
 import CommandPalette from './components/CommandPalette';
 import type { PaletteAction } from './components/CommandPalette';
 import TerminalTabBar from './components/TerminalTabBar';
-import type { TerminalTab } from './components/TerminalTabBar';
+import type { TerminalTab, PreviewError, ConsoleLog, NetworkError } from './components/TerminalTabBar';
 import type { AiAction } from './lib/terminalAnalyzer';
 
 type LayoutMode = 'two-col' | 'three-col';
@@ -77,6 +78,9 @@ export default function App() {
   const [previewLocalUrl, setPreviewLocalUrl] = useState<string>('');
   const [previewLocalUrls, setPreviewLocalUrls] = useState<string[]>([]);
   const [previewProdUrl, setPreviewProdUrl] = useState<string>('');
+  const [previewInitialErrors, setPreviewInitialErrors] = useState<PreviewError[]>([]);
+  const [previewInitialConsoleLogs, setPreviewInitialConsoleLogs] = useState<ConsoleLog[]>([]);
+  const [previewInitialNetworkErrors, setPreviewInitialNetworkErrors] = useState<NetworkError[]>([]);
   const [previewOpen, setPreviewOpen] = useState(() => loadPersisted('previewOpen', false));
   const [previewWidth, setPreviewWidth] = useState(() => loadPersisted('previewWidth', 500));
   const [isResizingPreview, setIsResizingPreview] = useState(false);
@@ -155,11 +159,14 @@ export default function App() {
     // Restore or init new tab
     const cached = tabWatcherCache.current.get(activeTerminalId);
     setActivityEvents(cached?.activityEvents ?? []);
-    // Restore preview URLs for the newly active tab
+    // Restore preview URLs and console state for the newly active tab
     const newTab = terminalTabsRef.current.find(t => t.id === activeTerminalId);
     setPreviewLocalUrl(newTab?.previewLocalUrl || '');
     setPreviewLocalUrls(newTab?.previewLocalUrls || []);
     setPreviewProdUrl(newTab?.previewProdUrl || '');
+    setPreviewInitialErrors(newTab?.previewErrors || []);
+    setPreviewInitialConsoleLogs(newTab?.previewConsoleLogs || []);
+    setPreviewInitialNetworkErrors(newTab?.previewNetworkErrors || []);
     prevActiveTabRef.current = activeTerminalId;
   }, [activeTerminalId]);
 
@@ -630,25 +637,25 @@ export default function App() {
         className={`panel-tab ${rightPanelTab === 'preview' ? 'active' : ''}`}
         onClick={() => setRightPanelTab('preview')}
       >
-        Editor
+        <Eye size={13} /> Editor
       </button>
       <button
         className={`panel-tab ${rightPanelTab === 'git' ? 'active' : ''}`}
         onClick={() => setRightPanelTab('git')}
       >
-        Git
+        <GitBranch size={13} /> Git
       </button>
       <button
         className={`panel-tab ${rightPanelTab === 'deploy' ? 'active' : ''}`}
         onClick={() => setRightPanelTab('deploy')}
       >
-        Deploy
+        <Rocket size={13} /> Deploy
       </button>
       <button
         className={`panel-tab ${rightPanelTab === 'settings' ? 'active' : ''}`}
         onClick={() => setRightPanelTab('settings')}
       >
-        Settings
+        <Settings2 size={13} /> Settings
       </button>
       {rightPanelTab === 'preview' && (
         <div className="zoom-controls">
@@ -863,6 +870,12 @@ export default function App() {
                   onSendToTerminal={sendTerminalCommand}
                   deployments={deployments}
                   claudeRunning={isClaudeRunning}
+                  initialErrors={previewInitialErrors}
+                  initialConsoleLogs={previewInitialConsoleLogs}
+                  initialNetworkErrors={previewInitialNetworkErrors}
+                  onConsoleUpdate={(errors, consoleLogs, networkErrors) => {
+                    updateTab(activeTerminalId, { previewErrors: errors, previewConsoleLogs: consoleLogs, previewNetworkErrors: networkErrors });
+                  }}
                 />
               </ErrorBoundary>
             </div>

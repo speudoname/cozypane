@@ -1,27 +1,6 @@
 import React, { useState, useRef, useCallback, useEffect } from 'react';
-
-interface PreviewError {
-  type: 'console' | 'network' | 'load';
-  message: string;
-  timestamp: number;
-  detail?: string;
-}
-
-interface ConsoleLog {
-  level: number;
-  message: string;
-  timestamp: number;
-  source?: string;
-  line?: number;
-}
-
-interface NetworkError {
-  method: string;
-  url: string;
-  status: number;
-  statusText: string;
-  timestamp: number;
-}
+import { ArrowLeft, ArrowRight, Home, RotateCw, Smartphone, Tablet, Monitor, Columns2, Globe, Zap } from 'lucide-react';
+import type { PreviewError, ConsoleLog, NetworkError } from './TerminalTabBar';
 
 interface Props {
   localUrl?: string;
@@ -31,6 +10,10 @@ interface Props {
   onSendToTerminal: (command: string) => void;
   deployments?: Deployment[];
   claudeRunning?: boolean;
+  initialErrors?: PreviewError[];
+  initialConsoleLogs?: ConsoleLog[];
+  initialNetworkErrors?: NetworkError[];
+  onConsoleUpdate?: (errors: PreviewError[], consoleLogs: ConsoleLog[], networkErrors: NetworkError[]) => void;
 }
 
 type DeviceMode = 'desktop' | 'tablet' | 'phone';
@@ -52,11 +35,20 @@ function getPort(url: string): number {
   return match ? parseInt(match[1], 10) : 0;
 }
 
-export default function Preview({ localUrl, localUrls = [], productionUrl, cwd, onSendToTerminal, deployments = [], claudeRunning }: Props) {
+export default function Preview({ localUrl, localUrls = [], productionUrl, cwd, onSendToTerminal, deployments = [], claudeRunning, initialErrors = [], initialConsoleLogs = [], initialNetworkErrors = [], onConsoleUpdate }: Props) {
   const [device, setDevice] = useState<DeviceMode>('desktop');
-  const [errors, setErrors] = useState<PreviewError[]>([]);
-  const [consoleLogs, setConsoleLogs] = useState<ConsoleLog[]>([]);
-  const [networkErrors, setNetworkErrors] = useState<NetworkError[]>([]);
+  const [errors, setErrors] = useState<PreviewError[]>(initialErrors);
+  const [consoleLogs, setConsoleLogs] = useState<ConsoleLog[]>(initialConsoleLogs);
+  const [networkErrors, setNetworkErrors] = useState<NetworkError[]>(initialNetworkErrors);
+  const onConsoleUpdateRef = useRef(onConsoleUpdate);
+  onConsoleUpdateRef.current = onConsoleUpdate;
+  // Keep latest initial values in refs so the cwd-change effect can read them
+  const initialErrorsRef = useRef(initialErrors);
+  initialErrorsRef.current = initialErrors;
+  const initialConsoleLogsRef = useRef(initialConsoleLogs);
+  initialConsoleLogsRef.current = initialConsoleLogs;
+  const initialNetworkErrorsRef = useRef(initialNetworkErrors);
+  initialNetworkErrorsRef.current = initialNetworkErrors;
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [viewMode, setViewMode] = useState<ViewMode>('local');
@@ -71,6 +63,7 @@ export default function Preview({ localUrl, localUrls = [], productionUrl, cwd, 
   const [suggestedPort, setSuggestedPort] = useState<number | null>(null);
   const [startingDev, setStartingDev] = useState(false);
 
+  const [consoleTab, setConsoleTab] = useState<'errors' | 'all'>('errors');
   const [matchedDeployments, setMatchedDeployments] = useState<Deployment[]>([]);
   const [selectedDeploymentUrl, setSelectedDeploymentUrl] = useState<string | null>(null);
   const [storedProdUrl, setStoredProdUrl] = useState<string | null>(null);
@@ -101,6 +94,24 @@ export default function Preview({ localUrl, localUrls = [], productionUrl, cwd, 
     if (effectiveLocalUrl && !effectiveProdUrl) setViewMode('local');
     else if (!effectiveLocalUrl && effectiveProdUrl) setViewMode('production');
   }, [effectiveLocalUrl, effectiveProdUrl]);
+
+  // On tab switch (cwd changes): restore saved console state for the incoming tab
+  const prevCwdRef = useRef(cwd);
+  useEffect(() => {
+    if (prevCwdRef.current === cwd) return;
+    prevCwdRef.current = cwd;
+    setErrors(initialErrorsRef.current);
+    setConsoleLogs(initialConsoleLogsRef.current);
+    setNetworkErrors(initialNetworkErrorsRef.current);
+  }, [cwd]);
+
+  // Notify parent whenever console state changes so it can persist per-tab.
+  // Skip the initial mount to avoid a spurious update with the initial prop values.
+  const mountedRef = useRef(false);
+  useEffect(() => {
+    if (!mountedRef.current) { mountedRef.current = true; return; }
+    onConsoleUpdateRef.current?.(errors, consoleLogs, networkErrors);
+  }, [errors, consoleLogs, networkErrors]);
 
   useEffect(() => {
     if (!cwd || deployments.length === 0) {
@@ -621,11 +632,11 @@ export default function Preview({ localUrl, localUrls = [], productionUrl, cwd, 
       <div style={toolbarStyle}>
         <div style={{ display: 'flex', gap: '0.15em' }}>
           <button onClick={() => setViewMode('local')} style={{ ...modeBtnStyle, ...(viewMode === 'local' ? modeActiveStyle : {}) }}>
-            Local
+            <Zap size={12} /> Local
             {effectiveLocalUrl && <span style={dotStyle('#5ce0a8')} />}
           </button>
           <button onClick={() => setViewMode('production')} style={{ ...modeBtnStyle, ...(viewMode === 'production' ? modeActiveStyle : {}) }}>
-            Prod
+            <Globe size={12} /> Prod
             {effectiveProdUrl && <span style={dotStyle('#5cb8f0')} />}
           </button>
           {localUrls.length > 1 && (
@@ -665,16 +676,16 @@ export default function Preview({ localUrl, localUrls = [], productionUrl, cwd, 
             </select>
           )}
           <button onClick={() => setViewMode('split')} style={{ ...modeBtnStyle, ...(viewMode === 'split' ? modeActiveStyle : {}) }} title="Side by side">
-            Split
+            <Columns2 size={12} />
           </button>
         </div>
 
         <div style={{ display: 'flex', gap: '0.15em' }}>
-          <button onClick={goBack} style={toolBtnStyle} title="Back">&#x2190;</button>
-          <button onClick={goForward} style={toolBtnStyle} title="Forward">&#x2192;</button>
-          <button onClick={goHome} style={toolBtnStyle} title="Home (server root)">&#x2302;</button>
+          <button onClick={goBack} style={toolBtnStyle} title="Back"><ArrowLeft size={13} /></button>
+          <button onClick={goForward} style={toolBtnStyle} title="Forward"><ArrowRight size={13} /></button>
+          <button onClick={goHome} style={toolBtnStyle} title="Home (server root)"><Home size={13} /></button>
           <button onClick={reload} style={toolBtnStyle} title="Reload">
-            {loading ? '...' : '\u21BB'}
+            <RotateCw size={13} style={loading ? { animation: 'spin 0.7s linear infinite' } : {}} />
           </button>
         </div>
 
@@ -690,7 +701,7 @@ export default function Preview({ localUrl, localUrls = [], productionUrl, cwd, 
               }}
               title={d.charAt(0).toUpperCase() + d.slice(1)}
             >
-              {d === 'phone' ? '\u{1F4F1}' : d === 'tablet' ? '\u{1F4BB}' : '\u{1F5A5}'}
+              {d === 'phone' ? <Smartphone size={13} /> : d === 'tablet' ? <Tablet size={13} /> : <Monitor size={13} />}
             </button>
           ))}
         </div>
@@ -772,65 +783,112 @@ export default function Preview({ localUrl, localUrls = [], productionUrl, cwd, 
         >
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.4em' }}>
             <span style={{ fontSize: '0.78em', color: 'var(--text-secondary, #888)' }}>
-              {drawerOpen ? '\u25BC' : '\u25B6'} Errors
+              {drawerOpen ? '\u25BC' : '\u25B6'} Console
             </span>
             {errors.length > 0 && (
               <span style={{
                 fontSize: '0.7em', padding: '0 5px', borderRadius: 8,
                 backgroundColor: '#e74c3c33', color: '#e74c3c', fontWeight: 600,
               }}>
-                {errors.length}
+                {errors.length} error{errors.length !== 1 ? 's' : ''}
+              </span>
+            )}
+            {consoleLogs.length > 0 && errors.length === 0 && (
+              <span style={{
+                fontSize: '0.7em', padding: '0 5px', borderRadius: 8,
+                backgroundColor: 'var(--border, #2a2b3e)', color: 'var(--text-secondary, #888)', fontWeight: 600,
+              }}>
+                {consoleLogs.length}
               </span>
             )}
           </div>
           <div style={{ display: 'flex', gap: '0.3em' }}>
             {errors.length > 0 && (
-              <>
-                <button
-                  onClick={(e) => { e.stopPropagation(); sendDevToolsToClaude(); }}
-                  style={{ ...tinyBtnStyle, color: 'var(--accent, #7c6fe0)', fontWeight: 600 }}
-                >
-                  Fix with Claude
-                </button>
-                <button
-                  onClick={(e) => { e.stopPropagation(); setErrors([]); setConsoleLogs([]); setNetworkErrors([]); }}
-                  style={tinyBtnStyle}
-                >
-                  Clear
-                </button>
-              </>
+              <button
+                onClick={(e) => { e.stopPropagation(); sendDevToolsToClaude(); }}
+                style={{ ...tinyBtnStyle, color: 'var(--accent, #7c6fe0)', fontWeight: 600 }}
+              >
+                Fix with Claude
+              </button>
+            )}
+            {(errors.length > 0 || consoleLogs.length > 0) && (
+              <button
+                onClick={(e) => { e.stopPropagation(); setErrors([]); setConsoleLogs([]); setNetworkErrors([]); }}
+                style={tinyBtnStyle}
+              >
+                Clear
+              </button>
             )}
           </div>
         </div>
 
         {drawerOpen && (
-          <div style={{ maxHeight: 200, overflowY: 'auto', padding: '0 0.6em 0.4em' }}>
-            {errors.length === 0 ? (
-              <div style={{ fontSize: '0.78em', color: 'var(--text-secondary, #666)', padding: '0.5em 0' }}>
-                No errors captured
-              </div>
-            ) : (
-              errors.map((err, i) => (
-                <div key={i} style={{ padding: '0.25em 0', borderBottom: '1px solid var(--border, #1e1f32)', fontSize: '0.75em' }}>
-                  <div style={{ display: 'flex', gap: '0.4em', alignItems: 'baseline' }}>
-                    <span style={{
-                      color: err.type === 'network' ? '#e6b800' : '#e74c3c',
-                      fontWeight: 600, fontSize: '0.9em', textTransform: 'uppercase',
-                    }}>
-                      {err.type}
-                    </span>
-                    <span style={{ color: 'var(--text-primary, #e0e0e0)', fontFamily: 'monospace' }}>
-                      {err.message}
-                    </span>
-                  </div>
-                  {err.detail && (
-                    <div style={{ color: 'var(--text-secondary, #666)', fontSize: '0.9em', marginTop: '0.1em' }}>
-                      {err.detail}
+          <div style={{ display: 'flex', flexDirection: 'column', maxHeight: 240 }}>
+            {/* Tab bar */}
+            <div style={{ display: 'flex', gap: '0.2em', padding: '0.2em 0.6em 0', borderBottom: '1px solid var(--border, #1e1f32)' }}>
+              {(['errors', 'all'] as const).map(tab => (
+                <button
+                  key={tab}
+                  onClick={() => setConsoleTab(tab)}
+                  style={{
+                    padding: '0.15em 0.5em', fontSize: '0.72em', cursor: 'pointer', border: 'none',
+                    borderBottom: consoleTab === tab ? '2px solid var(--accent, #7c6fe0)' : '2px solid transparent',
+                    backgroundColor: 'transparent',
+                    color: consoleTab === tab ? 'var(--text-primary, #e0e0e0)' : 'var(--text-secondary, #888)',
+                    fontWeight: consoleTab === tab ? 600 : 400,
+                  }}
+                >
+                  {tab === 'errors' ? `Errors (${errors.length})` : `All (${consoleLogs.length})`}
+                </button>
+              ))}
+            </div>
+            <div style={{ flex: 1, overflowY: 'auto', padding: '0.2em 0.6em 0.4em' }}>
+              {consoleTab === 'errors' ? (
+                errors.length === 0 ? (
+                  <div style={{ fontSize: '0.78em', color: 'var(--text-secondary, #666)', padding: '0.5em 0' }}>No errors</div>
+                ) : (
+                  errors.map((err, i) => (
+                    <div key={i} style={{ padding: '0.25em 0', borderBottom: '1px solid var(--border, #1e1f32)', fontSize: '0.75em' }}>
+                      <div style={{ display: 'flex', gap: '0.4em', alignItems: 'baseline' }}>
+                        <span style={{ color: err.type === 'network' ? '#e6b800' : '#e74c3c', fontWeight: 600, fontSize: '0.9em', textTransform: 'uppercase', flexShrink: 0 }}>
+                          {err.type}
+                        </span>
+                        <span style={{ color: 'var(--text-primary, #e0e0e0)', fontFamily: 'monospace', wordBreak: 'break-all' }}>
+                          {err.message}
+                        </span>
+                      </div>
+                      {err.detail && (
+                        <div style={{ color: 'var(--text-secondary, #666)', fontSize: '0.9em', marginTop: '0.1em' }}>{err.detail}</div>
+                      )}
                     </div>
-                  )}
-                </div>
-              ))
-            )}
+                  ))
+                )
+              ) : (
+                consoleLogs.length === 0 ? (
+                  <div style={{ fontSize: '0.78em', color: 'var(--text-secondary, #666)', padding: '0.5em 0' }}>No console output</div>
+                ) : (
+                  consoleLogs.map((log, i) => {
+                    const levelColor = log.level === 3 ? '#e74c3c' : log.level === 2 ? '#e6b800' : log.level === 1 ? '#4fc3f7' : 'var(--text-secondary, #888)';
+                    const levelLabel = ['verbose', 'info', 'warn', 'error'][log.level] ?? 'log';
+                    return (
+                      <div key={i} style={{ padding: '0.2em 0', borderBottom: '1px solid var(--border, #1e1f32)', fontSize: '0.74em', display: 'flex', gap: '0.4em', alignItems: 'baseline' }}>
+                        <span style={{ color: levelColor, fontWeight: 600, fontSize: '0.85em', textTransform: 'uppercase', flexShrink: 0, minWidth: '2.5em' }}>
+                          {levelLabel}
+                        </span>
+                        <span style={{ color: 'var(--text-primary, #ccc)', fontFamily: 'monospace', wordBreak: 'break-all', flex: 1 }}>
+                          {log.message}
+                        </span>
+                        {log.source && (
+                          <span style={{ color: 'var(--text-secondary, #555)', fontSize: '0.85em', flexShrink: 0 }}>
+                            {log.source.split('/').pop()}{log.line ? `:${log.line}` : ''}
+                          </span>
+                        )}
+                      </div>
+                    );
+                  })
+                )
+              )}
+            </div>
           </div>
         )}
       </div>
@@ -840,22 +898,24 @@ export default function Preview({ localUrl, localUrls = [], productionUrl, cwd, 
 
 const toolbarStyle: React.CSSProperties = {
   display: 'flex', alignItems: 'center',
-  padding: '0.35em 0.5em',
+  padding: '5px 8px',
   borderBottom: '1px solid var(--border, #2a2b3e)',
   backgroundColor: 'var(--bg-secondary, #161822)',
   gap: '0.4em',
+  minHeight: 36,
 };
 
 const toolBtnStyle: React.CSSProperties = {
-  padding: '0.2em 0.5em', borderRadius: 4,
+  padding: '4px 7px', borderRadius: 4,
   border: '1px solid var(--border, #2a2b3e)',
   backgroundColor: 'transparent',
   color: 'var(--text-secondary, #aaa)',
   fontSize: '0.82em', cursor: 'pointer', lineHeight: 1,
+  display: 'flex', alignItems: 'center', justifyContent: 'center',
 };
 
 const modeBtnStyle: React.CSSProperties = {
-  padding: '0.2em 0.6em', borderRadius: 4,
+  padding: '4px 8px', borderRadius: 4,
   border: '1px solid var(--border, #2a2b3e)',
   backgroundColor: 'transparent',
   color: 'var(--text-secondary, #888)',

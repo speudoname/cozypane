@@ -34,6 +34,8 @@ export default function DeployPanel({ cwd, onTerminalCommand, claudeRunning, aiA
   const [domainError, setDomainError] = useState<string | null>(null);
   const [cozyMode, setCozyMode] = useState(false);
   const [cozyModeLoading, setCozyModeLoading] = useState(false);
+  const [isDeploying, setIsDeploying] = useState(false);
+  const deployTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Check cozy mode state when cwd changes
@@ -105,6 +107,12 @@ export default function DeployPanel({ cwd, onTerminalCommand, claudeRunning, aiA
         const deployments = Array.isArray(list) ? list : [];
         setDeployments(deployments);
         onDeploymentsLoadedRef.current?.(deployments);
+        // If no deployments are building, the deploy is done — clear deploying state
+        const stillBuilding = deployments.some((d: any) => d.status === 'building');
+        if (!stillBuilding) {
+          setIsDeploying(false);
+          if (deployTimeoutRef.current) { clearTimeout(deployTimeoutRef.current); deployTimeoutRef.current = null; }
+        }
       })
       .catch(() => setDeployments([]));
   }, [auth.authenticated]);
@@ -113,10 +121,17 @@ export default function DeployPanel({ cwd, onTerminalCommand, claudeRunning, aiA
     loadDeployments();
   }, [loadDeployments]);
 
-  // Poll building deployments
+  // Cleanup deploy timeout on unmount
   useEffect(() => {
-    const building = deployments.some(d => d.status === 'building');
-    if (building) {
+    return () => {
+      if (deployTimeoutRef.current) clearTimeout(deployTimeoutRef.current);
+    };
+  }, []);
+
+  // Poll while deploying or while any deployment is building
+  useEffect(() => {
+    const shouldPoll = isDeploying || deployments.some(d => d.status === 'building');
+    if (shouldPoll) {
       pollRef.current = setInterval(loadDeployments, 3000);
     }
     return () => {
@@ -125,7 +140,7 @@ export default function DeployPanel({ cwd, onTerminalCommand, claudeRunning, aiA
         pollRef.current = null;
       }
     };
-  }, [deployments, loadDeployments]);
+  }, [isDeploying, deployments, loadDeployments]);
 
   const handleLogin = useCallback(async () => {
     await window.cozyPane.deploy.login();
@@ -137,16 +152,25 @@ export default function DeployPanel({ cwd, onTerminalCommand, claudeRunning, aiA
     setDeployments([]);
   }, []);
 
+  const startDeployTimer = useCallback(() => {
+    setIsDeploying(true);
+    if (deployTimeoutRef.current) clearTimeout(deployTimeoutRef.current);
+    // Auto-reset after 3 minutes as a safety fallback
+    deployTimeoutRef.current = setTimeout(() => setIsDeploying(false), 3 * 60 * 1000);
+  }, []);
+
   const handleDeploy = useCallback(() => {
     // Send "cozydeploy" command to Claude Code in the terminal.
     // Claude picks this up and uses the cozypane_deploy MCP tool.
+    startDeployTimer();
     onTerminalCommand(`cozydeploy ${cwd}`);
-  }, [cwd, onTerminalCommand]);
+  }, [cwd, onTerminalCommand, startDeployTimer]);
 
   const handleRedeploy = useCallback((appName?: string) => {
     // Full redeploy: re-upload source + rebuild (same as initial deploy)
+    startDeployTimer();
     onTerminalCommand(`cozydeploy ${cwd}${appName ? ` --app ${appName}` : ''}`);
-  }, [cwd, onTerminalCommand]);
+  }, [cwd, onTerminalCommand, startDeployTimer]);
 
   const handleRestart = useCallback(async (id: string) => {
     try {
@@ -393,29 +417,27 @@ export default function DeployPanel({ cwd, onTerminalCommand, claudeRunning, aiA
 
         {(() => {
           const projectName = (cwd.split('/').pop() || '').toLowerCase();
-          const existingDeploy = deployments.find(d =>
-            d.appName === projectName || d.status === 'running' || d.status === 'unhealthy'
-          );
+          const existingDeploy = deployments.find(d => d.appName === projectName);
           const isRedeploy = !!existingDeploy;
-          const claudeBusy = claudeRunning && aiAction !== 'idle';
+          const deploying = isDeploying || deployments.some(d => d.status === 'building');
           return (
             <>
               <button
-                onClick={handleDeploy}
-                disabled={claudeBusy}
+                onClick={() => isRedeploy ? handleRedeploy(existingDeploy.appName) : handleDeploy()}
+                disabled={deploying}
                 style={{
                   ...primaryBtnStyle,
-                  opacity: claudeBusy ? 0.5 : 1,
-                  cursor: claudeBusy ? 'not-allowed' : 'pointer',
+                  opacity: deploying ? 0.5 : 1,
+                  cursor: deploying ? 'not-allowed' : 'pointer',
                   width: '100%',
                   backgroundColor: isRedeploy ? 'var(--accent, #7c6fe0)' : 'var(--accent, #7c6fe0)',
                 }}
               >
-                {claudeBusy ? 'Claude is busy...' : isRedeploy ? 'Redeploy' : 'CozyDeploy'}
+                {deploying ? 'Deploying...' : isRedeploy ? 'Redeploy' : 'CozyDeploy'}
               </button>
-              {claudeBusy && (
+              {deploying && (
                 <div style={{ fontSize: '0.78em', color: 'var(--text-secondary, #888)', marginTop: '0.3em', textAlign: 'center' }}>
-                  Wait for Claude to finish, or open a new terminal tab
+                  Deployment in progress...
                 </div>
               )}
               <div style={{ fontSize: '0.78em', color: 'var(--text-secondary, #666)', marginTop: '0.3em', textAlign: 'center' }}>

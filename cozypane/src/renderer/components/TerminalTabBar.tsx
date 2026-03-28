@@ -1,6 +1,29 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import type { AiAction } from '../lib/terminalAnalyzer';
 
+export interface PreviewError {
+  type: 'console' | 'network' | 'load';
+  message: string;
+  timestamp: number;
+  detail?: string;
+}
+
+export interface ConsoleLog {
+  level: number;
+  message: string;
+  timestamp: number;
+  source?: string;
+  line?: number;
+}
+
+export interface NetworkError {
+  method: string;
+  url: string;
+  status: number;
+  statusText: string;
+  timestamp: number;
+}
+
 export interface TerminalTab {
   id: string;
   ptyId: string | null;
@@ -14,6 +37,9 @@ export interface TerminalTab {
   previewLocalUrl?: string;
   previewLocalUrls?: string[];
   previewProdUrl?: string;
+  previewErrors?: PreviewError[];
+  previewConsoleLogs?: ConsoleLog[];
+  previewNetworkErrors?: NetworkError[];
 }
 
 function getDisplayLabel(tab: TerminalTab): string {

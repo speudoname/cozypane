@@ -310,6 +310,7 @@ export default function FilePreview({ filePath, fontSize = 13, onDirtyChange }: 
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [isDirty, setIsDirty] = useState(false);
   const currentPathRef = useRef<string | null>(null);
   const originalContentRef = useRef<string>('');
   const originalVersionRef = useRef<number>(0);
@@ -318,6 +319,28 @@ export default function FilePreview({ filePath, fontSize = 13, onDirtyChange }: 
 
   const fileType = filePath ? detectFileType(filePath) : 'text';
   const isMedia = fileType !== 'text';
+
+  const saveFileRef = useRef<(() => void) | null>(null);
+  const saveFile = () => {
+    const editor = editorRef.current;
+    const path = currentPathRef.current;
+    if (!editor || !path) return;
+    const content = editor.getValue();
+    setSaving(true);
+    window.cozyPane.fs.writefile(path, content).then(result => {
+      setSaving(false);
+      if (result.error) {
+        setError(result.error);
+      } else {
+        originalContentRef.current = content;
+        const model = editor.getModel();
+        if (model) originalVersionRef.current = model.getAlternativeVersionId();
+        setIsDirty(false);
+        onDirtyChangeRef.current?.(path, false);
+      }
+    }).catch(() => { setSaving(false); setError('Save failed'); });
+  };
+  saveFileRef.current = saveFile;
 
   // Create editor instance once
   useEffect(() => {
@@ -356,23 +379,7 @@ export default function FilePreview({ filePath, fontSize = 13, onDirtyChange }: 
     window.addEventListener('cozyPane:themeChange', handleThemeChange);
 
     // Cmd/Ctrl+S to save
-    editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
-      const path = currentPathRef.current;
-      if (!path) return;
-      const content = editor.getValue();
-      setSaving(true);
-      window.cozyPane.fs.writefile(path, content).then(result => {
-        setSaving(false);
-        if (result.error) {
-          setError(result.error);
-        } else {
-          originalContentRef.current = content;
-          const model = editor.getModel();
-          if (model) originalVersionRef.current = model.getAlternativeVersionId();
-          onDirtyChangeRef.current?.(path, false);
-        }
-      }).catch(() => { setSaving(false); setError('Save failed'); });
-    });
+    editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => saveFileRef.current?.());
 
     // Track dirty state via version ID (avoids full content comparison per keystroke)
     editor.onDidChangeModelContent(() => {
@@ -380,8 +387,9 @@ export default function FilePreview({ filePath, fontSize = 13, onDirtyChange }: 
       if (!path) return;
       const model = editor.getModel();
       if (!model) return;
-      const isDirty = model.getAlternativeVersionId() !== originalVersionRef.current;
-      onDirtyChangeRef.current?.(path, isDirty);
+      const dirty = model.getAlternativeVersionId() !== originalVersionRef.current;
+      setIsDirty(dirty);
+      onDirtyChangeRef.current?.(path, dirty);
     });
 
     return () => {
@@ -432,20 +440,28 @@ export default function FilePreview({ filePath, fontSize = 13, onDirtyChange }: 
         const loadedModel = editor.getModel();
         if (loadedModel) originalVersionRef.current = loadedModel.getAlternativeVersionId();
         editor.revealLine(1);
+        setIsDirty(false);
         onDirtyChangeRef.current?.(filePath, false);
       }
       setLoading(false);
     }).catch(() => { setLoading(false); setError('Could not load file'); });
   }, [filePath]);
 
+  const fileName = filePath ? filePath.split('/').pop() : null;
+
   return (
     <div className="file-preview" style={{ position: 'relative' }}>
-      {saving && (
-        <div style={{
-          position: 'absolute', top: 8, right: 16, zIndex: 10,
-          color: 'var(--success)', fontSize: 12,
-        }}>
-          Saving...
+      {!isMedia && filePath && (
+        <div className="file-preview-toolbar">
+          <span className="file-preview-filename">{fileName}{isDirty ? ' ●' : ''}</span>
+          <button
+            className={`file-preview-save-btn${isDirty ? ' dirty' : ''}`}
+            onClick={saveFile}
+            disabled={saving || !isDirty}
+            title="Save (Cmd+S)"
+          >
+            {saving ? 'Saving…' : 'Save'}
+          </button>
         </div>
       )}
 
@@ -457,7 +473,8 @@ export default function FilePreview({ filePath, fontSize = 13, onDirtyChange }: 
       {/* Text files — show Monaco editor */}
       <div ref={containerRef} style={{
         width: '100%',
-        height: '100%',
+        flex: 1,
+        minHeight: 0,
         display: isMedia ? 'none' : 'block',
       }} />
 

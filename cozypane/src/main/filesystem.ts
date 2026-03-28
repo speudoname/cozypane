@@ -85,6 +85,37 @@ export function registerFsHandlers() {
     }
   });
 
+  ipcMain.handle('fs:unlink', async (_event, filePath: string) => {
+    try {
+      assertSafePath(filePath);
+      await fs.promises.unlink(filePath);
+      return { success: true };
+    } catch (err: any) {
+      return { error: err.message || 'Could not delete file' };
+    }
+  });
+
+  ipcMain.handle('fs:rmdir', async (_event, dirPath: string) => {
+    try {
+      assertSafePath(dirPath);
+      await fs.promises.rm(dirPath, { recursive: true, force: true });
+      return { success: true };
+    } catch (err: any) {
+      return { error: err.message || 'Could not delete directory' };
+    }
+  });
+
+  ipcMain.handle('fs:rename', async (_event, oldPath: string, newPath: string) => {
+    try {
+      assertSafePath(oldPath);
+      assertSafePath(newPath);
+      await fs.promises.rename(oldPath, newPath);
+      return { success: true };
+    } catch (err: any) {
+      return { error: err.message || 'Could not rename' };
+    }
+  });
+
   ipcMain.handle('fs:homedir', () => {
     return os.homedir();
   });

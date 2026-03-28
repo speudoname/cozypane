@@ -1,4 +1,5 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
+import { ChevronRight, ChevronDown, FilePlus, FolderPlus, Pencil, Trash2, FileCode, FileJson, FileText, Braces } from 'lucide-react';
 
 interface Props {
   isOpen: boolean;
@@ -65,8 +66,24 @@ function getChangeColor(type: string | undefined): string | undefined {
   }
 }
 
+interface ContextMenu {
+  x: number;
+  y: number;
+  node: TreeNode | null; // null = clicked on empty area (root level)
+}
+
+interface InlineInput {
+  parentPath: string; // directory where new item goes, or path being renamed
+  mode: 'new-file' | 'new-folder' | 'rename';
+  targetNode?: TreeNode; // for rename
+  value: string;
+}
+
 export default function Sidebar({ isOpen, onToggle, onFileSelect, onDiffClick, activeFile, onCwdChange, cwd, changedFiles, lastWatcherEvent, fontSize, onZoomIn, onZoomOut, onZoomReset }: Props) {
   const [tree, setTree] = useState<TreeNode[]>([]);
+  const [contextMenu, setContextMenu] = useState<ContextMenu | null>(null);
+  const [inlineInput, setInlineInput] = useState<InlineInput | null>(null);
+  const inlineInputRef = useRef<HTMLInputElement>(null);
 
   // Load root tree when cwd changes
   useEffect(() => {
@@ -128,6 +145,67 @@ export default function Sidebar({ isOpen, onToggle, onFileSelect, onDiffClick, a
     // 'modify' doesn't change tree structure — just the color indicator via changedFiles
   }, [lastWatcherEvent, cwd]);
 
+  // Focus inline input after it mounts
+  useEffect(() => {
+    if (inlineInput) setTimeout(() => inlineInputRef.current?.focus(), 30);
+  }, [inlineInput]);
+
+  // Close context menu on outside click
+  useEffect(() => {
+    if (!contextMenu) return;
+    const close = () => setContextMenu(null);
+    window.addEventListener('click', close);
+    return () => window.removeEventListener('click', close);
+  }, [contextMenu]);
+
+  const handleContextMenu = useCallback((e: React.MouseEvent, node: TreeNode | null) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setContextMenu({ x: e.clientX, y: e.clientY, node });
+  }, []);
+
+  const startCreate = useCallback((mode: 'new-file' | 'new-folder', node: TreeNode | null) => {
+    const parentPath = node ? (node.isDirectory ? node.path : node.path.slice(0, node.path.lastIndexOf('/'))) : cwd;
+    setInlineInput({ parentPath, mode, value: '' });
+    setContextMenu(null);
+  }, [cwd]);
+
+  const startRename = useCallback((node: TreeNode) => {
+    setInlineInput({ parentPath: node.path.slice(0, node.path.lastIndexOf('/')), mode: 'rename', targetNode: node, value: node.name });
+    setContextMenu(null);
+  }, []);
+
+  const handleDelete = useCallback(async (node: TreeNode) => {
+    setContextMenu(null);
+    if (!window.confirm(`Delete "${node.name}"?`)) return;
+    const result = node.isDirectory
+      ? await (window.cozyPane.fs as any).rmdir(node.path)
+      : await (window.cozyPane.fs as any).unlink(node.path);
+    if (result?.error) alert(result.error);
+  }, []);
+
+  const commitInlineInput = useCallback(async () => {
+    if (!inlineInput) return;
+    const name = inlineInput.value.trim();
+    if (!name) { setInlineInput(null); return; }
+
+    if (inlineInput.mode === 'rename' && inlineInput.targetNode) {
+      const newPath = inlineInput.parentPath + '/' + name;
+      const result = await (window.cozyPane.fs as any).rename(inlineInput.targetNode.path, newPath);
+      if (result?.error) alert(result.error);
+    } else if (inlineInput.mode === 'new-folder') {
+      const newPath = inlineInput.parentPath + '/' + name;
+      const result = await window.cozyPane.fs.mkdir(newPath);
+      if (result?.error) alert(result.error);
+    } else if (inlineInput.mode === 'new-file') {
+      const newPath = inlineInput.parentPath + '/' + name;
+      const result = await window.cozyPane.fs.writefile(newPath, '');
+      if (result?.error) alert(result.error);
+      else onFileSelect(newPath, name);
+    }
+    setInlineInput(null);
+  }, [inlineInput, onFileSelect]);
+
   async function handleClick(node: TreeNode) {
     try {
       if (node.isDirectory) {
@@ -156,22 +234,16 @@ export default function Sidebar({ isOpen, onToggle, onFileSelect, onDiffClick, a
     } catch {}
   }
 
-  function getFileIcon(node: TreeNode): string {
+  function getFileIcon(node: TreeNode): React.ReactNode {
     if (node.isDirectory) {
-      return node.expanded ? 'v' : '>';
+      return node.expanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />;
     }
     const ext = node.name.split('.').pop()?.toLowerCase();
     switch (ext) {
-      case 'ts': case 'tsx': return 'T';
-      case 'js': case 'jsx': return 'J';
-      case 'css': case 'scss': return '#';
-      case 'html': return '<>';
-      case 'json': return '{}';
-      case 'md': return 'M';
-      case 'py': return 'P';
-      case 'rs': return 'R';
-      case 'go': return 'G';
-      default: return '-';
+      case 'ts': case 'tsx': case 'js': case 'jsx': return <FileCode size={13} />;
+      case 'json': return <FileJson size={13} />;
+      case 'css': case 'scss': case 'less': return <Braces size={13} />;
+      default: return <FileText size={13} />;
     }
   }
 
@@ -196,10 +268,12 @@ export default function Sidebar({ isOpen, onToggle, onFileSelect, onDiffClick, a
   const flatNodes = useMemo(() => flattenTree(tree), [tree]);
 
   return (
-    <div className={`sidebar ${isOpen ? '' : 'collapsed'}`}>
+    <div className={`sidebar ${isOpen ? '' : 'collapsed'}`} onContextMenu={e => handleContextMenu(e, null)}>
       <div className="sidebar-header">
         <span className="sidebar-title" title={cwd}>{folderName}</span>
         <div className="sidebar-header-actions">
+          <button className="sidebar-icon-btn" onClick={() => startCreate('new-file', null)} title="New File"><FilePlus size={14} /></button>
+          <button className="sidebar-icon-btn" onClick={() => startCreate('new-folder', null)} title="New Folder"><FolderPlus size={14} /></button>
           {onZoomIn && onZoomOut && (
             <div className="zoom-controls zoom-controls-compact">
               <button className="zoom-btn" onClick={onZoomOut} title="Zoom out">−</button>
@@ -217,13 +291,15 @@ export default function Sidebar({ isOpen, onToggle, onFileSelect, onDiffClick, a
           const changeType = changedFiles?.get(node.path);
           const changeColor = getChangeColor(changeType);
           const dirChangeCount = node.isDirectory ? changedDirs.get(node.path) : undefined;
+          const isRenaming = inlineInput?.mode === 'rename' && inlineInput.targetNode?.path === node.path;
           return (
             <div
               key={node.path}
               className={`file-entry ${node.isDirectory ? 'directory' : ''} ${activeFile === node.path ? 'active' : ''} ${dirChangeCount ? 'has-changes' : ''} ${node.name.startsWith('.') ? 'dotfile' : ''}`}
               style={{ paddingLeft: 16 + node.depth * 16 }}
-              onClick={() => handleClick(node)}
-              draggable={node.isFile}
+              onClick={() => !isRenaming && handleClick(node)}
+              onContextMenu={e => { e.stopPropagation(); handleContextMenu(e, node); }}
+              draggable={node.isFile && !isRenaming}
               onDragStart={e => {
                 if (node.isFile) {
                   e.dataTransfer.setData('text/plain', node.path);
@@ -232,21 +308,68 @@ export default function Sidebar({ isOpen, onToggle, onFileSelect, onDiffClick, a
               }}
             >
               <span className="file-icon">{getFileIcon(node)}</span>
-              <span className="file-name" style={changeColor ? { color: changeColor } : undefined}>
-                {node.name}
-              </span>
-              {changeType && (
+              {isRenaming ? (
+                <input
+                  ref={inlineInputRef}
+                  className="sidebar-inline-input"
+                  value={inlineInput!.value}
+                  onChange={e => setInlineInput(prev => prev ? { ...prev, value: e.target.value } : null)}
+                  onKeyDown={e => { if (e.key === 'Enter') commitInlineInput(); else if (e.key === 'Escape') setInlineInput(null); }}
+                  onBlur={commitInlineInput}
+                  onClick={e => e.stopPropagation()}
+                />
+              ) : (
+                <span className="file-name" style={changeColor ? { color: changeColor } : undefined}>
+                  {node.name}
+                </span>
+              )}
+              {!isRenaming && changeType && (
                 <span className="file-change-dot" style={{ color: changeColor }}>
                   {changeType === 'create' ? '+' : changeType === 'modify' ? '●' : '−'}
                 </span>
               )}
-              {dirChangeCount && !changeType && (
+              {!isRenaming && dirChangeCount && !changeType && (
                 <span className="dir-change-badge">{dirChangeCount}</span>
               )}
             </div>
           );
         })}
+
+        {/* Inline create input — shown at bottom of the relevant directory */}
+        {inlineInput && inlineInput.mode !== 'rename' && (
+          <div className="file-entry" style={{ paddingLeft: 16 }}>
+            <span className="file-icon">{inlineInput.mode === 'new-folder' ? <FolderPlus size={13} /> : <FilePlus size={13} />}</span>
+            <input
+              ref={inlineInputRef}
+              className="sidebar-inline-input"
+              placeholder={inlineInput.mode === 'new-folder' ? 'folder name' : 'file name'}
+              value={inlineInput.value}
+              onChange={e => setInlineInput(prev => prev ? { ...prev, value: e.target.value } : null)}
+              onKeyDown={e => { if (e.key === 'Enter') commitInlineInput(); else if (e.key === 'Escape') setInlineInput(null); }}
+              onBlur={commitInlineInput}
+            />
+          </div>
+        )}
       </div>
+
+      {/* Context menu */}
+      {contextMenu && (
+        <div
+          className="sidebar-context-menu"
+          style={{ top: contextMenu.y, left: contextMenu.x }}
+          onClick={e => e.stopPropagation()}
+        >
+          <button onClick={() => startCreate('new-file', contextMenu.node)}><FilePlus size={13} /> New File</button>
+          <button onClick={() => startCreate('new-folder', contextMenu.node)}><FolderPlus size={13} /> New Folder</button>
+          {contextMenu.node && (
+            <>
+              <div className="context-menu-divider" />
+              <button onClick={() => startRename(contextMenu.node!)}><Pencil size={13} /> Rename</button>
+              <button className="danger" onClick={() => handleDelete(contextMenu.node!)}><Trash2 size={13} /> Delete</button>
+            </>
+          )}
+        </div>
+      )}
     </div>
   );
 }
