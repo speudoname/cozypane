@@ -1,31 +1,6 @@
 import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import type { MutableRefObject } from 'react';
 
-// useTerminalTabs — terminal-tab state machine + per-tab watcher scoping.
-//
-// Before this hook existed, App.tsx had ~150 lines of interleaved state
-// for:
-//   - `terminalTabs`, `activeTerminalId`, `splitTerminalId`
-//   - three ref-mirror patterns (`activeTerminalIdRef`, `splitTerminalIdRef`,
-//     `terminalTabsRef`) so stale callbacks could read the current value
-//   - `tabWatcherCache` — per-tab cached activityEvents
-//   - `activityEvents` + `lastWatcherEvent` scoped to the active tab
-//   - a save/restore effect that swapped event caches on tab switch
-//   - a tab-counter ref
-//   - `addTerminalTab`, `closeTerminalTab`, `switchTerminalTab`, `toggleSplit`,
-//     `updateTab` callbacks
-//   - a mount-time homedir init effect
-//   - a `watcher:start` / `watcher:stop` lifecycle effect keyed on cwd
-//   - the `changedFiles` useMemo derived from activityEvents
-//
-// Audit findings closed by this extraction:
-//   - H19 (App.tsx decomposition, the biggest slice)
-//   - M50 (per-tab file watcher — already partially implemented via
-//     `tabWatcherCache` but now owned by the hook with clearer semantics)
-//
-// The hook exposes the refs explicitly so existing App.tsx callbacks can
-// still read the latest values without a re-subscribe.
-
 export type ConfirmFn = (opts: {
   title: string;
   message: string;
@@ -35,43 +10,7 @@ export type ConfirmFn = (opts: {
 }) => Promise<boolean>;
 
 export interface UseTerminalTabsOptions {
-  /** Pass in the `useConfirm()` fn from App.tsx so the close-tab prompt is themed. */
   confirm: ConfirmFn;
-}
-
-export interface UseTerminalTabsReturn {
-  // --- State ---
-  tabs: TerminalTab[];
-  activeId: string;
-  splitId: string | null;
-
-  // --- Derived from active tab ---
-  active: TerminalTab;
-  cwd: string;
-  aiAction: AiAction;
-  isClaudeRunning: boolean;
-
-  // --- Per-tab scoped watcher state ---
-  activityEvents: FileChangeEvent[];
-  lastWatcherEvent: FileChangeEvent | null;
-  changedFiles: Map<string, 'create' | 'modify' | 'delete'>;
-
-  // --- Refs exposed for callbacks that need the latest value ---
-  activeIdRef: MutableRefObject<string>;
-  splitIdRef: MutableRefObject<string | null>;
-  tabsRef: MutableRefObject<TerminalTab[]>;
-
-  // --- Setters that App.tsx needs for tab metadata updates ---
-  setTabs: React.Dispatch<React.SetStateAction<TerminalTab[]>>;
-  setActiveId: React.Dispatch<React.SetStateAction<string>>;
-  setSplitId: React.Dispatch<React.SetStateAction<string | null>>;
-
-  // --- Actions ---
-  addTab: (opts?: AddTabOptions) => void;
-  closeTab: (id: string) => Promise<void>;
-  switchTab: (id: string) => void;
-  toggleSplit: (id: string) => void;
-  updateTab: (id: string, updates: Partial<TerminalTab>) => void;
 }
 
 export interface AddTabOptions {
@@ -80,6 +19,43 @@ export interface AddTabOptions {
   customLabel?: string;
   autoCommand?: string;
   launched?: boolean;
+}
+
+export interface UseTerminalTabsReturn {
+  // State
+  tabs: TerminalTab[];
+  activeId: string;
+  splitId: string | null;
+
+  // Derived from active tab
+  active: TerminalTab;
+  cwd: string;
+  aiAction: AiAction;
+  isClaudeRunning: boolean;
+
+  // Per-tab scoped watcher state
+  activityEvents: FileChangeEvent[];
+  lastWatcherEvent: FileChangeEvent | null;
+  changedFiles: Map<string, 'create' | 'modify' | 'delete'>;
+
+  // Refs exposed for menu/PTY callbacks registered once at mount that
+  // must read the latest tab state without a re-subscribe.
+  activeIdRef: MutableRefObject<string>;
+  splitIdRef: MutableRefObject<string | null>;
+  tabsRef: MutableRefObject<TerminalTab[]>;
+
+  // Actions
+  addTab: (opts?: AddTabOptions) => void;
+  closeTab: (id: string) => Promise<void>;
+  /** Close the tab that's currently active. */
+  closeActiveTab: () => Promise<void>;
+  switchTab: (id: string) => void;
+  toggleSplit: (id: string) => void;
+  updateTab: (id: string, updates: Partial<TerminalTab>) => void;
+  /** Update the active tab's cwd. */
+  setActiveCwd: (cwd: string) => void;
+  /** Reorder tabs via drag-drop in the tab bar. */
+  reorderTabs: (from: number, to: number) => void;
 }
 
 interface TabWatcherState {
@@ -95,20 +71,14 @@ function makeTerminalTab(cwd: string, counter: number, launched = false): Termin
 export function useTerminalTabs(options: UseTerminalTabsOptions): UseTerminalTabsReturn {
   const { confirm } = options;
 
-  // Monotonic counter for tab labels. Refs survive across renders.
   const tabCounterRef = useRef(1);
 
-  // Core state
   const [tabs, setTabs] = useState<TerminalTab[]>(() => [
     makeTerminalTab('', tabCounterRef.current++),
   ]);
   const [activeId, setActiveId] = useState<string>(() => tabs[0].id);
   const [splitId, setSplitId] = useState<string | null>(null);
 
-  // Ref mirrors so callbacks can read the latest values without stale
-  // closures. This is the pattern the audit flagged as "ad-hoc" — still
-  // ad-hoc but now contained inside a single hook rather than scattered
-  // across the App component.
   const tabsRef = useRef(tabs);
   tabsRef.current = tabs;
   const activeIdRef = useRef(activeId);
@@ -116,20 +86,17 @@ export function useTerminalTabs(options: UseTerminalTabsOptions): UseTerminalTab
   const splitIdRef = useRef(splitId);
   splitIdRef.current = splitId;
 
-  // Per-tab activity event cache. The audit's M50 was "watcher is
-  // single-global; events leak between tabs with the same cwd". The
-  // fix: each tab has its own accumulated activityEvents array, and
-  // switching tabs swaps to the entering tab's cache.
+  // M50 — per-tab activity cache. The watcher is still process-global
+  // (one `fs.watch` at a time), but each tab keeps its own accumulated
+  // event history so switching tabs doesn't cross-contaminate the feed.
   const tabWatcherCache = useRef(new Map<string, TabWatcherState>());
 
-  // Active tab's live activity feed — the one currently displayed.
   const [activityEvents, setActivityEvents] = useState<FileChangeEvent[]>([]);
   const [lastWatcherEvent, setLastWatcherEvent] = useState<FileChangeEvent | null>(null);
   const activityEventsRef = useRef(activityEvents);
   activityEventsRef.current = activityEvents;
   const prevActiveIdRef = useRef(activeId);
 
-  // Derived values
   const active = tabs.find((t) => t.id === activeId) || tabs[0];
   const cwd = active.cwd;
   const aiAction = active.aiAction;
@@ -143,7 +110,7 @@ export function useTerminalTabs(options: UseTerminalTabsOptions): UseTerminalTab
     return map;
   }, [activityEvents]);
 
-  // --- Initial mount: set first tab's cwd to home directory ---
+  // Initial mount: default first tab to homedir.
   useEffect(() => {
     if (tabs[0]?.cwd) return;
     window.cozyPane.fs.homedir().then((home) => {
@@ -152,9 +119,7 @@ export function useTerminalTabs(options: UseTerminalTabsOptions): UseTerminalTab
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // --- File watcher lifecycle, keyed on active tab's cwd ---
-  // When the user switches tabs or cd's into a new directory, restart
-  // the watcher with the new cwd. When no tab is active, stop the watcher.
+  // Restart the file watcher whenever the active tab's cwd changes.
   useEffect(() => {
     if (!cwd) return;
 
@@ -171,24 +136,17 @@ export function useTerminalTabs(options: UseTerminalTabsOptions): UseTerminalTab
     };
   }, [cwd]);
 
-  // --- Tab switch: save leaving tab's activity events, restore entering tab's ---
-  // This is the M50 per-tab watcher semantics: each tab has its own
-  // cached event history so switching back to a previously-visited tab
-  // shows its own activity feed, not the currently-live one.
+  // Tab switch: save the leaving tab's events, restore the entering tab's.
   useEffect(() => {
     const prevId = prevActiveIdRef.current;
     if (prevId === activeId) return;
-    // Save events from the tab we're leaving
     tabWatcherCache.current.set(prevId, {
       activityEvents: activityEventsRef.current,
     });
-    // Restore events for the tab we're entering
     const cached = tabWatcherCache.current.get(activeId);
     setActivityEvents(cached?.activityEvents ?? []);
     prevActiveIdRef.current = activeId;
   }, [activeId]);
-
-  // --- Actions ---
 
   const updateTab = useCallback((tabId: string, updates: Partial<TerminalTab>) => {
     setTabs((prev) => prev.map((t) => (t.id === tabId ? { ...t, ...updates } : t)));
@@ -213,7 +171,7 @@ export function useTerminalTabs(options: UseTerminalTabsOptions): UseTerminalTab
   const closeTab = useCallback(async (id: string) => {
     const currentTabs = tabsRef.current;
     const tab = currentTabs.find((t) => t.id === id);
-    if (!tab || currentTabs.length <= 1) return; // Can't close last tab
+    if (!tab || currentTabs.length <= 1) return;
 
     const ok = await confirm({
       title: 'Close terminal?',
@@ -230,13 +188,11 @@ export function useTerminalTabs(options: UseTerminalTabsOptions): UseTerminalTab
       }
       tabWatcherCache.current.delete(id);
       const remaining = prev.filter((t) => t.id !== id);
-      // If closing the active tab, switch to the adjacent one
       if (id === activeIdRef.current) {
         const idx = prev.findIndex((t) => t.id === id);
         const newActive = remaining[Math.min(idx, remaining.length - 1)] || remaining[0];
         setActiveId(newActive.id);
       }
-      // Clear split if it was the split tab
       if (id === splitIdRef.current) {
         setSplitId(null);
       }
@@ -244,15 +200,30 @@ export function useTerminalTabs(options: UseTerminalTabsOptions): UseTerminalTab
     });
   }, [confirm]);
 
+  const closeActiveTab = useCallback(() => closeTab(activeIdRef.current), [closeTab]);
+
   const switchTab = useCallback((id: string) => {
     setActiveId(id);
   }, []);
 
   const toggleSplit = useCallback((id: string) => {
     setSplitId((prev) => {
-      if (prev === id) return null; // Un-split
-      if (id === activeIdRef.current) return prev; // Can't split the active tab as its own split
+      if (prev === id) return null;
+      if (id === activeIdRef.current) return prev; // Active tab can't be its own split.
       return id;
+    });
+  }, []);
+
+  const setActiveCwd = useCallback((newCwd: string) => {
+    updateTab(activeIdRef.current, { cwd: newCwd });
+  }, [updateTab]);
+
+  const reorderTabs = useCallback((from: number, to: number) => {
+    setTabs((prev) => {
+      const next = [...prev];
+      const [moved] = next.splice(from, 1);
+      next.splice(to, 0, moved);
+      return next;
     });
   }, []);
 
@@ -270,13 +241,13 @@ export function useTerminalTabs(options: UseTerminalTabsOptions): UseTerminalTab
     activeIdRef,
     splitIdRef,
     tabsRef,
-    setTabs,
-    setActiveId,
-    setSplitId,
     addTab,
     closeTab,
+    closeActiveTab,
     switchTab,
     toggleSplit,
     updateTab,
+    setActiveCwd,
+    reorderTabs,
   };
 }

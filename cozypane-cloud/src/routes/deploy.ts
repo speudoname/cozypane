@@ -20,16 +20,6 @@ import { cleanupDeployment } from '../services/cleanup.js';
 import { appUrl, serializeDeploymentSummary, serializeDeploymentDetail } from '../services/serializers.js';
 import { enqueueDeploy } from '../services/deployQueue.js';
 
-// Wave 7 — this file used to be 671 lines because custom-domain handlers,
-// a sliding-window rate limiter, and the shared `getDeployment` helper
-// were all inlined alongside the deploy CRUD. They've been split out:
-//   - `middleware/rateLimit.ts`   → checkUserRateLimit
-//   - `db/deployments.ts`         → getDeployment
-//   - `routes/domains.ts`         → POST/verify/DELETE/GET /deploy/:id/domains*
-// This file now owns: POST /deploy (upload + enqueue), GET list, GET :id,
-// GET logs, DELETE :id, WS logs/stream, POST redeploy, WS exec, GET group,
-// DELETE group. No domain logic and no inline utilities.
-
 const APP_NAME_REGEX = /^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$/;
 
 export async function deployRoutes(app: FastifyInstance): Promise<void> {

@@ -172,24 +172,18 @@ startDeployWorker(app.log);
 // Graceful shutdown
 const shutdown = async (signal: string) => {
   app.log.info(`Received ${signal}, shutting down...`);
-  // 1. Stop accepting new HTTP requests.
   await app.close();
-  // 2. Cancel any pending delayed health re-check timers in the deployer.
-  //    These are short (<= 65s) background tasks that were queued via
-  //    setTimeout when a container failed its initial health check. They
-  //    would otherwise fire after the Postgres pools close and silently
-  //    error. Wave 7 cleanup.
-  cancelPendingHealthRechecks();
-  // 3. Drain the deploy queue: wait for in-flight builds to finish, then
-  //    close worker + producer connections to Redis. Must happen BEFORE
-  //    closing the Postgres pools because `buildAndDeploy` writes to
-  //    `deployments` during shutdown.
+  // Drain the queue FIRST so any in-flight build that's in its slow-startup
+  // re-check branch gets to schedule its delayed check. Only THEN cancel
+  // pending re-check timers — otherwise a build that finishes during drain
+  // could queue a new timer after we already swept. Pool close has to be
+  // last because `buildAndDeploy` writes to `deployments` during drain.
   try {
     await drainDeployQueue(app.log);
   } catch (err) {
     app.log.error({ err }, 'Error draining deploy queue on shutdown');
   }
-  // 4. Close Postgres pools last.
+  cancelPendingHealthRechecks();
   await Promise.allSettled([pool.end(), platformPool.end()]);
   process.exit(0);
 };

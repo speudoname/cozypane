@@ -1,41 +1,15 @@
 import { BrowserWindow, WebContents } from 'electron';
 
-// Multi-window-ready window registry. Replaces the pre-M21 pattern of a
-// single `mainWindow` module variable + `getWindow()` closure passed to
-// every handler. The problems with the old pattern were:
-//
-//   1. IPC events originating from the renderer had no way to reach back
-//      to the specific window that initiated them — all handlers used the
-//      same `getWindow()` closure that returned the module singleton.
-//
-//   2. On macOS, closing the window and re-activating from the dock calls
-//      `createWindow()` again, which overwrote `mainWindow`; PTY/watcher
-//      callbacks captured against the old closure continued to reference
-//      the new window (functional, but by accident — any second-window
-//      support would cross-talk immediately).
-//
-//   3. Sending protocol / autoUpdater / periodic update events required
-//      guessing which window should receive them; the pre-M21 code just
-//      used `mainWindow` directly, which isn't portable to multi-window.
-//
-// The post-M21 contract is:
-//
-//   - **IPC handlers** use `event.sender` (the WebContents of the calling
-//     window) for their own replies. No registry lookup needed.
-//   - **PTY data/exit callbacks** capture the spawning window's
-//     WebContents at creation time and send to it directly.
-//   - **The watcher** captures the sender of `watcher:start` and routes
-//     change events back to it.
-//   - **Menu actions** use `getFocusedWindow()` so menu clicks target the
-//     user-visible foreground window.
-//   - **Main-process-initiated events** (autoUpdater, protocol callbacks,
-//     periodic update checker) use `broadcastAll()` so every open window
-//     receives them.
-//
-// Today the app still opens exactly one window, so all of these behaviors
-// collapse to the pre-M21 semantics. But the architecture no longer bakes
-// in the "one window forever" assumption — adding a second window in the
-// future is an incremental change, not a rewrite.
+// Window registry. The contract sub-handlers live by:
+//   - IPC handlers reply via `event.sender` (the calling window's WebContents).
+//   - PTY data/exit callbacks capture the spawning window's WebContents at
+//     creation time and send directly to it; cleanupForSender tears them
+//     down when the window closes.
+//   - The watcher captures the sender of `watcher:start` and routes change
+//     events back to it.
+//   - Menu actions use `getFocusedWindow()` so clicks target the foreground.
+//   - Main-process-initiated events (autoUpdater, protocol callbacks,
+//     periodic update checker) use `broadcastAll()`.
 
 let primary: BrowserWindow | null = null;
 

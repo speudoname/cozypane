@@ -27,15 +27,6 @@ import TerminalTabBar from './components/TerminalTabBar';
 // global ambient types (src/renderer/types.d.ts) — no explicit import needed.
 import type { AiAction } from './lib/terminalAnalyzer';
 
-// H19 CP1: the old `loadPersisted` / `savePersisted` helpers have moved
-// into `lib/usePersistedState.ts` where they live as module-private
-// functions inside a single `usePersistedState(key, fallback)` hook that
-// encapsulates both read-on-mount and write-on-change. App.tsx used to
-// carry 14 nearly-identical `useState` + `useEffect(() => savePersisted(...))`
-// pairs; they've been collapsed into 13 `usePersistedState` calls.
-// (The 14th — `cwd` — is kept as a dedicated effect because it's a
-// DERIVED value from the active terminal tab, not a state slice.)
-
 interface OpenTab {
   path: string;
   name: string;
@@ -51,10 +42,6 @@ interface DiffState {
 export default function App() {
   const confirm = useConfirm();
 
-  // --- H19 CP3 — panel layout (sizes, modes, resize handlers) lives in
-  // usePanelLayout. It owns the persisted slices, the drag-in-progress
-  // flags, and the three `useDragResize` handlers that used to be ~30
-  // lines of boilerplate inline.
   const {
     panelsOpen, setPanelsOpen,
     layoutMode, setLayoutMode,
@@ -68,11 +55,10 @@ export default function App() {
     handlePanelResizeStart, handleSplitResizeStart, handlePreviewResizeStart,
   } = usePanelLayout();
 
-  // --- File-editor tab state (which files are open in Monaco) ---
+  // File-editor tab state — which files are open in Monaco.
   const [openTabs, setOpenTabs] = usePersistedState<OpenTab[]>('openTabs', []);
   const [activeTab, setActiveTab] = usePersistedState<string | null>('activeTab', null);
 
-  // --- H19 CP5 — per-panel font sizes + hover-zone-aware adjustZoom ---
   const {
     terminalFontSize, setTerminalFontSize,
     editorFontSize, setEditorFontSize,
@@ -94,15 +80,8 @@ export default function App() {
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [deployments, setDeployments] = useState<Deployment[]>([]);
 
-  // H19 CP2 / M50 — Multi-terminal state machine + per-tab file watcher
-  // extracted into `lib/useTerminalTabs.ts`. Previously ~150 lines of
-  // interleaved useState/useRef/useEffect/useCallback; now a single hook
-  // owns tabs, activeId, splitId, ref mirrors, per-tab activity cache,
-  // and the watcher start/stop lifecycle keyed on active cwd.
-  //
-  // Variable names are aliased during destructure so existing call sites
-  // across App.tsx (and the remaining menu/palette wiring below) keep
-  // working unchanged.
+  // Terminal tab state machine + per-tab watcher. Variable names aliased
+  // at destructure so existing JSX call sites read naturally.
   const {
     tabs: terminalTabs,
     activeId: activeTerminalId,
@@ -114,15 +93,15 @@ export default function App() {
     lastWatcherEvent,
     changedFiles,
     activeIdRef: activeTerminalIdRef,
-    splitIdRef: splitTerminalIdRef,
     tabsRef: terminalTabsRef,
-    setTabs: setTerminalTabs,
-    setActiveId: setActiveTerminalId,
     addTab: addTerminalTab,
     closeTab: closeTerminalTab,
+    closeActiveTab: closeActiveTerminalTab,
     switchTab: switchTerminalTab,
     toggleSplit,
     updateTab,
+    setActiveCwd: setCwd,
+    reorderTabs,
   } = useTerminalTabs({ confirm });
 
   // Persist `cwd` whenever the active terminal's cwd changes. This stays
@@ -276,14 +255,10 @@ export default function App() {
     void closeFileTab(filePath);
   }, [closeFileTab]);
 
-  // H19 CP4 — global keyboard shortcuts (Cmd+K/T/W/+/-/0) live in the
-  // hook. Cmd+W editor-vs-terminal routing (M44 fix) is preserved via
-  // the `onCloseEditorTab` callback; we return `false` to tell the hook
-  // to fall through to terminal-tab close when there's no active editor.
+  // Cmd+W editor-vs-terminal routing (M44): returning `false` from the
+  // editor-close callback tells the hook to fall through to terminal-tab
+  // close when there's no active editor file.
   const openPalette = useCallback(() => setPaletteOpen(prev => !prev), []);
-  const closeActiveTerminalTab = useCallback(() => {
-    closeTerminalTab(activeTerminalIdRef.current);
-  }, [closeTerminalTab, activeTerminalIdRef]);
   const closeEditorTabIfActive = useCallback((): boolean | void => {
     if (!activeTab) return false;
     void closeFileTab(activeTab);
@@ -292,7 +267,7 @@ export default function App() {
   useKeyboardShortcuts({
     onOpenPalette: openPalette,
     onNewTab: addTerminalTab,
-    onCloseTerminalTab: closeActiveTerminalTab,
+    onCloseTerminalTab: () => { void closeActiveTerminalTab(); },
     onCloseEditorTab: closeEditorTabIfActive,
     onZoom: adjustZoom,
     hoverZoneRef,
@@ -302,7 +277,7 @@ export default function App() {
   useEffect(() => {
     const cleanups = [
       window.cozyPane.onMenuAction('menu:new-tab', addTerminalTab),
-      window.cozyPane.onMenuAction('menu:close-tab', () => closeTerminalTab(activeTerminalIdRef.current)),
+      window.cozyPane.onMenuAction('menu:close-tab', () => { void closeActiveTerminalTab(); }),
       window.cozyPane.onMenuAction('menu:toggle-panels', togglePanels),
       window.cozyPane.onMenuAction('menu:toggle-layout', toggleLayout),
       window.cozyPane.onMenuAction('menu:settings', () => { setPanelsOpen(true); setRightPanelTab('settings'); }),
@@ -321,7 +296,7 @@ export default function App() {
       window.cozyPane.onMenuAction('menu:zoom-reset', () => adjustZoom(0, true)),
     ];
     return () => cleanups.forEach(fn => fn());
-  }, [addTerminalTab, closeTerminalTab, togglePanels, toggleLayout, toggleSplit, adjustZoom]);
+  }, [addTerminalTab, closeActiveTerminalTab, togglePanels, toggleLayout, toggleSplit, adjustZoom]);
 
   // Listen for /deploy command from CommandInput
   useEffect(() => {
@@ -386,23 +361,10 @@ export default function App() {
     ));
   }, []);
 
-  const setCwd = useCallback((newCwd: string) => {
-    updateTab(activeTerminalIdRef.current, { cwd: newCwd });
-  }, [updateTab]);
-
-  // H26 — Monaco container must ALWAYS stay mounted (CLAUDE.md rule).
-  //
-  // Previously `renderBottomPanel()` returned completely different JSX trees
-  // for each panel state — Settings/Git/Deploy/Preview/Diff/Empty — which
-  // meant React unmounted `FilePreview` (and disposed its Monaco editor)
-  // every time the user switched the right-panel tab, opened a diff, or
-  // closed the last file tab. Monaco spin-up is expensive and caused
-  // visible flicker.
-  //
-  // The fix: FilePreview is rendered exactly once, permanently. Its
-  // container is toggled via `display: none` (or an absolute-positioned
-  // stacking layer) based on which sub-view is active. Same trick we
-  // already use for terminal tabs.
+  // Monaco container must ALWAYS stay mounted (CLAUDE.md rule) — Monaco
+  // spin-up is expensive and visibly flickers. FilePreview is rendered
+  // once, permanently; its container is toggled via `display: none` for
+  // diff/empty sub-views. Same trick used for terminal tabs.
   const renderBottomPanel = () => {
     const showPreviewTab = rightPanelTab === 'preview';
     const showDiff = showPreviewTab && !!diffState;
@@ -595,14 +557,7 @@ export default function App() {
             onAdd={addTerminalTab}
             onToggleSplit={toggleSplit}
             onRename={(id, name) => updateTab(id, { customLabel: name || undefined })}
-            onReorder={(from, to) => {
-              setTerminalTabs(prev => {
-                const next = [...prev];
-                const [moved] = next.splice(from, 1);
-                next.splice(to, 0, moved);
-                return next;
-              });
-            }}
+            onReorder={reorderTabs}
             fontSize={terminalFontSize}
             onZoomIn={() => setTerminalFontSize(prev => Math.min(28, prev + 1))}
             onZoomOut={() => setTerminalFontSize(prev => Math.max(8, prev - 1))}
@@ -639,7 +594,7 @@ export default function App() {
                   }
                   onClick={() => {
                     if (isSplit && !isActive) {
-                      setActiveTerminalId(tab.id);
+                      switchTerminalTab(tab.id);
                     }
                   }}
                 >

@@ -56,13 +56,8 @@ app.on('web-contents-created', (_event, contents) => {
   });
 });
 
-// M21: `mainWindow` is retained as a local-only reference for dialog
-// parenting and the close-confirm flow. For IPC routing, sub-handlers
-// no longer receive a `getWindow()` closure — they use the Electron
-// event's `sender` WebContents directly (see pty.ts, watcher.ts). For
-// main-process-initiated events (protocol callbacks, auto-updater,
-// periodic update checker), use `broadcastAll()` / `getPrimaryWindow()`
-// from windows.ts so multi-window is a future incremental addition.
+// Local reference kept only for dialog parenting and the close-confirm
+// flow; sub-handlers route via event.sender or windows.ts helpers.
 let mainWindow: BrowserWindow | null = null;
 let forceQuit = false;
 const isDev = !app.isPackaged;
@@ -150,19 +145,13 @@ function createWindow() {
     }
   });
 
-  // M21: clean up every PTY owned by this window's WebContents. Without
-  // this, closing a secondary window in a (future) multi-window setup
-  // would leave its shell processes running in the main process with no
-  // way to reach them.
+  // Clean up every PTY owned by this window's WebContents on close.
   const sender = mainWindow.webContents;
   mainWindow.on('closed', () => {
     cleanupForSender(sender);
     mainWindow = null;
   });
 
-  // Register as the primary window for main-process-initiated events
-  // (autoUpdater, protocol callbacks, periodic update checker). The
-  // registry clears itself on 'closed'.
   registerPrimaryWindow(mainWindow);
 }
 

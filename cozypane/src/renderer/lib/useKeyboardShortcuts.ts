@@ -2,14 +2,8 @@ import { useEffect } from 'react';
 import type { MutableRefObject } from 'react';
 import type { HoverZone } from './useFontSizes';
 
-// useKeyboardShortcuts — global window keyboard shortcut wiring
-// previously spread across two useEffect blocks in App.tsx. Centralizes
-// Cmd+K / Cmd+T / Cmd+W / Cmd+/- / Cmd+0 handling.
-//
-// Audit findings closed by this hook:
-//   - H19 (App.tsx decomposition, CP4)
-//   - M44 (Cmd+W data-loss fix, preserved — Cmd+W routes to editor vs
-//     terminal based on hoverZoneRef)
+// Global keyboard shortcut wiring: Cmd+K (palette), Cmd+T (new tab),
+// Cmd+W (editor-vs-terminal routed close), Cmd+/- / Cmd+0 (zoom).
 
 export interface UseKeyboardShortcutsOptions {
   onOpenPalette: () => void;

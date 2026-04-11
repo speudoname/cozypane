@@ -1,16 +1,8 @@
 import { app, Menu, shell } from 'electron';
 import { getFocusedWindow } from './windows';
 
-// Electron application menu template, extracted from main.ts to keep the
-// main-process entry file focused on window/lifecycle wiring. All menu
-// items that trigger renderer-side behavior go through `menu:*` IPC
-// channels which the renderer subscribes to via
-// `window.cozyPane.onMenuAction('menu:...', cb)`. See H20 audit finding.
-//
-// M21: menu actions target the currently focused window via
-// `getFocusedWindow()` instead of a captured singleton. When multi-window
-// lands, the menu click always goes to the foreground window — no
-// per-window menu wiring needed.
+// Menu items dispatch renderer-side behavior through `menu:*` IPC channels
+// which the renderer subscribes to via `window.cozyPane.onMenuAction`.
 
 export function buildMenu(): void {
   const isMac = process.platform === 'darwin';

@@ -1,15 +1,16 @@
-// Per-user sliding-window rate limiter. @fastify/rate-limit's per-route
-// keyGenerator runs BEFORE any preHandler auth, so `req.user` is always
-// undefined there and the fallback IP keying collapses users behind a
-// shared NAT/Cloudflare edge into one bucket (or gives users on unique
-// IPs effectively no per-user limit). This in-handler limiter runs AFTER
-// auth so it can key on `request.user.id`.
+// Per-user sliding-window rate limiter. Runs AFTER auth so it can key
+// on `request.user.id` — @fastify/rate-limit's plugin-level keyGenerator
+// runs before preHandlers and collapses users behind a shared NAT edge
+// into one bucket.
 //
-// Wave 7 — extracted from the middle of routes/deploy.ts where it was an
-// inline module-local helper. Used by /deploy, /deploy/:id/redeploy,
-// /deploy/:id/domains, and /deploy/:id/domains/:domainId/verify.
+// NOTE: state is process-local. Horizontal scaling resets limits per pod.
 
 const userRateLimits = new Map<string, number[]>();
+// Last time the cleanup sweep ran. Without this guard, when size stays
+// above the threshold for a while, every call triggers a full linear
+// scan — and if every entry is still within its window, the sweep
+// deletes nothing, leaving the limiter stuck at O(n) per call.
+let lastCleanup = 0;
 
 export function checkUserRateLimit(
   userId: number,
@@ -20,7 +21,6 @@ export function checkUserRateLimit(
   const key = `${bucket}:${userId}`;
   const now = Date.now();
   const hits = userRateLimits.get(key) || [];
-  // Drop hits outside the window
   const recent = hits.filter((t) => now - t < windowMs);
   if (recent.length >= max) {
     userRateLimits.set(key, recent);
@@ -28,8 +28,9 @@ export function checkUserRateLimit(
   }
   recent.push(now);
   userRateLimits.set(key, recent);
-  // Opportunistic cleanup — keep the Map from growing unbounded across users.
-  if (userRateLimits.size > 5000) {
+
+  if (userRateLimits.size > 5000 && now - lastCleanup > 30_000) {
+    lastCleanup = now;
     for (const [k, v] of userRateLimits) {
       if (v.length === 0 || now - v[v.length - 1] > windowMs * 2) {
         userRateLimits.delete(k);

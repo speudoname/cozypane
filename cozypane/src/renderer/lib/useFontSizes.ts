@@ -2,18 +2,6 @@ import { useCallback, useRef } from 'react';
 import type { Dispatch, MutableRefObject, SetStateAction } from 'react';
 import { usePersistedState } from './usePersistedState';
 
-// useFontSizes — per-panel zoom levels plus the hover-zone-aware
-// `adjustZoom` helper that Cmd+/- keyboard shortcuts and menu actions
-// delegate to. Previously four persisted useState hooks + an inline
-// `adjustZoom` callback that had to be re-declared inside App.tsx.
-//
-// Audit findings closed by this hook:
-//   - H19 (App.tsx decomposition, CP5)
-//
-// The hover-zone ref is owned here rather than App.tsx because the
-// `adjustZoom` logic reads from it; the ref itself is exposed back so
-// that pane onMouseEnter handlers in App.tsx can update it.
-
 export type HoverZone = 'terminal' | 'sidebar' | 'editor' | 'panel';
 
 export interface UseFontSizesReturn {
@@ -25,7 +13,6 @@ export interface UseFontSizesReturn {
   setSidebarFontSize: Dispatch<SetStateAction<number>>;
   panelFontSize: number;
   setPanelFontSize: Dispatch<SetStateAction<number>>;
-  /** Cmd+/- / Cmd+0 adjuster. Routes by hover zone. */
   adjustZoom: (delta: number, reset?: boolean) => void;
   /** The pane that last received pointer hover — mutated by onMouseEnter. */
   hoverZoneRef: MutableRefObject<HoverZone>;

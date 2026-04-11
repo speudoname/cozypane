@@ -10,10 +10,9 @@ const execFileAsync = promisify(execFile);
 
 const pty = require('node-pty');
 
-// M21: each PTY records the WebContents that spawned it. Data and exit
-// events are routed back to that exact window, not the module-global
-// "current window". A PTY belongs to the window that created it for its
-// entire lifetime; killing the window kills its PTYs (see cleanupForSender).
+// Each PTY records the WebContents that spawned it. Data and exit events
+// route back to that exact window; killing the window kills its PTYs via
+// `cleanupForSender`.
 const ptyMap = new Map<string, { process: any; cwd: string; sender: WebContents }>();
 let nextId = 1;
 let getDeployEnv: () => Record<string, string> = () => ({});
@@ -59,9 +58,6 @@ function createPty(sender: WebContents, cwd?: string): { id: string; cwd: string
     ptyMap.set(id, { process, cwd: initialCwd, sender });
 
     process.onData((data: string) => {
-      // M21: route directly to the spawning window's WebContents. If
-      // that window has been closed, the PTY is orphaned and will be
-      // cleaned up by cleanupForSender when the destroyed listener fires.
       safeSend(sender, 'terminal:data', id, data);
     });
 
@@ -77,13 +73,9 @@ function createPty(sender: WebContents, cwd?: string): { id: string; cwd: string
   }
 }
 
-/**
- * Kill every PTY owned by a given WebContents. Called when a window is
- * destroyed, so spawned terminals don't linger as orphans after their
- * owning window goes away.
- */
+/** Kill every PTY owned by a given WebContents. Called on window close. */
 export function cleanupForSender(sender: WebContents): void {
-  for (const [id, entry] of Array.from(ptyMap.entries())) {
+  for (const [id, entry] of ptyMap) {
     if (entry.sender === sender) {
       try { entry.process.kill(); } catch { /* already dead */ }
       ptyMap.delete(id);

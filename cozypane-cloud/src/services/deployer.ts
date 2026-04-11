@@ -24,21 +24,11 @@ import {
 import { provisionDatabase } from './database.js';
 import { writeCustomDomainConfig } from './traefik.js';
 
-// Wave 7 — tracked handles for the delayed health-re-check background
-// task. When the initial waitForHealthy reports UNHEALTHY (but not
-// APP_CRASH), we schedule a second, longer-timeout check 5 seconds
-// later to give the container a chance to recover from a slow startup
-// (migrations, JIT warmup, etc.). Pre-Wave-7 those setTimeouts were
-// abandoned on SIGTERM — the callback would eventually fire against a
-// closed Postgres pool and silently error. We now track the handles
-// and expose `cancelPendingHealthRechecks()` so the shutdown sequence
-// in index.ts can clear them before closing the pools.
+// Delayed health-re-check timers. Tracked so the shutdown sequence in
+// index.ts can cancel them before closing the Postgres pools — an
+// un-cancelled timer would fire against a closed pool and silently error.
 const pendingRechecks = new Set<ReturnType<typeof setTimeout>>();
 
-/**
- * Cancel every pending health-re-check timer. Called from the index.ts
- * shutdown handler between queue drain and Postgres pool close.
- */
 export function cancelPendingHealthRechecks(): void {
   for (const handle of pendingRechecks) {
     clearTimeout(handle);
@@ -275,14 +265,9 @@ export async function buildAndDeploy(params: BuildAndDeployParams): Promise<void
       );
 
       // For non-crash cases, schedule a delayed re-check — the server may come
-      // up after migrations or slow startup. Don't block the response.
-      //
-      // Wave 7 — the setTimeout handle is tracked in `pendingRechecks` so
-      // that SIGTERM / SIGINT shutdown can clear it before Postgres pools
-      // close (see cancelPendingHealthRechecks above). The UPDATE is still
-      // guarded by `status = 'unhealthy'` so that if the user deletes or
-      // redeploys in the meantime, the re-check is a no-op — belt and
-      // braces alongside the timer cancel.
+      // up after migrations or slow startup. Don't block the response. The
+      // UPDATE is guarded by status='unhealthy' so it's a no-op if the user
+      // deleted or redeployed in the meantime.
       if (errorCode === 'UNHEALTHY') {
         const reCheckId = newContainerId;
         const reCheckPort = analysis.port;

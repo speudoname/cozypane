@@ -6,13 +6,6 @@ import { checkUserRateLimit } from '../middleware/rateLimit.js';
 import { verifyDomain, isValidDomainName, buildExpectedCname } from '../services/domain.js';
 import { writeCustomDomainConfig, removeCustomDomainConfig } from '../services/traefik.js';
 
-// Custom domain management endpoints. Pre-Wave-7 these four handlers
-// lived at the bottom of routes/deploy.ts, inflating that file to 671
-// lines and entangling DNS/domain logic with deployment CRUD. The
-// handlers share the /deploy/:id/ prefix with the main deploy routes
-// but are a logically separate feature — so they ship as their own
-// plugin mounted at the same level.
-
 export async function domainRoutes(app: FastifyInstance): Promise<void> {
   // POST /deploy/:id/domains — add a custom domain
   app.post<{ Params: { id: string }; Body: { domain: string } }>(

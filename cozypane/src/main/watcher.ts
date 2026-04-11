@@ -6,10 +6,8 @@ import { isPathAllowed, addAllowedRoot } from './filesystem';
 import { safeSend } from './windows';
 
 let fileWatcher: fs.FSWatcher | null = null;
-// M21: the watcher captures the WebContents that called `watcher:start`.
-// Change events are routed back to that exact renderer. Pre-M21 the
-// watcher called `getWindow()` every event, which silently targeted the
-// wrong window if a second window opened.
+// Captured at `watcher:start` time; change events route back to this exact
+// renderer rather than a stale module-global "current window".
 let watcherSender: WebContents | null = null;
 const recentEvents = new Map<string, number>();
 const fileSnapshots = new Map<string, string>(); // filepath → content at first seen version

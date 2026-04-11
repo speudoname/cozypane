@@ -73,9 +73,6 @@ async function runCheck(): Promise<UpdateInfo> {
 
   lastCheck = { brewOutdated, claudeUpdate, checkedAt: Date.now() };
 
-  // M21: broadcast to every open window so multi-window installs see
-  // the update banner on all of them. Single-window today — functionally
-  // identical to the old `getWindow()?.webContents.send(...)`.
   if (brewOutdated.length > 0 || claudeUpdate) {
     broadcastAll('updates:available', lastCheck);
   }
