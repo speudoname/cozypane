@@ -1,15 +1,20 @@
-import { ipcMain, BrowserWindow } from 'electron';
+import { ipcMain, WebContents } from 'electron';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import os from 'os';
 import fs from 'fs';
 import { addAllowedRoot } from './filesystem';
+import { safeSend } from './windows';
 
 const execFileAsync = promisify(execFile);
 
 const pty = require('node-pty');
 
-const ptyMap = new Map<string, { process: any; cwd: string }>();
+// M21: each PTY records the WebContents that spawned it. Data and exit
+// events are routed back to that exact window, not the module-global
+// "current window". A PTY belongs to the window that created it for its
+// entire lifetime; killing the window kills its PTYs (see cleanupForSender).
+const ptyMap = new Map<string, { process: any; cwd: string; sender: WebContents }>();
 let nextId = 1;
 let getDeployEnv: () => Record<string, string> = () => ({});
 
@@ -24,7 +29,7 @@ function getShell(): string {
   return process.env.SHELL || '/bin/zsh';
 }
 
-function createPty(getWindow: () => BrowserWindow | null, cwd?: string): { id: string; cwd: string } | { error: string } {
+function createPty(sender: WebContents, cwd?: string): { id: string; cwd: string } | { error: string } {
   const shell = getShell();
   const home = os.homedir();
   const initialCwd = cwd || home;
@@ -51,20 +56,17 @@ function createPty(getWindow: () => BrowserWindow | null, cwd?: string): { id: s
       },
     });
 
-    ptyMap.set(id, { process, cwd: initialCwd });
+    ptyMap.set(id, { process, cwd: initialCwd, sender });
 
     process.onData((data: string) => {
-      const win = getWindow();
-      if (win && !win.isDestroyed()) {
-        win.webContents.send('terminal:data', id, data);
-      }
+      // M21: route directly to the spawning window's WebContents. If
+      // that window has been closed, the PTY is orphaned and will be
+      // cleaned up by cleanupForSender when the destroyed listener fires.
+      safeSend(sender, 'terminal:data', id, data);
     });
 
     process.onExit(({ exitCode }: { exitCode: number }) => {
-      const win = getWindow();
-      if (win && !win.isDestroyed()) {
-        win.webContents.send('terminal:exit', id, exitCode);
-      }
+      safeSend(sender, 'terminal:exit', id, exitCode);
       ptyMap.delete(id);
     });
 
@@ -72,6 +74,20 @@ function createPty(getWindow: () => BrowserWindow | null, cwd?: string): { id: s
   } catch (err: any) {
     console.error('[CozyPane] PTY spawn failed:', err);
     return { error: err.message || 'Failed to spawn terminal' };
+  }
+}
+
+/**
+ * Kill every PTY owned by a given WebContents. Called when a window is
+ * destroyed, so spawned terminals don't linger as orphans after their
+ * owning window goes away.
+ */
+export function cleanupForSender(sender: WebContents): void {
+  for (const [id, entry] of Array.from(ptyMap.entries())) {
+    if (entry.sender === sender) {
+      try { entry.process.kill(); } catch { /* already dead */ }
+      ptyMap.delete(id);
+    }
   }
 }
 
@@ -124,7 +140,7 @@ async function getCwdForPid(pid: number): Promise<string | null> {
   return cwd;
 }
 
-export function registerPtyHandlers(getWindow: () => BrowserWindow | null, envGetter?: () => Record<string, string>) {
+export function registerPtyHandlers(envGetter?: () => Record<string, string>) {
   if (envGetter) getDeployEnv = envGetter;
   ipcMain.on('terminal:write', (_event, id: string, data: string) => {
     const entry = ptyMap.get(id);
@@ -140,8 +156,8 @@ export function registerPtyHandlers(getWindow: () => BrowserWindow | null, envGe
     }
   });
 
-  ipcMain.handle('terminal:create', (_event, cwd?: string) => {
-    return createPty(getWindow, cwd);
+  ipcMain.handle('terminal:create', (event, cwd?: string) => {
+    return createPty(event.sender, cwd);
   });
 
   ipcMain.handle('terminal:close', (_event, id: string) => {

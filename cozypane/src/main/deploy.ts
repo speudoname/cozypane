@@ -1,9 +1,10 @@
-import { ipcMain, app, shell, BrowserWindow } from 'electron';
+import { ipcMain, app, shell } from 'electron';
 import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
 import { encryptString, decryptString } from './crypto';
 import { apiFetch as sharedApiFetch } from './deploy-shared';
+import { broadcastAll } from './windows';
 // NOTE: Direct upload deploy path (deploy:start / deploy:detectProject /
 // deploy:get IPC handlers and createTarball/detectProjectType helpers) was
 // removed — the UI deploys exclusively via the MCP tool `cozypane_deploy`
@@ -88,7 +89,7 @@ function apiFetch(endpoint: string, options: RequestInit & { timeoutMs?: number 
   return sharedApiFetch(API_BASE, endpoint, getToken, options);
 }
 
-export function registerDeployHandlers(getWindow: () => BrowserWindow | null) {
+export function registerDeployHandlers() {
   ipcMain.handle('deploy:login', async () => {
     const clientId = 'Ov23liUojbnQSvCY9Eq9';
     const redirectUri = encodeURIComponent('cozypane://auth/callback');
@@ -191,7 +192,7 @@ export function registerDeployHandlers(getWindow: () => BrowserWindow | null) {
 
 }
 
-export async function processProtocolUrl(url: string, getWindow: () => BrowserWindow | null): Promise<void> {
+export async function processProtocolUrl(url: string): Promise<void> {
   console.log('[CozyPane] processProtocolUrl called with:', url);
   try {
     const parsed = new URL(url);
@@ -235,7 +236,7 @@ export async function processProtocolUrl(url: string, getWindow: () => BrowserWi
             // M8: no keyring available and fallback disabled. Surface a
             // clear error to the UI rather than silently base64-persisting.
             console.error('[CozyPane] Credential store refused:', err.message);
-            getWindow()?.webContents.send('deploy:auth-error', {
+            broadcastAll('deploy:auth-error', {
               error: err.message || 'Credential store unavailable. Install a keyring or set COZYPANE_ALLOW_UNENCRYPTED_CREDENTIALS=1.',
             });
             return;
@@ -276,12 +277,12 @@ export async function processProtocolUrl(url: string, getWindow: () => BrowserWi
             username: data.user.username,
             avatarUrl: data.user.avatarUrl,
           };
-          getWindow()?.webContents.send('deploy:auth-success', authPayload);
-          getWindow()?.webContents.send('github:auth-changed', authPayload);
+          broadcastAll('deploy:auth-success', authPayload);
+          broadcastAll('github:auth-changed', authPayload);
         } else {
           const text = await result.text().catch(() => '');
           console.error('[CozyPane] OAuth token exchange failed:', result.status, text);
-          getWindow()?.webContents.send('deploy:auth-error', { error: `Authentication failed (${result.status})` });
+          broadcastAll('deploy:auth-error', { error: `Authentication failed (${result.status})` });
         }
       } else {
         console.error('[CozyPane] No code in callback URL');
@@ -289,6 +290,6 @@ export async function processProtocolUrl(url: string, getWindow: () => BrowserWi
     }
   } catch (err: any) {
     console.error('[CozyPane] Protocol callback error:', err);
-    getWindow()?.webContents.send('deploy:auth-error', { error: err.message || 'Authentication failed' });
+    broadcastAll('deploy:auth-error', { error: err.message || 'Authentication failed' });
   }
 }

@@ -1,10 +1,16 @@
-import { ipcMain, BrowserWindow } from 'electron';
+import { ipcMain, WebContents } from 'electron';
 import { execFile } from 'child_process';
 import path from 'path';
 import fs from 'fs';
 import { isPathAllowed, addAllowedRoot } from './filesystem';
+import { safeSend } from './windows';
 
 let fileWatcher: fs.FSWatcher | null = null;
+// M21: the watcher captures the WebContents that called `watcher:start`.
+// Change events are routed back to that exact renderer. Pre-M21 the
+// watcher called `getWindow()` every event, which silently targeted the
+// wrong window if a second window opened.
+let watcherSender: WebContents | null = null;
 const recentEvents = new Map<string, number>();
 const fileSnapshots = new Map<string, string>(); // filepath → content at first seen version
 const MAX_SNAPSHOTS = 100;
@@ -58,8 +64,8 @@ async function tryGitOriginal(fullPath: string, dirPath: string): Promise<string
   }
 }
 
-export function registerWatcherHandlers(getWindow: () => BrowserWindow | null) {
-  ipcMain.handle('watcher:start', (_event, dirPath: string) => {
+export function registerWatcherHandlers() {
+  ipcMain.handle('watcher:start', (event, dirPath: string) => {
     // H7: the watcher is a parallel fs-read surface (snapshot capture +
     // path forwarding to the renderer). Only allow it to watch paths that
     // are already in the project-root allowlist. A fresh `watcher:start`
@@ -81,11 +87,11 @@ export function registerWatcherHandlers(getWindow: () => BrowserWindow | null) {
     }
     recentEvents.clear();
     fileSnapshots.clear();
+    watcherSender = event.sender;
 
     try {
       fileWatcher = fs.watch(dirPath, { recursive: true }, (eventType, filename) => {
-        const win = getWindow();
-        if (!filename || !win || win.isDestroyed()) return;
+        if (!filename || !watcherSender || watcherSender.isDestroyed()) return;
 
         // Filter noise
         if (IGNORE_PATTERN.test(filename)) return;
@@ -132,27 +138,21 @@ export function registerWatcherHandlers(getWindow: () => BrowserWindow | null) {
             }
           }
 
-          const w = getWindow();
-          if (w && !w.isDestroyed()) {
-            w.webContents.send('watcher:change', {
-              type: eventType === 'rename' ? 'create' : 'modify',
-              path: fullPath,
-              name: filename,
-              isDirectory: stat.isDirectory(),
-              timestamp: now,
-            });
-          }
+          safeSend(watcherSender, 'watcher:change', {
+            type: eventType === 'rename' ? 'create' : 'modify',
+            path: fullPath,
+            name: filename,
+            isDirectory: stat.isDirectory(),
+            timestamp: now,
+          });
         }).catch(() => {
-          const w = getWindow();
-          if (w && !w.isDestroyed()) {
-            w.webContents.send('watcher:change', {
-              type: 'delete',
-              path: fullPath,
-              name: filename,
-              isDirectory: false,
-              timestamp: now,
-            });
-          }
+          safeSend(watcherSender, 'watcher:change', {
+            type: 'delete',
+            path: fullPath,
+            name: filename,
+            isDirectory: false,
+            timestamp: now,
+          });
         });
       });
       fileWatcher.on('error', (err) => {
@@ -162,13 +162,10 @@ export function registerWatcherHandlers(getWindow: () => BrowserWindow | null) {
         // to the renderer so the UI can show "watcher stopped — reload to
         // recover" rather than quietly failing.
         console.error('[CozyPane] Watcher error:', err);
-        const win = getWindow();
-        if (win && !win.isDestroyed()) {
-          win.webContents.send('watcher:error', {
-            code: (err as NodeJS.ErrnoException)?.code || 'EUNKNOWN',
-            message: (err as Error)?.message || String(err),
-          });
-        }
+        safeSend(watcherSender, 'watcher:error', {
+          code: (err as NodeJS.ErrnoException)?.code || 'EUNKNOWN',
+          message: (err as Error)?.message || String(err),
+        });
       });
       return { success: true };
     } catch (err: any) {

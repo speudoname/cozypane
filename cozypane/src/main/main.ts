@@ -4,7 +4,7 @@ import fs from 'fs';
 import os from 'os';
 import { autoUpdater } from 'electron-updater';
 
-import { registerPtyHandlers, killAllPtys, hasActivePtys } from './pty';
+import { registerPtyHandlers, killAllPtys, hasActivePtys, cleanupForSender } from './pty';
 import { registerFsHandlers, addAllowedRoot } from './filesystem';
 import { registerWatcherHandlers, closeWatcher } from './watcher';
 import { registerSettingsHandlers } from './settings';
@@ -14,6 +14,7 @@ import { registerPreviewHandlers } from './preview';
 import { registerUpdateCheckerHandlers, startPeriodicCheck, stopPeriodicCheck } from './update-checker';
 import { buildMenu } from './menu';
 import { ensureCozypaneMcpConfig } from './mcp-config';
+import { registerPrimaryWindow, getPrimaryWindow, broadcastAll } from './windows';
 
 // Global error handlers
 process.on('uncaughtException', (err) => {
@@ -55,6 +56,13 @@ app.on('web-contents-created', (_event, contents) => {
   });
 });
 
+// M21: `mainWindow` is retained as a local-only reference for dialog
+// parenting and the close-confirm flow. For IPC routing, sub-handlers
+// no longer receive a `getWindow()` closure — they use the Electron
+// event's `sender` WebContents directly (see pty.ts, watcher.ts). For
+// main-process-initiated events (protocol callbacks, auto-updater,
+// periodic update checker), use `broadcastAll()` / `getPrimaryWindow()`
+// from windows.ts so multi-window is a future incremental addition.
 let mainWindow: BrowserWindow | null = null;
 let forceQuit = false;
 const isDev = !app.isPackaged;
@@ -67,21 +75,21 @@ if (!gotTheLock) {
 
 // Windows/Linux: protocol URLs arrive via argv in second instance
 app.on('second-instance', (_event, argv) => {
-  // Focus existing window
-  if (mainWindow) {
-    if (mainWindow.isMinimized()) mainWindow.restore();
-    mainWindow.focus();
+  // Focus the primary window (single-window today, focused-most-recently
+  // when multi-window eventually lands).
+  const primary = getPrimaryWindow();
+  if (primary) {
+    if (primary.isMinimized()) primary.restore();
+    primary.focus();
   }
 
   // Find cozypane:// URL in argv (last arg on Windows, varies on Linux)
   const protocolUrl = argv.find(arg => arg.startsWith('cozypane://'));
   if (protocolUrl) {
-    mainWindow?.webContents.send('deploy:protocol-callback', protocolUrl);
-    processProtocolUrl(protocolUrl, getWindow);
+    broadcastAll('deploy:protocol-callback', protocolUrl);
+    processProtocolUrl(protocolUrl);
   }
 });
-
-function getWindow() { return mainWindow; }
 
 function createWindow() {
   forceQuit = false;
@@ -142,9 +150,20 @@ function createWindow() {
     }
   });
 
+  // M21: clean up every PTY owned by this window's WebContents. Without
+  // this, closing a secondary window in a (future) multi-window setup
+  // would leave its shell processes running in the main process with no
+  // way to reach them.
+  const sender = mainWindow.webContents;
   mainWindow.on('closed', () => {
+    cleanupForSender(sender);
     mainWindow = null;
   });
+
+  // Register as the primary window for main-process-initiated events
+  // (autoUpdater, protocol callbacks, periodic update checker). The
+  // registry clears itself on 'closed'.
+  registerPrimaryWindow(mainWindow);
 }
 
 // Register IPC handlers from modules.
@@ -159,7 +178,7 @@ function createWindow() {
 //
 // Non-secret env vars (API URL, user-data path) are still exported so
 // the MCP server can locate itself when spawned ad-hoc.
-registerPtyHandlers(getWindow, () => {
+registerPtyHandlers(() => {
   const env: Record<string, string> = {
     COZYPANE_API_URL: API_BASE,
     COZYPANE_USER_DATA: app.getPath('userData'),
@@ -176,12 +195,12 @@ registerFsHandlers();
 // though home is allowlisted — which is the net tightening from H2.
 addAllowedRoot(os.homedir());
 
-registerWatcherHandlers(getWindow);
+registerWatcherHandlers();
 registerSettingsHandlers();
 registerGitHandlers();
-registerDeployHandlers(getWindow);
+registerDeployHandlers();
 registerPreviewHandlers();
-registerUpdateCheckerHandlers(getWindow);
+registerUpdateCheckerHandlers();
 
 // File picker dialog
 ipcMain.handle('fs:pickFile', async () => {
@@ -268,14 +287,15 @@ function setupAutoUpdater() {
 
   autoUpdater.on('update-available', (info) => {
     console.log('[CozyPane] Update available:', info.version);
-    mainWindow?.webContents.send('updater:status', { status: 'available', version: info.version });
+    broadcastAll('updater:status', { status: 'available', version: info.version });
   });
 
   autoUpdater.on('update-downloaded', (info) => {
     console.log('[CozyPane] Update downloaded:', info.version);
-    mainWindow?.webContents.send('updater:status', { status: 'downloaded', version: info.version });
-    if (!mainWindow) return;
-    dialog.showMessageBox(mainWindow, {
+    broadcastAll('updater:status', { status: 'downloaded', version: info.version });
+    const dialogParent = getPrimaryWindow();
+    if (!dialogParent) return;
+    dialog.showMessageBox(dialogParent, {
       type: 'info',
       title: 'Update Ready',
       message: `CozyPane ${info.version} has been downloaded.`,
@@ -296,9 +316,7 @@ function setupAutoUpdater() {
     // (network error, signature mismatch, disk full) went completely
     // unnoticed by users.
     console.error('[CozyPane] Auto-update error:', err.message);
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send('updates:error', { message: err.message || 'Update failed' });
-    }
+    broadcastAll('updates:error', { message: err.message || 'Update failed' });
   });
 
   autoUpdater.checkForUpdates().catch((err: any) => console.error('[CozyPane] checkForUpdates failed:', err.message));
@@ -344,10 +362,10 @@ app.whenReady().then(() => {
     app.setAsDefaultProtocolClient('cozypane');
   }
 
-  buildMenu(getWindow);
+  buildMenu();
   createWindow();
   setupAutoUpdater();
-  startPeriodicCheck(getWindow);
+  startPeriodicCheck();
   // Ensure the static cozypane MCP config file exists so `claude --mcp-config` can find it.
   try { ensureCozypaneMcpConfig(); } catch (err) { console.error('[CozyPane] ensureCozypaneMcpConfig failed:', err); }
   // Write askpass helper if GitHub token exists (for git push/pull auth)
@@ -357,9 +375,9 @@ app.whenReady().then(() => {
 // Handle cozypane:// protocol URLs on macOS
 app.on('open-url', (event, url) => {
   event.preventDefault();
-  mainWindow?.webContents.send('deploy:protocol-callback', url);
+  broadcastAll('deploy:protocol-callback', url);
   // Also process in main process for token exchange
-  processProtocolUrl(url, getWindow);
+  processProtocolUrl(url);
 });
 
 app.on('window-all-closed', () => {

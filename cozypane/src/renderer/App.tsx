@@ -1,6 +1,10 @@
 import React, { useState, useCallback, useRef, useEffect, useMemo } from 'react';
-import { useDragResize } from './lib/useDragResize';
 import { useConfirm } from './lib/confirmContext';
+import { usePersistedState } from './lib/usePersistedState';
+import { useTerminalTabs } from './lib/useTerminalTabs';
+import { usePanelLayout } from './lib/usePanelLayout';
+import { useFontSizes } from './lib/useFontSizes';
+import { useKeyboardShortcuts } from './lib/useKeyboardShortcuts';
 import { Eye, GitBranch, Rocket, Settings2 } from 'lucide-react';
 import Sidebar from './components/Sidebar';
 import FilePreview from './components/FilePreview';
@@ -23,19 +27,14 @@ import TerminalTabBar from './components/TerminalTabBar';
 // global ambient types (src/renderer/types.d.ts) — no explicit import needed.
 import type { AiAction } from './lib/terminalAnalyzer';
 
-type LayoutMode = 'two-col' | 'three-col';
-type RightPanelTab = 'preview' | 'settings' | 'git' | 'deploy';
-
-function loadPersisted<T>(key: string, fallback: T): T {
-  try {
-    const val = localStorage.getItem(`cozyPane:${key}`);
-    return val ? JSON.parse(val) : fallback;
-  } catch { return fallback; }
-}
-
-function savePersisted(key: string, value: any) {
-  try { localStorage.setItem(`cozyPane:${key}`, JSON.stringify(value)); } catch {}
-}
+// H19 CP1: the old `loadPersisted` / `savePersisted` helpers have moved
+// into `lib/usePersistedState.ts` where they live as module-private
+// functions inside a single `usePersistedState(key, fallback)` hook that
+// encapsulates both read-on-mount and write-on-change. App.tsx used to
+// carry 14 nearly-identical `useState` + `useEffect(() => savePersisted(...))`
+// pairs; they've been collapsed into 13 `usePersistedState` calls.
+// (The 14th — `cwd` — is kept as a dedicated effect because it's a
+// DERIVED value from the active terminal tab, not a state slice.)
 
 interface OpenTab {
   path: string;
@@ -49,121 +48,97 @@ interface DiffState {
   after: string;
 }
 
-function makeTerminalTab(cwd: string, counter: number, launched = false): TerminalTab {
-  const id = `tab-${Date.now()}-${counter}`;
-  const label = `Terminal ${counter}`;
-  return { id, ptyId: null, label, cwd, aiAction: 'idle', claudeRunning: false, launched };
-}
-
 export default function App() {
   const confirm = useConfirm();
-  const [panelsOpen, setPanelsOpen] = useState(() => loadPersisted('panelsOpen', true));
-  const terminalCounterRef = useRef(1);
-  const [openTabs, setOpenTabs] = useState<OpenTab[]>(() => loadPersisted('openTabs', []));
-  const [activeTab, setActiveTab] = useState<string | null>(() => loadPersisted('activeTab', null));
-  const [layoutMode, setLayoutMode] = useState<LayoutMode>(() => loadPersisted('layoutMode', 'two-col'));
-  const [panelWidth, setPanelWidth] = useState(() => loadPersisted('panelWidth', 360));
-  const [isResizing, setIsResizing] = useState(false);
-  const [sidebarRatio, setSidebarRatio] = useState(() => loadPersisted('sidebarRatio', 0.35));
-  // (resize cleanup refs have moved into the useDragResize hook in lib/useDragResize.ts)
-  const [activityEvents, setActivityEvents] = useState<FileChangeEvent[]>([]);
-  const [lastWatcherEvent, setLastWatcherEvent] = useState<FileChangeEvent | null>(null);
 
-  // Per-tab watcher state cache
-  interface TabWatcherState {
-    activityEvents: FileChangeEvent[];
-  }
-  const tabWatcherCache = useRef(new Map<string, TabWatcherState>());
-  const [rightPanelTab, setRightPanelTab] = useState<RightPanelTab>(() => {
-    const saved = loadPersisted<string>('rightPanelTab', 'preview');
-    const valid: RightPanelTab[] = ['preview', 'settings', 'git', 'deploy'];
-    return valid.includes(saved as RightPanelTab) ? (saved as RightPanelTab) : 'preview';
-  });
+  // --- H19 CP3 — panel layout (sizes, modes, resize handlers) lives in
+  // usePanelLayout. It owns the persisted slices, the drag-in-progress
+  // flags, and the three `useDragResize` handlers that used to be ~30
+  // lines of boilerplate inline.
+  const {
+    panelsOpen, setPanelsOpen,
+    layoutMode, setLayoutMode,
+    panelWidth,
+    previewWidth,
+    sidebarRatio,
+    rightPanelTab, setRightPanelTab,
+    previewOpen, setPreviewOpen,
+    isResizing, isResizingPreview,
+    togglePanels, toggleLayout,
+    handlePanelResizeStart, handleSplitResizeStart, handlePreviewResizeStart,
+  } = usePanelLayout();
+
+  // --- File-editor tab state (which files are open in Monaco) ---
+  const [openTabs, setOpenTabs] = usePersistedState<OpenTab[]>('openTabs', []);
+  const [activeTab, setActiveTab] = usePersistedState<string | null>('activeTab', null);
+
+  // --- H19 CP5 — per-panel font sizes + hover-zone-aware adjustZoom ---
+  const {
+    terminalFontSize, setTerminalFontSize,
+    editorFontSize, setEditorFontSize,
+    sidebarFontSize, setSidebarFontSize,
+    panelFontSize,
+    adjustZoom,
+    hoverZoneRef,
+  } = useFontSizes();
+
+  // --- Session-only state (not persisted) ---
   const [previewLocalUrl, setPreviewLocalUrl] = useState<string>('');
   const [previewLocalUrls, setPreviewLocalUrls] = useState<string[]>([]);
   const [previewProdUrl, setPreviewProdUrl] = useState<string>('');
   const [previewInitialErrors, setPreviewInitialErrors] = useState<PreviewError[]>([]);
   const [previewInitialConsoleLogs, setPreviewInitialConsoleLogs] = useState<ConsoleLog[]>([]);
   const [previewInitialNetworkErrors, setPreviewInitialNetworkErrors] = useState<NetworkError[]>([]);
-  const [previewOpen, setPreviewOpen] = useState(() => loadPersisted('previewOpen', false));
-  const [previewWidth, setPreviewWidth] = useState(() => loadPersisted('previewWidth', 500));
-  const [isResizingPreview, setIsResizingPreview] = useState(false);
   const [diffState, setDiffState] = useState<DiffState | null>(null);
   const [gitBranch, setGitBranch] = useState('');
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [deployments, setDeployments] = useState<Deployment[]>([]);
 
-  // Per-panel zoom levels (font sizes)
-  const [terminalFontSize, setTerminalFontSize] = useState(() => loadPersisted('terminalFontSize', 13));
-  const [editorFontSize, setEditorFontSize] = useState(() => loadPersisted('editorFontSize', 13));
-  const [sidebarFontSize, setSidebarFontSize] = useState(() => loadPersisted('sidebarFontSize', 13));
-  const [panelFontSize, setPanelFontSize] = useState(() => loadPersisted('panelFontSize', 12));
-  const hoverZoneRef = useRef<'terminal' | 'sidebar' | 'editor' | 'panel'>('terminal');
+  // H19 CP2 / M50 — Multi-terminal state machine + per-tab file watcher
+  // extracted into `lib/useTerminalTabs.ts`. Previously ~150 lines of
+  // interleaved useState/useRef/useEffect/useCallback; now a single hook
+  // owns tabs, activeId, splitId, ref mirrors, per-tab activity cache,
+  // and the watcher start/stop lifecycle keyed on active cwd.
+  //
+  // Variable names are aliased during destructure so existing call sites
+  // across App.tsx (and the remaining menu/palette wiring below) keep
+  // working unchanged.
+  const {
+    tabs: terminalTabs,
+    activeId: activeTerminalId,
+    splitId: splitTerminalId,
+    cwd,
+    aiAction,
+    isClaudeRunning,
+    activityEvents,
+    lastWatcherEvent,
+    changedFiles,
+    activeIdRef: activeTerminalIdRef,
+    splitIdRef: splitTerminalIdRef,
+    tabsRef: terminalTabsRef,
+    setTabs: setTerminalTabs,
+    setActiveId: setActiveTerminalId,
+    addTab: addTerminalTab,
+    closeTab: closeTerminalTab,
+    switchTab: switchTerminalTab,
+    toggleSplit,
+    updateTab,
+  } = useTerminalTabs({ confirm });
 
-  // Multi-terminal state
-  const [terminalTabs, setTerminalTabs] = useState<TerminalTab[]>(() => {
-    return [makeTerminalTab('', terminalCounterRef.current++)];
-  });
-  const [activeTerminalId, setActiveTerminalId] = useState(terminalTabs[0].id);
-  const [splitTerminalId, setSplitTerminalId] = useState<string | null>(null);
-  const activeTerminalIdRef = useRef(activeTerminalId);
-  activeTerminalIdRef.current = activeTerminalId;
-  const splitTerminalIdRef = useRef(splitTerminalId);
-  splitTerminalIdRef.current = splitTerminalId;
-  const terminalTabsRef = useRef(terminalTabs);
-  terminalTabsRef.current = terminalTabs;
-
-  // Derived state from active terminal
-  const activeTerminal = terminalTabs.find(t => t.id === activeTerminalId) || terminalTabs[0];
-  const cwd = activeTerminal.cwd;
-  const aiAction = activeTerminal.aiAction;
-  const isClaudeRunning = activeTerminal.claudeRunning;
-
-  const updateTab = useCallback((tabId: string, updates: Partial<TerminalTab>) => {
-    setTerminalTabs(prev => prev.map(t => t.id === tabId ? { ...t, ...updates } : t));
-  }, []);
-
-  // Initialize cwd to home directory on mount (only if no persisted cwd)
+  // Persist `cwd` whenever the active terminal's cwd changes. This stays
+  // as a manual effect because `cwd` is DERIVED from the active terminal
+  // tab (inside the hook), not a dedicated state slice that
+  // usePersistedState could own.
   useEffect(() => {
-    if (terminalTabs[0]?.cwd) return;
-    window.cozyPane.fs.homedir().then(home => {
-      setTerminalTabs(p => p.map((t, i) => i === 0 && !t.cwd ? { ...t, cwd: home } : t));
-    }).catch(() => {});
-  }, []);
+    if (cwd) {
+      try { localStorage.setItem('cozyPane:cwd', JSON.stringify(cwd)); } catch {}
+    }
+  }, [cwd]);
 
-  // Persist key state to localStorage
-  useEffect(() => { if (cwd) savePersisted('cwd', cwd); }, [cwd]);
-  useEffect(() => { savePersisted('openTabs', openTabs); }, [openTabs]);
-  useEffect(() => { savePersisted('activeTab', activeTab); }, [activeTab]);
-  useEffect(() => { savePersisted('panelsOpen', panelsOpen); }, [panelsOpen]);
-  useEffect(() => { savePersisted('layoutMode', layoutMode); }, [layoutMode]);
-  useEffect(() => { savePersisted('rightPanelTab', rightPanelTab); }, [rightPanelTab]);
-  useEffect(() => { if (!isResizing) savePersisted('panelWidth', panelWidth); }, [panelWidth, isResizing]);
-  useEffect(() => { savePersisted('sidebarRatio', sidebarRatio); }, [sidebarRatio]);
-  useEffect(() => { savePersisted('terminalFontSize', terminalFontSize); }, [terminalFontSize]);
-  useEffect(() => { savePersisted('editorFontSize', editorFontSize); }, [editorFontSize]);
-  useEffect(() => { savePersisted('sidebarFontSize', sidebarFontSize); }, [sidebarFontSize]);
-  useEffect(() => { savePersisted('panelFontSize', panelFontSize); }, [panelFontSize]);
-  useEffect(() => { savePersisted('previewOpen', previewOpen); }, [previewOpen]);
-  useEffect(() => { if (!isResizingPreview) savePersisted('previewWidth', previewWidth); }, [previewWidth, isResizingPreview]);
-
-  // Refs for per-tab watcher save/restore
-  const activityEventsRef = useRef(activityEvents);
-  activityEventsRef.current = activityEvents;
-  const prevActiveTabRef = useRef(activeTerminalId);
-
-  // Save/restore watcher state on tab switch
+  // Restore preview URLs + console state on tab switch. The hook already
+  // owns the per-tab activityEvents swap; preview state is tracked in
+  // App.tsx because it's consumed by <Preview>, not the terminal pane.
   useEffect(() => {
-    const prevId = prevActiveTabRef.current;
-    if (prevId === activeTerminalId) return;
-    // Save leaving tab
-    tabWatcherCache.current.set(prevId, {
-      activityEvents: activityEventsRef.current,
-    });
-    // Restore or init new tab
-    const cached = tabWatcherCache.current.get(activeTerminalId);
-    setActivityEvents(cached?.activityEvents ?? []);
-    // Restore preview URLs and console state for the newly active tab
     const newTab = terminalTabsRef.current.find(t => t.id === activeTerminalId);
     setPreviewLocalUrl(newTab?.previewLocalUrl || '');
     setPreviewLocalUrls(newTab?.previewLocalUrls || []);
@@ -171,89 +146,7 @@ export default function App() {
     setPreviewInitialErrors(newTab?.previewErrors || []);
     setPreviewInitialConsoleLogs(newTab?.previewConsoleLogs || []);
     setPreviewInitialNetworkErrors(newTab?.previewNetworkErrors || []);
-    prevActiveTabRef.current = activeTerminalId;
-  }, [activeTerminalId]);
-
-  const changedFiles = useMemo(() => {
-    const map = new Map<string, 'create' | 'modify' | 'delete'>();
-    for (let i = activityEvents.length - 1; i >= 0; i--) {
-      map.set(activityEvents[i].path, activityEvents[i].type);
-    }
-    return map;
-  }, [activityEvents]);
-
-  // Start/restart file watcher when cwd changes
-  useEffect(() => {
-    if (!cwd) return;
-
-    window.cozyPane.watcher.start(cwd);
-
-    const removeListener = window.cozyPane.watcher.onChange((event: FileChangeEvent) => {
-      setActivityEvents(prev => [event, ...prev].slice(0, 200));
-      setLastWatcherEvent(event);
-    });
-
-    return () => {
-      removeListener();
-      window.cozyPane.watcher.stop();
-    };
-  }, [cwd]);
-
-  // Tab operations
-  const addTerminalTab = useCallback(() => {
-    setTerminalTabs(prev => {
-      const currentCwd = prev.find(t => t.id === activeTerminalIdRef.current)?.cwd || '';
-      const newTab = makeTerminalTab(currentCwd, terminalCounterRef.current++);
-      setActiveTerminalId(newTab.id);
-      return [...prev, newTab];
-    });
-  }, []);
-
-  const closeTerminalTab = useCallback(async (id: string) => {
-    const tabs = terminalTabsRef.current;
-    const tab = tabs.find(t => t.id === id);
-    if (!tab || tabs.length <= 1) return; // Can't close last tab
-
-    const ok = await confirm({
-      title: 'Close terminal?',
-      message: `Close terminal "${tab.customLabel || tab.label}"? Any running processes will be stopped.`,
-      confirmLabel: 'Close',
-      destructive: true,
-    });
-    if (!ok) return;
-
-    setTerminalTabs(prev => {
-      if (prev.length <= 1) return prev;
-      if (tab.ptyId) {
-        window.cozyPane.terminal.close(tab.ptyId);
-      }
-      tabWatcherCache.current.delete(id);
-      const remaining = prev.filter(t => t.id !== id);
-      // If closing active tab, switch to adjacent
-      if (id === activeTerminalIdRef.current) {
-        const idx = prev.findIndex(t => t.id === id);
-        const newActive = remaining[Math.min(idx, remaining.length - 1)] || remaining[0];
-        setActiveTerminalId(newActive.id);
-      }
-      // Clear split if it was the split tab
-      if (id === splitTerminalIdRef.current) {
-        setSplitTerminalId(null);
-      }
-      return remaining;
-    });
-  }, []);
-
-  const switchTerminalTab = useCallback((id: string) => {
-    setActiveTerminalId(id);
-  }, []);
-
-  const toggleSplit = useCallback((id: string) => {
-    setSplitTerminalId(prev => {
-      if (prev === id) return null; // Un-split
-      if (id === activeTerminalIdRef.current) return prev; // Can't split active as split
-      return id;
-    });
-  }, []);
+  }, [activeTerminalId, terminalTabsRef]);
 
   // Build the `claude` autoCommand. When cozy mode is on we add --mcp-config pointing
   // at CozyPane's static MCP config so only sessions we spawn see the cozypane tools.
@@ -383,121 +276,27 @@ export default function App() {
     void closeFileTab(filePath);
   }, [closeFileTab]);
 
-  const panelWidthRef = useRef(panelWidth);
-  panelWidthRef.current = panelWidth;
+  // H19 CP4 — global keyboard shortcuts (Cmd+K/T/W/+/-/0) live in the
+  // hook. Cmd+W editor-vs-terminal routing (M44 fix) is preserved via
+  // the `onCloseEditorTab` callback; we return `false` to tell the hook
+  // to fall through to terminal-tab close when there's no active editor.
+  const openPalette = useCallback(() => setPaletteOpen(prev => !prev), []);
+  const closeActiveTerminalTab = useCallback(() => {
+    closeTerminalTab(activeTerminalIdRef.current);
+  }, [closeTerminalTab, activeTerminalIdRef]);
+  const closeEditorTabIfActive = useCallback((): boolean | void => {
+    if (!activeTab) return false;
+    void closeFileTab(activeTab);
+  }, [activeTab, closeFileTab]);
 
-  const previewWidthRef = useRef(previewWidth);
-  previewWidthRef.current = previewWidth;
-
-  // H19/L9 — three drag-resize handlers were previously 80 lines of
-  // near-identical boilerplate (cleanup refs, mousemove/mouseup wiring,
-  // unmount effect). Extracted to `lib/useDragResize.ts`; each handler is
-  // now ~7 lines and the unmount cleanup is built into the hook.
-
-  const handlePanelResizeStart = useDragResize({
-    onStart: () => setIsResizing(true),
-    onEnd:   () => setIsResizing(false),
-    getStartValue: () => panelWidthRef.current,
-    onMove: (e, ctx) => {
-      const delta = ctx.startX - e.clientX;
-      setPanelWidth(Math.max(200, Math.min(ctx.startWidth + delta, window.innerWidth * 0.6)));
-    },
+  useKeyboardShortcuts({
+    onOpenPalette: openPalette,
+    onNewTab: addTerminalTab,
+    onCloseTerminalTab: closeActiveTerminalTab,
+    onCloseEditorTab: closeEditorTabIfActive,
+    onZoom: adjustZoom,
+    hoverZoneRef,
   });
-
-  const handleSplitResizeStart = useDragResize({
-    getContainer: (target) => target.parentElement,
-    onMove: (e, ctx) => {
-      if (!ctx.containerRect) return;
-      const deltaY = e.clientY - ctx.containerRect.top;
-      const newRatio = Math.max(0.15, Math.min(deltaY / ctx.containerRect.height, 0.85));
-      setSidebarRatio(newRatio);
-    },
-  });
-
-  const handlePreviewResizeStart = useDragResize({
-    onStart: () => setIsResizingPreview(true),
-    onEnd:   () => setIsResizingPreview(false),
-    getStartValue: () => previewWidthRef.current,
-    onMove: (e, ctx) => {
-      const delta = ctx.startX - e.clientX;
-      setPreviewWidth(Math.max(250, Math.min(ctx.startWidth + delta, window.innerWidth * 0.6)));
-    },
-  });
-
-  const togglePanels = useCallback(() => {
-    setPanelsOpen(prev => !prev);
-  }, []);
-
-  const toggleLayout = useCallback(() => {
-    setLayoutMode(prev => prev === 'two-col' ? 'three-col' : 'two-col');
-  }, []);
-
-  // Keyboard shortcuts: Cmd+K palette, Cmd+T new tab, Cmd+W close tab
-  const isMac = navigator.platform.includes('Mac');
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      const mod = isMac ? e.metaKey : e.ctrlKey;
-      if (mod && e.key === 'k') {
-        e.preventDefault();
-        setPaletteOpen(prev => !prev);
-      }
-      if (mod && e.key === 't') {
-        e.preventDefault();
-        addTerminalTab();
-      }
-      if (mod && e.key === 'w') {
-        e.preventDefault();
-        // Scope Cmd+W to the currently-hovered pane so editors with unsaved
-        // files get a dirty-check prompt, while terminal-focused Cmd+W still
-        // closes the active terminal tab. Without this, Cmd+W silently
-        // discarded unsaved file edits when the user thought they were
-        // closing an editor tab.
-        if (hoverZoneRef.current === 'editor') {
-          const active = activeTab;
-          if (active) {
-            void closeFileTab(active);
-            return;
-          }
-        }
-        closeTerminalTab(activeTerminalIdRef.current);
-      }
-    };
-    window.addEventListener('keydown', handler);
-    return () => window.removeEventListener('keydown', handler);
-  }, [addTerminalTab, closeTerminalTab, closeFileTab, activeTab]);
-
-  // Per-panel zoom via Cmd+/- based on hover zone
-  const adjustZoom = useCallback((delta: number, reset?: boolean) => {
-    const zone = hoverZoneRef.current;
-    const clamp = (v: number, min: number, max: number) => Math.max(min, Math.min(max, v));
-    if (zone === 'terminal') {
-      setTerminalFontSize(prev => reset ? 13 : clamp(prev + delta, 8, 28));
-    } else if (zone === 'editor') {
-      setEditorFontSize(prev => reset ? 13 : clamp(prev + delta, 8, 28));
-    } else if (zone === 'sidebar') {
-      setSidebarFontSize(prev => reset ? 13 : clamp(prev + delta, 9, 22));
-    } else {
-      setPanelFontSize(prev => reset ? 12 : clamp(prev + delta, 8, 22));
-    }
-  }, []);
-
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if (!(e.metaKey || e.ctrlKey)) return;
-      if (e.key === '=' || e.key === '+') {
-        e.preventDefault();
-        adjustZoom(1);
-      } else if (e.key === '-') {
-        e.preventDefault();
-        adjustZoom(-1);
-      } else if (e.key === '0') {
-        e.preventDefault();
-        adjustZoom(0, true);
-      }
-    };
-    window.addEventListener('keydown', handler);
-    return () => window.removeEventListener('keydown', handler);
-  }, [adjustZoom]);
 
   // Menu event listeners from Electron main process
   useEffect(() => {
@@ -572,15 +371,14 @@ export default function App() {
 
   // Run update command in a new terminal tab
   const handleRunUpdate = useCallback((command: string) => {
-    setTerminalTabs(prev => {
-      const home = prev.find(t => t.cwd)?.cwd || '';
-      const newTab = makeTerminalTab(home, terminalCounterRef.current++, true);
-      newTab.customLabel = 'Updates';
-      newTab.autoCommand = command;
-      setActiveTerminalId(newTab.id);
-      return [...prev, newTab];
+    const home = terminalTabsRef.current.find(t => t.cwd)?.cwd || '';
+    addTerminalTab({
+      cwd: home,
+      customLabel: 'Updates',
+      autoCommand: command,
+      launched: true,
     });
-  }, []);
+  }, [addTerminalTab, terminalTabsRef]);
 
   const handleDirtyChange = useCallback((filePath: string, isDirty: boolean) => {
     setOpenTabs(prev => prev.map(t =>

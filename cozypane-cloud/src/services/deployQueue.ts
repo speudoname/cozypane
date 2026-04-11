@@ -73,9 +73,11 @@ function getConnection(): ConnectionOptions {
     port,
     password,
     db: Number.isNaN(db) ? 0 : db,
-    // Reject a dead Redis fast — the alternative is buffering jobs in
-    // memory with no way for the client to tell us it failed.
-    maxRetriesPerRequest: 3,
+    // BullMQ requires `maxRetriesPerRequest: null` on its Redis connection
+    // because the worker uses long-polling BLPOP and can't have commands
+    // auto-retried mid-poll. Setting anything else triggers a runtime
+    // warning and BullMQ silently overrides to null anyway.
+    maxRetriesPerRequest: null,
   };
 }
 

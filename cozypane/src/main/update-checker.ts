@@ -1,6 +1,7 @@
-import { ipcMain, BrowserWindow } from 'electron';
+import { ipcMain } from 'electron';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
+import { broadcastAll } from './windows';
 
 const execFileAsync = promisify(execFile);
 
@@ -64,7 +65,7 @@ async function getClaudeVersions(): Promise<{ current: string; latest: string } 
   }
 }
 
-async function runCheck(getWindow: () => BrowserWindow | null): Promise<UpdateInfo> {
+async function runCheck(): Promise<UpdateInfo> {
   const [brewOutdated, claudeUpdate] = await Promise.all([
     getBrewOutdated(),
     getClaudeVersions(),
@@ -72,19 +73,20 @@ async function runCheck(getWindow: () => BrowserWindow | null): Promise<UpdateIn
 
   lastCheck = { brewOutdated, claudeUpdate, checkedAt: Date.now() };
 
-  // Notify renderer if there are updates
-  const win = getWindow();
-  if (win && !win.isDestroyed() && (brewOutdated.length > 0 || claudeUpdate)) {
-    win.webContents.send('updates:available', lastCheck);
+  // M21: broadcast to every open window so multi-window installs see
+  // the update banner on all of them. Single-window today — functionally
+  // identical to the old `getWindow()?.webContents.send(...)`.
+  if (brewOutdated.length > 0 || claudeUpdate) {
+    broadcastAll('updates:available', lastCheck);
   }
 
   return lastCheck;
 }
 
-export function registerUpdateCheckerHandlers(getWindow: () => BrowserWindow | null) {
+export function registerUpdateCheckerHandlers() {
   // Manual check from renderer
   ipcMain.handle('updates:check', async () => {
-    return runCheck(getWindow);
+    return runCheck();
   });
 
   // Get last check result
@@ -105,12 +107,12 @@ export function registerUpdateCheckerHandlers(getWindow: () => BrowserWindow | n
   });
 }
 
-export function startPeriodicCheck(getWindow: () => BrowserWindow | null) {
+export function startPeriodicCheck() {
   // Initial check after 5 seconds (let the app settle)
-  setTimeout(() => runCheck(getWindow), 5000);
+  setTimeout(() => runCheck(), 5000);
 
   // Re-check every 4 hours
-  checkInterval = setInterval(() => runCheck(getWindow), 4 * 60 * 60 * 1000);
+  checkInterval = setInterval(() => runCheck(), 4 * 60 * 60 * 1000);
 }
 
 export function stopPeriodicCheck() {
