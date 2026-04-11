@@ -184,7 +184,7 @@ declare global {
     };
     onMenuAction: (channel: string, callback: (...args: any[]) => void) => () => void;
     mcp: {
-      writeProjectConfig: (projectDir: string, enable: boolean) => Promise<{ success?: boolean; error?: string }>;
+      getConfigPath: () => Promise<{ path?: string; error?: string }>;
     };
     git: {
       isRepo: (cwd: string) => Promise<{ isRepo: boolean }>;

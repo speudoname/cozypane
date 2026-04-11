@@ -245,33 +245,43 @@ export default function App() {
     });
   }, []);
 
+  // Build the `claude` autoCommand. When cozy mode is on we add --mcp-config pointing
+  // at CozyPane's static MCP config so only sessions we spawn see the cozypane tools.
+  const buildClaudeAutoCommand = useCallback(async (cozyMode: boolean): Promise<string> => {
+    if (!cozyMode) return 'claude --dangerously-skip-permissions';
+    const result = await window.cozyPane.mcp.getConfigPath();
+    if (!result.path) {
+      console.warn('[CozyPane] getConfigPath failed, launching claude without cozypane MCP:', result.error);
+      return 'claude --dangerously-skip-permissions';
+    }
+    return `claude --mcp-config "${result.path}" --dangerously-skip-permissions`;
+  }, []);
+
   // Launcher handlers — called when user picks an option on the new tab launcher
   const launchOpenProject = useCallback(async (cwd: string, cozyMode: boolean) => {
     if (cozyMode) {
       await enableCozyMode(cwd);
     }
-    // Keep project-local .mcp.json in sync with cozy mode: written when on, removed when off.
-    await window.cozyPane.mcp.writeProjectConfig(cwd, cozyMode);
+    const autoCommand = await buildClaudeAutoCommand(cozyMode);
     updateTab(activeTerminalIdRef.current, {
       cwd,
       launched: true,
-      autoCommand: 'claude --dangerously-skip-permissions',
+      autoCommand,
     });
-  }, [updateTab]);
+  }, [updateTab, buildClaudeAutoCommand]);
 
   const launchCreateProject = useCallback(async (fullPath: string, _projectName: string, cozyMode: boolean) => {
     await window.cozyPane.fs.mkdir(fullPath);
     if (cozyMode) {
       await enableCozyMode(fullPath);
     }
-    // Keep project-local .mcp.json in sync with cozy mode: written when on, removed when off.
-    await window.cozyPane.mcp.writeProjectConfig(fullPath, cozyMode);
+    const autoCommand = await buildClaudeAutoCommand(cozyMode);
     updateTab(activeTerminalIdRef.current, {
       cwd: fullPath,
       launched: true,
-      autoCommand: 'claude --dangerously-skip-permissions',
+      autoCommand,
     });
-  }, [updateTab]);
+  }, [updateTab, buildClaudeAutoCommand]);
 
   const launchNewTerminal = useCallback(async () => {
     const tab = terminalTabsRef.current.find(t => t.id === activeTerminalIdRef.current);

@@ -48,16 +48,17 @@ export default function DeployPanel({ cwd, onTerminalCommand, claudeRunning, aiA
   const handleCozyModeToggle = useCallback(async () => {
     setCozyModeLoading(true);
     try {
-      const nextEnabled = !cozyMode;
       if (cozyMode) {
         await disableCozyMode(cwd);
+        setCozyMode(false);
       } else {
         await enableCozyMode(cwd);
+        setCozyMode(true);
       }
-      // Keep project-local .mcp.json in sync with cozy mode so Claude Code only
-      // sees the cozypane MCP tools in cozy-flagged projects.
-      await window.cozyPane.mcp.writeProjectConfig(cwd, nextEnabled);
-      setCozyMode(nextEnabled);
+      // Note: the toggle only edits CLAUDE.md. The cozypane MCP tools appear in a
+      // claude session only when CozyPane re-launches `claude` for a cozy-mode
+      // project (the renderer adds --mcp-config then). Re-open the project to see
+      // the change take effect in a fresh terminal tab.
     } catch (err: any) {
       setDeployError(err.message || 'Failed to toggle Cozy Mode');
     } finally {

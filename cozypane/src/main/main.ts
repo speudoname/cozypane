@@ -323,18 +323,15 @@ ipcMain.handle('fs:saveClipboardImage', async () => {
   }
 });
 
-// Write/remove the cozypane entry in a project's local .mcp.json.
-// Called from the renderer when a project is opened/created or when the cozy
-// mode toggle is flipped, so the MCP tools only appear in cozy-mode projects.
-ipcMain.handle('mcp:writeProjectConfig', async (_event, projectDir: string, enable: boolean) => {
+// Return the absolute path of the static cozypane MCP config file. The renderer
+// passes this path to `claude --mcp-config` when launching a cozy-mode project
+// so that only CozyPane-spawned terminals see the cozypane MCP server.
+ipcMain.handle('mcp:getConfigPath', async () => {
   try {
-    if (typeof projectDir !== 'string' || !projectDir) {
-      return { error: 'projectDir is required' };
-    }
-    writeProjectMcpConfig(projectDir, !!enable);
-    return { success: true };
+    const configPath = ensureCozypaneMcpConfig();
+    return { path: configPath };
   } catch (err: any) {
-    return { error: err?.message || 'Failed to write project MCP config' };
+    return { error: err?.message || 'Failed to prepare cozypane MCP config' };
   }
 });
 
@@ -400,12 +397,17 @@ function setupAutoUpdater() {
   setInterval(() => autoUpdater.checkForUpdates().catch((err: any) => console.error('[CozyPane] checkForUpdates failed:', err.message)), 4 * 60 * 60 * 1000);
 }
 
-// MCP server config is written per-project (project-local .mcp.json) rather than to
-// ~/.claude.json globally. A project gets the cozypane MCP entry only when cozy mode
-// is enabled for it. Wiring lives in the renderer (App.tsx open/create, DeployPanel
-// toggle) and calls the 'mcp:writeProjectConfig' IPC handler below.
+// CozyPane MCP visibility is scoped to sessions that CozyPane itself spawns. We never
+// write .mcp.json into user project directories (to avoid machine-specific absolute
+// paths leaking into git). Instead we keep one static .mcp.json inside CozyPane's
+// userData dir, and when launching `claude` for a cozy-mode project, the renderer
+// adds `--mcp-config <path>` to the auto-command. External terminals that don't pass
+// that flag see no cozypane MCP at all — satisfying both scoping rules:
+//   1. terminal must be CozyPane's PTY (only that launcher adds the flag)
+//   2. project must be cozy mode (renderer only adds the flag when cozyMode === true)
 
 let extractedMcpServerPath: string | null = null;
+let cozypaneMcpConfigPath: string | null = null;
 
 function ensureMcpServerExtracted(): string {
   if (extractedMcpServerPath) return extractedMcpServerPath;
@@ -428,57 +430,35 @@ function ensureMcpServerExtracted(): string {
   return extractedMcpServerPath;
 }
 
-function writeProjectMcpConfig(projectDir: string, enable: boolean): void {
-  const mcpJsonPath = path.join(projectDir, '.mcp.json');
-
-  let config: Record<string, any> = {};
-  try {
-    const raw = fs.readFileSync(mcpJsonPath, 'utf-8');
-    const parsed = JSON.parse(raw);
-    if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
-      config = parsed;
-    }
-  } catch {
-    // Missing or malformed — start fresh (preserving existing is only meaningful when readable)
+function ensureCozypaneMcpConfig(): string {
+  if (cozypaneMcpConfigPath && fs.existsSync(cozypaneMcpConfigPath)) {
+    return cozypaneMcpConfigPath;
   }
 
-  const servers: Record<string, any> =
-    (config.mcpServers && typeof config.mcpServers === 'object' && !Array.isArray(config.mcpServers))
-      ? config.mcpServers
-      : {};
+  const mcpServerPath = ensureMcpServerExtracted();
+  const configDir = path.join(app.getPath('userData'), 'mcp');
+  const configPath = path.join(configDir, 'cozypane.mcp.json');
 
-  if (enable) {
-    const mcpServerPath = ensureMcpServerExtracted();
-    servers.cozypane = {
-      type: 'stdio',
-      command: 'node',
-      args: [mcpServerPath],
-    };
-  } else {
-    delete servers.cozypane;
-  }
+  if (!fs.existsSync(configDir)) fs.mkdirSync(configDir, { recursive: true });
 
-  if (Object.keys(servers).length > 0) {
-    config.mcpServers = servers;
-  } else {
-    delete config.mcpServers;
-  }
-
-  if (Object.keys(config).length === 0) {
-    // Don't leave an empty .mcp.json lying around.
-    try {
-      if (fs.existsSync(mcpJsonPath)) fs.unlinkSync(mcpJsonPath);
-    } catch (err) {
-      console.error('[CozyPane] Failed to remove empty .mcp.json:', err);
-    }
-    return;
-  }
+  const config = {
+    mcpServers: {
+      cozypane: {
+        type: 'stdio',
+        command: 'node',
+        args: [mcpServerPath],
+      },
+    },
+  };
 
   try {
-    fs.writeFileSync(mcpJsonPath, JSON.stringify(config, null, 2));
+    fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
   } catch (err) {
-    console.error('[CozyPane] Failed to write project .mcp.json:', err);
+    console.error('[CozyPane] Failed to write cozypane MCP config:', err);
   }
+
+  cozypaneMcpConfigPath = configPath;
+  return configPath;
 }
 
 // App lifecycle
@@ -512,6 +492,8 @@ app.whenReady().then(() => {
   createWindow();
   setupAutoUpdater();
   startPeriodicCheck(getWindow);
+  // Ensure the static cozypane MCP config file exists so `claude --mcp-config` can find it.
+  try { ensureCozypaneMcpConfig(); } catch (err) { console.error('[CozyPane] ensureCozypaneMcpConfig failed:', err); }
   // Write askpass helper if GitHub token exists (for git push/pull auth)
   if (getGithubToken()) writeAskpassHelper();
 });

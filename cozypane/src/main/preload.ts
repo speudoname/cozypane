@@ -104,8 +104,7 @@ contextBridge.exposeInMainWorld('cozyPane', {
     return () => ipcRenderer.removeListener(channel, listener);
   },
   mcp: {
-    writeProjectConfig: (projectDir: string, enable: boolean) =>
-      ipcRenderer.invoke('mcp:writeProjectConfig', projectDir, enable),
+    getConfigPath: () => ipcRenderer.invoke('mcp:getConfigPath'),
   },
   git: {
     isRepo: (cwd: string) => ipcRenderer.invoke('git:isRepo', cwd),
