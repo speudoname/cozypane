@@ -51,9 +51,53 @@ declare global {
     avatarUrl?: string;
   }
 
-  interface ProjectDetection {
-    type: 'node' | 'python' | 'go' | 'static' | 'docker' | 'unknown';
-    name: string;
+  // --- Shared preview / terminal-tab types ---
+  // These used to live inside components/TerminalTabBar.tsx and were imported
+  // by Preview.tsx and App.tsx via `import type { ... } from './TerminalTabBar'`.
+  // Moving them into the global ambient types stops a leaf component from
+  // owning domain types that cross feature boundaries.
+
+  interface PreviewError {
+    type: 'console' | 'network' | 'load';
+    message: string;
+    timestamp: number;
+    detail?: string;
+  }
+
+  interface ConsoleLog {
+    level: number;
+    message: string;
+    timestamp: number;
+    source?: string;
+    line?: number;
+  }
+
+  interface NetworkError {
+    method: string;
+    url: string;
+    status: number;
+    statusText: string;
+    timestamp: number;
+  }
+
+  type AiAction = 'idle' | 'reading' | 'writing' | 'executing' | 'thinking';
+
+  interface TerminalTab {
+    id: string;
+    ptyId: string | null;
+    label: string;
+    customLabel?: string;
+    cwd: string;
+    aiAction: AiAction;
+    claudeRunning: boolean;
+    launched: boolean;
+    autoCommand?: string;
+    previewLocalUrl?: string;
+    previewLocalUrls?: string[];
+    previewProdUrl?: string;
+    previewErrors?: PreviewError[];
+    previewConsoleLogs?: ConsoleLog[];
+    previewNetworkErrors?: NetworkError[];
   }
 
   interface CustomDomain {
@@ -92,12 +136,9 @@ declare global {
     timeAgo: string;
   }
 
-  interface SubProject {
-    path: string;
-    name: string;
-    type: string;
-    devCommand: string | null;
-  }
+  // (SubProject interface removed — audit L29. Was referenced only by the
+  // `subProjects?` field on ProjectInfo, which itself had zero runtime
+  // users.)
 
   interface ProjectInfo {
     type: string | null;
@@ -105,7 +146,6 @@ declare global {
     productionUrl: string | null;
     serveStatic?: boolean;
     needsDatabase?: boolean;
-    subProjects?: SubProject[];
   }
 
   interface UpdateInfo {
@@ -130,6 +170,9 @@ declare global {
       readfile: (filePath: string) => Promise<FileContent>;
       readBinary: (filePath: string) => Promise<{ base64?: string; mime?: string; size?: number; error?: string }>;
       writefile: (filePath: string, content: string) => Promise<{ success?: boolean; error?: string }>;
+      unlink: (filePath: string) => Promise<{ success?: boolean; error?: string }>;
+      rmdir: (dirPath: string) => Promise<{ success?: boolean; error?: string }>;
+      rename: (oldPath: string, newPath: string) => Promise<{ success?: boolean; error?: string }>;
       homedir: () => Promise<string>;
       pickFile: () => Promise<{ paths: string[] }>;
       pickDirectory: () => Promise<{ paths: string[] }>;
@@ -153,10 +196,7 @@ declare global {
       login: () => Promise<void>;
       logout: () => Promise<void>;
       getAuth: () => Promise<DeployAuth>;
-      detectProject: (cwd: string) => Promise<ProjectDetection>;
-      start: (cwd: string, appName: string, tier?: string) => Promise<Deployment>;
       list: () => Promise<Deployment[]>;
-      get: (id: string) => Promise<Deployment>;
       logs: (id: string) => Promise<string>;
       delete: (id: string) => Promise<{ success: boolean }>;
       redeploy: (id: string) => Promise<Deployment>;
@@ -165,6 +205,8 @@ declare global {
       removeDomain: (deployId: string, domainId: string) => Promise<{ success?: boolean; error?: string }>;
       listDomains: (deployId: string) => Promise<{ domains?: CustomDomain[]; error?: string }>;
       onProtocolCallback: (callback: (url: string) => void) => () => void;
+      onAuthSuccess: (callback: (payload: { username: string; avatarUrl: string }) => void) => () => void;
+      onAuthError: (callback: (payload: { error: string }) => void) => () => void;
     };
     preview: {
       detectProject: (cwd: string) => Promise<ProjectInfo>;
@@ -198,6 +240,7 @@ declare global {
       createRepo: (cwd: string, isPrivate?: boolean) => Promise<{ url?: string; cloneUrl?: string; fullName?: string; error?: string }>;
       listRepos: (query: string) => Promise<{ repos: GitHubRepo[]; error?: string }>;
       addRemote: (cwd: string, cloneUrl: string) => Promise<{ success?: boolean; error?: string }>;
+      onAuthChanged: (callback: (payload: { username: string; avatarUrl: string }) => void) => () => void;
     };
   }
 

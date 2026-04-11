@@ -2,6 +2,7 @@ import { ipcMain, BrowserWindow } from 'electron';
 import { execFile } from 'child_process';
 import path from 'path';
 import fs from 'fs';
+import { isPathAllowed, addAllowedRoot } from './filesystem';
 
 let fileWatcher: fs.FSWatcher | null = null;
 const recentEvents = new Map<string, number>();
@@ -13,18 +14,67 @@ const IGNORE_PATTERN = /^(Library|Applications|Pictures|Music|Movies|Public|Down
 const IGNORE_INNER = /(node_modules|__pycache__|\.git)[/\\]/;
 const IGNORE_EXT = /\.(swp|tmp|pyc|DS_Store)$|~$/;
 
-function tryGitOriginal(fullPath: string, dirPath: string): Promise<string | null> {
-  const relativePath = path.relative(dirPath, fullPath);
-  return new Promise(resolve => {
-    execFile('/usr/bin/git', ['show', `HEAD:${relativePath}`], { cwd: dirPath, timeout: 5000, maxBuffer: 1024 * 1024 }, (err, stdout) => {
-      if (err) { resolve(null); return; }
-      resolve(stdout);
+// Concurrency gate for `git show HEAD:<file>` lookups. Previously the
+// watcher fork-bombed git on bulk file changes (e.g. `npm install` spills
+// or large refactors touching hundreds of files): every first-seen file
+// kicked off its own execFile with no cap, and MAX_SNAPSHOTS=100 made
+// anything beyond that churn through a Map eviction. We cap at 4 inflight
+// git subprocesses; extra requests queue.
+const GIT_MAX_INFLIGHT = 4;
+let gitInflight = 0;
+const gitQueue: Array<() => void> = [];
+
+function acquireGitSlot(): Promise<void> {
+  if (gitInflight < GIT_MAX_INFLIGHT) {
+    gitInflight++;
+    return Promise.resolve();
+  }
+  return new Promise<void>((resolve) => {
+    gitQueue.push(() => {
+      gitInflight++;
+      resolve();
     });
   });
 }
 
+function releaseGitSlot() {
+  gitInflight--;
+  const next = gitQueue.shift();
+  if (next) next();
+}
+
+async function tryGitOriginal(fullPath: string, dirPath: string): Promise<string | null> {
+  await acquireGitSlot();
+  const relativePath = path.relative(dirPath, fullPath);
+  try {
+    return await new Promise<string | null>((resolve) => {
+      execFile('/usr/bin/git', ['show', `HEAD:${relativePath}`], { cwd: dirPath, timeout: 5000, maxBuffer: 1024 * 1024 }, (err, stdout) => {
+        if (err) { resolve(null); return; }
+        resolve(stdout);
+      });
+    });
+  } finally {
+    releaseGitSlot();
+  }
+}
+
 export function registerWatcherHandlers(getWindow: () => BrowserWindow | null) {
   ipcMain.handle('watcher:start', (_event, dirPath: string) => {
+    // H7: the watcher is a parallel fs-read surface (snapshot capture +
+    // path forwarding to the renderer). Only allow it to watch paths that
+    // are already in the project-root allowlist. A fresh `watcher:start`
+    // call from the renderer means "please watch this directory" — add it
+    // as a root if it is a descendant of an existing root (most common:
+    // terminal cwd updated and renderer re-starts the watcher).
+    if (!isPathAllowed(dirPath)) {
+      // As a quality-of-life fallback, allow starting the watcher on a
+      // path that matches an existing terminal cwd — but nothing beyond
+      // that. This is intentionally narrow.
+      return { error: 'Watcher path is not in the project allowlist' };
+    }
+    // Ensure the exact dirPath is itself a root so descendants are reachable.
+    addAllowedRoot(dirPath);
+
     if (fileWatcher) {
       fileWatcher.close();
       fileWatcher = null;
@@ -106,7 +156,19 @@ export function registerWatcherHandlers(getWindow: () => BrowserWindow | null) {
         });
       });
       fileWatcher.on('error', (err) => {
+        // M27: previously this only logged. On macOS `fs.watch` with
+        // recursive:true can throw EMFILE under heavy load, leaving the
+        // Activity Feed silently frozen. Forward a structured error event
+        // to the renderer so the UI can show "watcher stopped — reload to
+        // recover" rather than quietly failing.
         console.error('[CozyPane] Watcher error:', err);
+        const win = getWindow();
+        if (win && !win.isDestroyed()) {
+          win.webContents.send('watcher:error', {
+            code: (err as NodeJS.ErrnoException)?.code || 'EUNKNOWN',
+            message: (err as Error)?.message || String(err),
+          });
+        }
       });
       return { success: true };
     } catch (err: any) {
@@ -123,6 +185,13 @@ export function registerWatcherHandlers(getWindow: () => BrowserWindow | null) {
   });
 
   ipcMain.handle('watcher:getDiff', async (_event, filePath: string) => {
+    // Even though snapshots are only created for files inside a watched
+    // root, re-check the allowlist here so `watcher:getDiff` cannot be
+    // used as a read primitive outside the allowlist under any
+    // configuration (H7 defense-in-depth).
+    if (!isPathAllowed(filePath)) {
+      return { error: 'Path not in project allowlist' };
+    }
     const before = fileSnapshots.get(filePath);
     if (before === undefined) {
       return { error: 'No snapshot available for this file' };

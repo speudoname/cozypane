@@ -4,7 +4,10 @@ import { promisify } from 'util';
 
 const execFileAsync = promisify(execFile);
 
-export interface UpdateInfo {
+// L30: `UpdateInfo` was previously exported but nothing imported it — the
+// renderer uses the global ambient type in `renderer/types.d.ts`. Dropping
+// the `export` so the type stays module-local as an internal return type.
+interface UpdateInfo {
   brewOutdated: { name: string; current: string; latest: string }[];
   claudeUpdate: { current: string; latest: string } | null;
   checkedAt: number;

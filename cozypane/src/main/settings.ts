@@ -60,57 +60,66 @@ export async function callLlm(prompt: string, maxTokens: number): Promise<{ text
   const apiKey = decryptString(settings.encryptedKey);
   if (!apiKey) return { error: 'No API key configured. Add one in Settings.' };
 
-  if (settings.provider === 'anthropic') {
-    let response: Response;
-    try {
-      response = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': apiKey,
-          'anthropic-version': '2023-06-01',
-        },
-        body: JSON.stringify({
-          model: settings.model,
-          max_tokens: maxTokens,
-          messages: [{ role: 'user', content: prompt }],
-        }),
-        signal: AbortSignal.timeout(15000),
-      });
-    } catch (err: any) {
-      return { error: err.message || 'Network error' };
-    }
-    if (!response.ok) return { error: `API error: ${response.status} ${response.statusText}` };
-    let data: any;
-    try { data = await response.json(); } catch { return { error: 'Invalid response from API' }; }
-    if (data.content?.[0]?.text) return { text: data.content[0].text.trim() };
-    return { error: data.error?.message || 'API error' };
-  } else if (settings.provider === 'openai') {
-    let response: Response;
-    try {
-      response = await fetch('https://api.openai.com/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify({
-          model: settings.model,
-          max_tokens: maxTokens,
-          messages: [{ role: 'user', content: prompt }],
-        }),
-        signal: AbortSignal.timeout(15000),
-      });
-    } catch (err: any) {
-      return { error: err.message || 'Network error' };
-    }
-    if (!response.ok) return { error: `API error: ${response.status} ${response.statusText}` };
-    let data: any;
-    try { data = await response.json(); } catch { return { error: 'Invalid response from API' }; }
-    if (data.choices?.[0]?.message?.content) return { text: data.choices[0].message.content.trim() };
-    return { error: data.error?.message || 'API error' };
+  // Provider adapters — both Anthropic and OpenAI speak JSON chat over HTTPS
+  // with essentially the same shape. Previously this function had two
+  // ~25-line structurally-identical branches. The table below is the only
+  // place the two providers differ.
+  interface Adapter {
+    url: string;
+    headers: (key: string) => Record<string, string>;
+    body: (model: string, prompt: string, max: number) => Record<string, unknown>;
+    extract: (data: any) => string | undefined;
   }
-  return { error: 'Unknown provider' };
+  const ADAPTERS: Record<string, Adapter> = {
+    anthropic: {
+      url: 'https://api.anthropic.com/v1/messages',
+      headers: (k) => ({
+        'Content-Type': 'application/json',
+        'x-api-key': k,
+        'anthropic-version': '2023-06-01',
+      }),
+      body: (model, prompt, max) => ({
+        model,
+        max_tokens: max,
+        messages: [{ role: 'user', content: prompt }],
+      }),
+      extract: (d) => d?.content?.[0]?.text,
+    },
+    openai: {
+      url: 'https://api.openai.com/v1/chat/completions',
+      headers: (k) => ({
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${k}`,
+      }),
+      body: (model, prompt, max) => ({
+        model,
+        max_tokens: max,
+        messages: [{ role: 'user', content: prompt }],
+      }),
+      extract: (d) => d?.choices?.[0]?.message?.content,
+    },
+  };
+
+  const adapter = ADAPTERS[settings.provider];
+  if (!adapter) return { error: 'Unknown provider' };
+
+  let response: Response;
+  try {
+    response = await fetch(adapter.url, {
+      method: 'POST',
+      headers: adapter.headers(apiKey),
+      body: JSON.stringify(adapter.body(settings.model, prompt, maxTokens)),
+      signal: AbortSignal.timeout(15000),
+    });
+  } catch (err: any) {
+    return { error: err.message || 'Network error' };
+  }
+  if (!response.ok) return { error: `API error: ${response.status} ${response.statusText}` };
+  let data: any;
+  try { data = await response.json(); } catch { return { error: 'Invalid response from API' }; }
+  const text = adapter.extract(data);
+  if (text) return { text: text.trim() };
+  return { error: data?.error?.message || 'API error' };
 }
 
 export function registerSettingsHandlers() {
@@ -153,7 +162,12 @@ export function registerSettingsHandlers() {
       let encryptedKey = current.encryptedKey;
 
       if (data.apiKey !== undefined) {
-        encryptedKey = encryptString(data.apiKey);
+        try {
+          encryptedKey = encryptString(data.apiKey);
+        } catch (err: any) {
+          // M8: no keyring — return a clean error rather than crashing.
+          return { error: err.message || 'Credential store unavailable' };
+        }
       }
 
       writeSettings({

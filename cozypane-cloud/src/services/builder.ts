@@ -201,7 +201,10 @@ export function generateDockerfile(analysis: ProjectAnalysis): string {
   if (analysis.type === 'node') {
     switch (analysis.framework) {
       case 'nextjs': return nextjsDockerfile(analysis);
-      case 'vite': return viteSpaDockerfile(analysis);
+      case 'vite':
+      case 'angular': // `ng build` → static files, nginx-served like vite SPA
+      case 'cra':     // Create React App — static bundle after `npm run build`
+        return viteSpaDockerfile(analysis);
       case 'express':
       case 'fastify':
       case 'hono':

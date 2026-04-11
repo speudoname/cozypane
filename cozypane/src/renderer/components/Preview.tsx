@@ -1,6 +1,6 @@
 import React, { useState, useRef, useCallback, useEffect } from 'react';
 import { ArrowLeft, ArrowRight, Home, RotateCw, Smartphone, Tablet, Monitor, Columns2, Globe, Zap } from 'lucide-react';
-import type { PreviewError, ConsoleLog, NetworkError } from './TerminalTabBar';
+// PreviewError, ConsoleLog, NetworkError are declared in src/renderer/types.d.ts
 
 interface Props {
   localUrl?: string;
@@ -659,15 +659,15 @@ export default function Preview({ localUrl, localUrls = [], productionUrl, cwd, 
         </div>
 
         <div style={{ display: 'flex', gap: '0.15em' }}>
-          <button onClick={goBack} style={toolBtnStyle} title="Back"><ArrowLeft size={13} /></button>
-          <button onClick={goForward} style={toolBtnStyle} title="Forward"><ArrowRight size={13} /></button>
-          <button onClick={goHome} style={toolBtnStyle} title="Home (server root)"><Home size={13} /></button>
-          <button onClick={reload} style={toolBtnStyle} title="Reload">
+          <button onClick={goBack} style={toolBtnStyle} title="Back" aria-label="Back"><ArrowLeft size={13} /></button>
+          <button onClick={goForward} style={toolBtnStyle} title="Forward" aria-label="Forward"><ArrowRight size={13} /></button>
+          <button onClick={goHome} style={toolBtnStyle} title="Home (server root)" aria-label="Home (server root)"><Home size={13} /></button>
+          <button onClick={reload} style={toolBtnStyle} title="Reload" aria-label="Reload">
             <RotateCw size={13} style={loading ? { animation: 'spin 0.7s linear infinite' } : {}} />
           </button>
         </div>
 
-        <div style={{ display: 'flex', gap: '0.15em' }}>
+        <div style={{ display: 'flex', gap: '0.15em' }} role="group" aria-label="Device size">
           {(['phone', 'tablet', 'desktop'] as DeviceMode[]).map(d => (
             <button
               key={d}
@@ -678,6 +678,8 @@ export default function Preview({ localUrl, localUrls = [], productionUrl, cwd, 
                 color: device === d ? '#fff' : 'var(--text-secondary, #888)',
               }}
               title={d.charAt(0).toUpperCase() + d.slice(1)}
+              aria-label={`${d.charAt(0).toUpperCase() + d.slice(1)} viewport`}
+              aria-pressed={device === d}
             >
               {d === 'phone' ? <Smartphone size={13} /> : d === 'tablet' ? <Tablet size={13} /> : <Monitor size={13} />}
             </button>
@@ -697,6 +699,7 @@ export default function Preview({ localUrl, localUrls = [], productionUrl, cwd, 
             cursor: hasDevToolsData && !sendingToClaude ? 'pointer' : 'default',
           }}
           title="Send console logs, network errors, screenshot, and HTML to Claude"
+          aria-label="Send preview context to Claude"
         >
           {sendingToClaude ? 'Sending...' : 'Send to Claude'}
         </button>

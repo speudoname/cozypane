@@ -1,6 +1,6 @@
 # CozyPane
 
-A cozy terminal for AI coding tools. Run Claude Code, Codex, Aider, and other AI CLI tools in a purpose-built environment with smart input, a built-in editor, cost tracking, and more.
+A cozy terminal for AI coding tools. Run Claude Code, Codex, Aider, and other AI CLI tools in a purpose-built environment with smart input, a built-in editor, an integrated Git panel, one-click cloud deploys, and more.
 
 **CozyPane makes the terminal feel like a cozy, safe space — not a scary black box.**
 
@@ -8,16 +8,18 @@ Built for beginners who've never used a terminal but want to use AI coding tools
 
 ## Features
 
-- **Smart Input** — Warp-style editable command bar with slash commands, history, and multi-line support. Auto-detects when to use the input bar vs raw terminal mode.
-- **Monaco Editor** — Full VS Code editor built in. Edit files side-by-side with your terminal.
-- **AI Activity Tracking** — See every file your AI tool touches in real time with change summaries.
-- **Diff Viewer** — Monaco-powered side-by-side diffs for every file change.
+- **Smart Input** — Warp-style editable command bar with slash commands, history, and multi-line support. Auto-detects when to use the input bar vs raw terminal mode for interactive TUIs.
+- **Monaco Editor** — Full VS Code editor built in. Edit files side-by-side with your terminal, with image/video/audio/PDF preview fallbacks.
+- **File Sidebar** — Follows your terminal's working directory. Inline rename, create, delete, and color-coded indicators for files your AI has modified.
+- **Diff Viewer** — Monaco-powered side-by-side diffs for every file change tracked by the built-in watcher.
 - **Multi-Terminal** — Tabs and split view. Run multiple AI sessions or a shell alongside your coding agent.
-- **Cost Tracking** — See how much each AI session costs in real time.
-- **Conversation History** — Chat-like view of your prompts and AI responses.
-- **AI Summaries** — One-click plain English summaries of what your coding agent changed.
-- **Themes** — Cozy Dark, Ocean, Forest, and Light themes.
+- **Git Panel** — Full status/commit/push/pull from inside the app, including GitHub OAuth, repo create/connect, AI-generated commit messages, and a "Revert AI Changes" button scoped to watcher events.
+- **Deploy to the Cloud** — One-click deploy to [CozyPane Cloud](https://cozypane.com), a PaaS for Node, Python, Go, and static projects. Includes PostgreSQL provisioning, custom domains, and live log streaming.
+- **MCP Integration** — Exposes `cozypane_deploy`, `cozypane_list_deployments`, `cozypane_get_logs`, and other tools directly to Claude Code, so you can deploy with a prompt.
+- **Preview Panel** — Built-in webview with mobile/tablet/desktop device modes, console log capture, network error tracking, and a "Send to Claude" button that bridges browser context into your AI session.
+- **Themes** — Cozy Dark, Ocean, Forest, and Cozy Light themes. Terminal, editor, and diff viewer all switch in sync.
 - **Command Palette** — Cmd+K to quickly access any action.
+- **Auto-Update** — Built-in updater that pulls new versions from GitHub Releases, plus a dependency checker for Homebrew + `claude` CLI.
 - **Cross-Platform** — macOS (Apple Silicon + Intel), Windows, and Linux.
 
 ## Download

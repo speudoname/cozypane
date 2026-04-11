@@ -34,6 +34,12 @@ CREATE TABLE IF NOT EXISTS domains (
 CREATE INDEX IF NOT EXISTS idx_deployments_user ON deployments(user_id);
 CREATE INDEX IF NOT EXISTS idx_deployments_subdomain ON deployments(subdomain);
 CREATE INDEX IF NOT EXISTS idx_domains_domain ON domains(domain);
+-- `GET /deploy/:id` LEFT JOINs domains ON deployment_id on every request;
+-- without this index that's a sequential scan on the domains table.
+CREATE INDEX IF NOT EXISTS idx_domains_deployment ON domains(deployment_id);
+-- `POST /deploy` per-user count check filters by (user_id, status);
+-- admin deployment listing filters by status.
+CREATE INDEX IF NOT EXISTS idx_deployments_user_status ON deployments(user_id, status);
 
 -- Admin flag
 ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin BOOLEAN DEFAULT FALSE;

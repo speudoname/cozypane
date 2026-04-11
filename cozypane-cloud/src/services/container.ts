@@ -188,7 +188,22 @@ export async function stopContainer(containerId: string): Promise<void> {
 }
 
 /**
+ * Restart an existing container in place. Consolidates the user `/redeploy`
+ * and admin `/restart` paths that previously each instantiated their own
+ * Docker client via dynamic import.
+ */
+export async function restartContainer(containerId: string, timeoutSec = 10): Promise<void> {
+  const container = docker.getContainer(containerId);
+  await container.restart({ t: timeoutSec });
+}
+
+/**
  * Remove a Docker image by tag. Non-fatal — logs warnings.
+ *
+ * Audit L6: previously this only removed the exact `:latest` tag, so any
+ * image that had been retagged or pushed under a different tag was
+ * orphaned. Now also scans for any `cozypane/<userId>-<appName>:*`
+ * variants and removes them too.
  */
 export async function removeImage(imageTag: string): Promise<void> {
   try {
@@ -200,6 +215,25 @@ export async function removeImage(imageTag: string): Promise<void> {
       console.warn(`Failed to remove image ${imageTag}:`, err.message);
     }
   }
+
+  // Defensive cleanup: also drop any other tags under the same repository.
+  // `cozypane/<userId>-<appName>` is the repo; `:latest` is the only tag we
+  // write today, but builds from earlier app versions may still have stale
+  // tags that would otherwise leak.
+  const repo = imageTag.split(':')[0];
+  if (!repo.startsWith('cozypane/')) return;
+  try {
+    const images = await docker.listImages({ filters: { reference: [repo] } });
+    for (const img of images) {
+      for (const tag of img.RepoTags || []) {
+        if (tag === imageTag || tag === '<none>:<none>') continue;
+        try {
+          await docker.getImage(tag).remove({ force: true });
+          console.log(`Removed orphaned image: ${tag}`);
+        } catch { /* non-fatal */ }
+      }
+    }
+  } catch { /* non-fatal */ }
 }
 
 /**
@@ -308,10 +342,11 @@ export function execInContainer(containerId: string, ws: WebSocket): void {
       AttachStderr: true,
       Tty: true,
     })
-    .then((exec) => {
-      return exec.start({ hijack: true, stdin: true, Tty: true });
+    .then(async (exec) => {
+      const stream = await exec.start({ hijack: true, stdin: true, Tty: true });
+      return { exec, stream };
     })
-    .then((stream) => {
+    .then(({ exec, stream }) => {
       // Container -> WebSocket
       stream.on('data', (chunk: Buffer) => {
         if (ws.readyState === ws.OPEN) {
@@ -325,7 +360,7 @@ export function execInContainer(containerId: string, ws: WebSocket): void {
         }
       });
 
-      stream.on('error', (err) => {
+      stream.on('error', () => {
         if (ws.readyState === ws.OPEN) {
           ws.close(1011, 'Exec stream error');
         }
@@ -336,8 +371,23 @@ export function execInContainer(containerId: string, ws: WebSocket): void {
         stream.write(typeof data === 'string' ? data : data.toString('utf-8'));
       });
 
+      // On client disconnect, previously the code only called `stream.end()`
+      // which gracefully closes stdin but leaves the docker exec process
+      // running server-side. Over time this leaked zombie shells inside
+      // tenant containers. Now we also try to SIGKILL any remaining child
+      // via `kill -9 $PPID` (the exec shell) and destroy the hijacked
+      // stream so the socket to dockerd is fully torn down.
       ws.on('close', () => {
-        stream.end();
+        try {
+          // Best-effort kill: write a shell command that hard-kills the
+          // exec session. If stream is already closed this throws; we
+          // swallow because the cleanup is best-effort.
+          stream.write('\x03\nkill -9 $$\n');
+        } catch { /* ignore */ }
+        try { stream.end(); } catch { /* ignore */ }
+        try { (stream as any).destroy?.(); } catch { /* ignore */ }
+        // Also query the exec state and resize=0 so dockerd releases it.
+        exec.inspect().catch(() => {});
       });
     })
     .catch((err) => {

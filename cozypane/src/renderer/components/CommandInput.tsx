@@ -362,7 +362,12 @@ export default function CommandInput({ onSubmit, onRawKey, visible, history, onF
                 <span key={i} className={`attached-chip ${isImage ? 'image' : ''}`} title={p}>
                   <span className="attached-icon">{isImage ? '~' : '#'}</span>
                   <span className="attached-name">{name}</span>
-                  <span className="attached-remove" onClick={() => removeAttached(p)}>x</span>
+                  <button
+                    type="button"
+                    className="attached-remove"
+                    onClick={() => removeAttached(p)}
+                    aria-label={`Remove ${name}`}
+                  >x</button>
                 </span>
               );
             })}

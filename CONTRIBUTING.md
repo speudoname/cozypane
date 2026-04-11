@@ -12,9 +12,13 @@ Thanks for your interest in contributing! CozyPane is a community project and we
 
 ### Development Setup
 
+The repository root contains both the desktop app (`cozypane/`) and the
+cloud backend (`cozypane-cloud/`). Most contributions will be inside
+`cozypane/` — these commands assume that.
+
 ```bash
 git clone https://github.com/speudoname/cozypane.git
-cd cozypane/cozypane
+cd cozypane/cozypane            # desktop app subdirectory
 npm install
 npx electron-rebuild -f -w node-pty
 node scripts/dev.mjs
@@ -22,16 +26,33 @@ node scripts/dev.mjs
 
 This starts Vite (hot-reload) and Electron together.
 
+To work on the cloud backend instead:
+
+```bash
+cd cozypane/cozypane-cloud
+npm install
+cp .env.example .env            # fill in secrets (see comments)
+docker compose up --build       # starts Traefik + api + postgres
+```
+
 ### Project Structure
 
-- `src/main/` — Electron main process (PTY, filesystem, IPC)
-- `src/renderer/` — React frontend (components, styles)
-- `src/renderer/components/` — UI components (Terminal, Editor, Sidebar, etc.)
-- `src/renderer/lib/` — Utilities (terminal analysis, language map)
-- `website/` — Landing page (static HTML/CSS/JS)
-- `scripts/` — Dev and build scripts
+Two codebases live in this repo:
 
-See [ARCHITECTURE.md](cozypane/ARCHITECTURE.md) for detailed technical docs.
+**Desktop app (`cozypane/`):**
+- `src/main/` — Electron main process: PTY, filesystem, IPC, Git, Deploy client, MCP server, preview static server
+- `src/renderer/` — React frontend (components, styles, lib)
+- `src/renderer/components/` — UI components (Terminal, FilePreview/Monaco, Sidebar, DeployPanel, GitPanel, Preview, etc.)
+- `src/renderer/lib/` — Utilities (`terminalAnalyzer`, `languageMap`, `shellUtils`, `cozyMode`, `monacoThemes`)
+- `website/` — Landing page (static HTML/CSS/JS, served via Cloudflare Pages)
+- `scripts/` — Dev launcher (`dev.mjs`)
+
+**Cloud backend (`cozypane-cloud/`):**
+- `src/routes/` — Fastify HTTP routes (auth, deploy, admin, health)
+- `src/services/` — Docker builder, container lifecycle, per-deployment Postgres, project detector, cleanup helper
+- `src/middleware/` — JWT auth, admin gate
+- `src/db/` — PostgreSQL pool + schema
+- `docker-compose.yml` — Traefik + API + Postgres orchestration
 
 ## How to Contribute
 

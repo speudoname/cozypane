@@ -241,6 +241,13 @@ export function registerGitHandlers() {
   });
 
   ipcMain.handle('git:addRemote', async (_event, cwd: string, cloneUrl: string) => {
+    // Reject transports that git supports but are RCE vectors once a fetch/pull
+    // runs against them. In particular, `ext::sh -c '...'` executes the payload
+    // as an ext transport helper on the next `git fetch origin`, turning a
+    // compromised cloneUrl into persistent code execution.
+    if (typeof cloneUrl !== 'string' || !/^(https:\/\/|git@[^\s:]+:|ssh:\/\/git@)/.test(cloneUrl)) {
+      return { error: 'Unsupported remote URL. Use https:// or git@host:owner/repo.' };
+    }
     try {
       try {
         await gitExecFile(['remote', 'add', 'origin', cloneUrl], cwd);

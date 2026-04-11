@@ -3,9 +3,21 @@ import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
 import { encryptString, decryptString } from './crypto';
-import { apiFetch as sharedApiFetch, createTarball as sharedCreateTarball, APP_NAME_REGEX } from './deploy-shared';
+import { apiFetch as sharedApiFetch } from './deploy-shared';
+// NOTE: Direct upload deploy path (deploy:start / deploy:detectProject /
+// deploy:get IPC handlers and createTarball/detectProjectType helpers) was
+// removed — the UI deploys exclusively via the MCP tool `cozypane_deploy`
+// (see DeployPanel.tsx → sendTerminalCommand('cozydeploy …')). The MCP
+// server (src/main/mcp-server.ts) owns the tarball + upload path.
 
 const pendingOAuthStates = new Map<string, number>(); // state → expiry timestamp (ms)
+
+function sweepExpiredOAuthStates(): void {
+  const now = Date.now();
+  for (const [state, expiry] of pendingOAuthStates) {
+    if (expiry < now) pendingOAuthStates.delete(state);
+  }
+}
 
 export const API_BASE = process.env.COZYPANE_API_URL || 'https://api.cozypane.com';
 
@@ -76,46 +88,12 @@ function apiFetch(endpoint: string, options: RequestInit & { timeoutMs?: number 
   return sharedApiFetch(API_BASE, endpoint, getToken, options);
 }
 
-function detectProjectTypeInDir(dir: string): string | null {
-  if (fs.existsSync(path.join(dir, 'Dockerfile'))) return 'docker';
-  if (fs.existsSync(path.join(dir, 'package.json'))) return 'node';
-  if (fs.existsSync(path.join(dir, 'requirements.txt'))) return 'python';
-  if (fs.existsSync(path.join(dir, 'go.mod'))) return 'go';
-  if (fs.existsSync(path.join(dir, 'index.html'))) return 'static';
-  return null;
-}
-
-function detectProjectType(cwd: string): { type: string; name: string } {
-  const name = path.basename(cwd);
-
-  // Check root directory first
-  const rootType = detectProjectTypeInDir(cwd);
-  if (rootType) return { type: rootType, name };
-
-  // Check one level deep for monorepo structures (frontend/, backend/, app/, etc.)
-  try {
-    const entries = fs.readdirSync(cwd, { withFileTypes: true });
-    for (const entry of entries) {
-      if (entry.isDirectory() && !entry.name.startsWith('.') && entry.name !== 'node_modules') {
-        const subType = detectProjectTypeInDir(path.join(cwd, entry.name));
-        if (subType) return { type: subType, name };
-      }
-    }
-  } catch {}
-
-  return { type: 'unknown', name };
-}
-
-function createTarball(cwd: string): Promise<string> {
-  const tmpDir = path.join(app.getPath('temp'), 'cozypane-deploy');
-  return sharedCreateTarball(cwd, tmpDir);
-}
-
 export function registerDeployHandlers(getWindow: () => BrowserWindow | null) {
   ipcMain.handle('deploy:login', async () => {
     const clientId = 'Ov23liUojbnQSvCY9Eq9';
     const redirectUri = encodeURIComponent('cozypane://auth/callback');
     const state = crypto.randomUUID();
+    sweepExpiredOAuthStates();
     pendingOAuthStates.set(state, Date.now() + 5 * 60 * 1000); // 5-min expiry
     const oauthUrl = `https://github.com/login/oauth/authorize?client_id=${clientId}&redirect_uri=${redirectUri}&scope=repo,read:user&state=${state}`;
     await shell.openExternal(oauthUrl);
@@ -138,56 +116,11 @@ export function registerDeployHandlers(getWindow: () => BrowserWindow | null) {
     };
   });
 
-  ipcMain.handle('deploy:detectProject', async (_event, cwd: string) => {
-    return detectProjectType(cwd);
-  });
-
-  ipcMain.handle('deploy:start', async (_event, cwd: string, appName: string, tier?: string) => {
-    if (!APP_NAME_REGEX.test(appName)) {
-      return { error: `Invalid app name "${appName}". Must be 2-64 chars, lowercase alphanumeric and hyphens, start/end with letter or number.` };
-    }
-    try {
-      const tarPath = await createTarball(cwd);
-      const tarBuffer = await fs.promises.readFile(tarPath);
-
-      // Clean up temp file
-      try { fs.unlinkSync(tarPath); } catch {}
-
-      // Upload as multipart — text fields MUST come before the file field.
-      // Fastify's multipart parser only exposes fields that appear before the file stream.
-      const blob = new Blob([tarBuffer], { type: 'application/gzip' });
-      const project = detectProjectType(cwd);
-      const formData = new FormData();
-      formData.append('appName', appName);
-      if (tier) formData.append('tier', tier);
-      formData.append('projectType', project.type);
-      formData.append('file', blob, 'deploy.tar.gz');
-
-      const result = await apiFetch('/deploy', {
-        method: 'POST',
-        body: formData,
-        timeoutMs: 300000, // 5 minutes — Docker builds can be slow
-      });
-
-      return result;
-    } catch (err: any) {
-      return { error: err.message || 'Deploy failed' };
-    }
-  });
-
   ipcMain.handle('deploy:list', async () => {
     try {
       return await apiFetch('/deploy/list');
     } catch (err: any) {
       return { error: err.message || 'Failed to list deployments' };
-    }
-  });
-
-  ipcMain.handle('deploy:get', async (_event, id: string) => {
-    try {
-      return await apiFetch(`/deploy/${encodeURIComponent(id)}`);
-    } catch (err: any) {
-      return { error: err.message || 'Failed to get deployment' };
     }
   });
 
@@ -286,18 +219,58 @@ export async function processProtocolUrl(url: string, getWindow: () => BrowserWi
         });
 
         if (result.ok) {
-          const data = await result.json() as { token: string; githubToken?: string; user: { username: string; avatarUrl: string } };
-          console.log('[CozyPane] OAuth success — has githubToken:', !!data.githubToken, 'user:', data.user?.username);
-          const authData: StoredAuth = {
-            encryptedToken: encryptString(data.token),
-            username: data.user.username,
-            avatarUrl: data.user.avatarUrl,
-          };
-          if (data.githubToken) {
-            authData.encryptedGithubToken = encryptString(data.githubToken);
-            writeAskpassHelper();
+          // H10: the server no longer returns the GitHub token in the body.
+          // It is stored encrypted server-side and fetched on demand via
+          // GET /auth/github-token (which requires the cozypane JWT).
+          const data = await result.json() as { token: string; user: { username: string; avatarUrl: string } };
+          console.log('[CozyPane] OAuth success — user:', data.user?.username);
+          try {
+            const authData: StoredAuth = {
+              encryptedToken: encryptString(data.token),
+              username: data.user.username,
+              avatarUrl: data.user.avatarUrl,
+            };
+            writeAuth(authData);
+          } catch (err: any) {
+            // M8: no keyring available and fallback disabled. Surface a
+            // clear error to the UI rather than silently base64-persisting.
+            console.error('[CozyPane] Credential store refused:', err.message);
+            getWindow()?.webContents.send('deploy:auth-error', {
+              error: err.message || 'Credential store unavailable. Install a keyring or set COZYPANE_ALLOW_UNENCRYPTED_CREDENTIALS=1.',
+            });
+            return;
           }
-          writeAuth(authData);
+
+          // Fetch the GitHub token via the new authenticated endpoint and
+          // cache it locally (safeStorage-encrypted, same as the cozypane JWT).
+          try {
+            const ghResult = await fetch(`${API_BASE}/auth/github-token`, {
+              headers: { Authorization: `Bearer ${data.token}` },
+              signal: AbortSignal.timeout(15000),
+            });
+            if (ghResult.ok) {
+              const ghData = await ghResult.json() as { token: string };
+              if (ghData.token) {
+                const stored = readAuth();
+                if (stored) {
+                  try {
+                    stored.encryptedGithubToken = encryptString(ghData.token);
+                    writeAuth(stored);
+                    writeAskpassHelper();
+                  } catch (err: any) {
+                    // GitHub token fallback refuses — non-fatal for the
+                    // session since the cozypane JWT already went through.
+                    console.warn('[CozyPane] GitHub token not persisted:', err.message);
+                  }
+                }
+              }
+            } else {
+              console.warn('[CozyPane] Could not fetch GitHub token:', ghResult.status);
+            }
+          } catch (err: any) {
+            console.warn('[CozyPane] Fetching GitHub token failed:', err?.message || err);
+          }
+
           // Notify renderer that auth succeeded
           const authPayload = {
             username: data.user.username,

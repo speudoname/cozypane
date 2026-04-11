@@ -1,46 +1,10 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import type { AiAction } from '../lib/terminalAnalyzer';
 
-export interface PreviewError {
-  type: 'console' | 'network' | 'load';
-  message: string;
-  timestamp: number;
-  detail?: string;
-}
-
-export interface ConsoleLog {
-  level: number;
-  message: string;
-  timestamp: number;
-  source?: string;
-  line?: number;
-}
-
-export interface NetworkError {
-  method: string;
-  url: string;
-  status: number;
-  statusText: string;
-  timestamp: number;
-}
-
-export interface TerminalTab {
-  id: string;
-  ptyId: string | null;
-  label: string;
-  customLabel?: string;
-  cwd: string;
-  aiAction: AiAction;
-  claudeRunning: boolean;
-  launched: boolean;
-  autoCommand?: string;
-  previewLocalUrl?: string;
-  previewLocalUrls?: string[];
-  previewProdUrl?: string;
-  previewErrors?: PreviewError[];
-  previewConsoleLogs?: ConsoleLog[];
-  previewNetworkErrors?: NetworkError[];
-}
+// PreviewError / ConsoleLog / NetworkError / TerminalTab live in the global
+// ambient types (src/renderer/types.d.ts). They used to be exported from
+// this file — see audit finding M19 — which meant a leaf component owned
+// cross-feature domain types and renaming/moving this file would break
+// unrelated imports. The move was purely type placement; shape unchanged.
 
 function getDisplayLabel(tab: TerminalTab): string {
   if (tab.customLabel) return tab.customLabel;

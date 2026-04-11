@@ -3,6 +3,7 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 import os from 'os';
 import fs from 'fs';
+import { addAllowedRoot } from './filesystem';
 
 const execFileAsync = promisify(execFile);
 
@@ -28,6 +29,12 @@ function createPty(getWindow: () => BrowserWindow | null, cwd?: string): { id: s
   const home = os.homedir();
   const initialCwd = cwd || home;
   const id = `term-${nextId++}`;
+
+  // The directory the terminal is launched in automatically becomes an
+  // allowed filesystem root (H2/H7). Opening a project via TabLauncher
+  // creates a PTY rooted at that directory; this keeps the sidebar and
+  // watcher able to operate on it without a separate pickDirectory call.
+  addAllowedRoot(initialCwd);
 
   try {
     const process = pty.spawn(shell, ['-l'], {
@@ -148,7 +155,11 @@ export function registerPtyHandlers(getWindow: () => BrowserWindow | null, envGe
   ipcMain.handle('terminal:getCwd', async (_event, id: string) => {
     const entry = ptyMap.get(id);
     if (!entry || !entry.process.pid) return null;
-    return getCwdForPid(entry.process.pid);
+    const cwd = await getCwdForPid(entry.process.pid);
+    // When the terminal cd's into a new directory, add it to the allowed
+    // roots so the sidebar / watcher / file operations follow along (H2/H7).
+    if (cwd) addAllowedRoot(cwd);
+    return cwd;
   });
 }
 

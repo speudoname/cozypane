@@ -59,6 +59,7 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, au
   const inputTextRef = useRef('');
   const scrollRafRef = useRef(0); // requestAnimationFrame handle for debounced scroll
   const scrollDisengageRef = useRef({ cumulative: 0, timer: 0 });
+  const termEventCleanupRef = useRef<(() => void) | null>(null);
 
   const [tuiMode, setTuiMode] = useState(false);
   const [focus, setFocus] = useState<'input' | 'terminal'>('input');
@@ -232,7 +233,12 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, au
     // write-triggered scroll events. Only wheel sets this; it auto-clears.
     const userScrollingDown = { active: false };
 
-    term.element?.addEventListener('wheel', (e) => {
+    // L18: keep named handler refs so we can remove them in the cleanup
+    // return. Previously these listeners were attached anonymously and
+    // only removed implicitly via `term.dispose()` — which works today
+    // but leaks under StrictMode double-mount during dev and breaks unit
+    // tests that don't fully dispose the terminal.
+    const onWheel = (e: WheelEvent) => {
       if (e.deltaY < 0 && followOutputRef.current) {
         // User scrolling up — accumulate delta and only disengage after meaningful scroll.
         // Prevents accidental Mac trackpad touches (tiny deltaY) from breaking auto-scroll.
@@ -269,7 +275,23 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, au
           scheduleScrollToBottom();
         }
       }
-    }, { passive: true });
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'PageUp' || (e.key === 'ArrowUp' && e.shiftKey)) {
+        followOutputRef.current = false;
+        setScrolledUp(true);
+      }
+      if (e.key === 'End' && e.ctrlKey) {
+        followOutputRef.current = true;
+        setScrolledUp(false);
+      }
+    };
+    term.element?.addEventListener('wheel', onWheel, { passive: true });
+    term.element?.addEventListener('keydown', onKey);
+    termEventCleanupRef.current = () => {
+      term.element?.removeEventListener('wheel', onWheel);
+      term.element?.removeEventListener('keydown', onKey);
+    };
 
     // Re-engage follow mode when the viewport reaches near the bottom,
     // but ONLY when the user is actively scrolling (wheel events set this flag).
@@ -280,18 +302,6 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, au
       if (followOutputRef.current || !userScrollingDown.active) return;
       const buf = term.buffer.active;
       if (buf.viewportY >= buf.baseY - Math.max(50, term.rows)) {
-        followOutputRef.current = true;
-        setScrolledUp(false);
-      }
-    });
-
-    // Detect keyboard-based scrolling (Shift+PageUp, etc.)
-    term.element?.addEventListener('keydown', (e) => {
-      if (e.key === 'PageUp' || (e.key === 'ArrowUp' && e.shiftKey)) {
-        followOutputRef.current = false;
-        setScrolledUp(true);
-      }
-      if (e.key === 'End' && e.ctrlKey) {
         followOutputRef.current = true;
         setScrolledUp(false);
       }
@@ -438,7 +448,13 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, au
     resizeObserver.observe(containerRef.current);
     if (wrapperRef.current) resizeObserver.observe(wrapperRef.current);
 
-    setTimeout(() => fitAndSync(), 200);
+    // L19: use requestAnimationFrame instead of a magic 200ms delay. The
+    // previous setTimeout raced the PTY-create effect (which also calls
+    // `fitAndSync` when the PTY resolves); on slow machines the timer
+    // could fire before the PTY existed. rAF runs after the current
+    // paint and is deterministic — fitAndSync itself already guards
+    // against `!id` so the ordering is safe.
+    requestAnimationFrame(() => fitAndSync());
 
     return () => {
       removeDataListener();
@@ -448,6 +464,10 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, au
       if (scrollDisengageRef.current.timer) window.clearTimeout(scrollDisengageRef.current.timer);
       window.removeEventListener('cozyPane:themeChange', handleThemeChange);
       if (idleTimerRef.current) clearTimeout(idleTimerRef.current);
+      // L18: explicitly remove the wheel/keydown listeners on `term.element`
+      // before disposing the terminal so we don't rely on dispose() to do it.
+      termEventCleanupRef.current?.();
+      termEventCleanupRef.current = null;
       term.dispose();
       termRef.current = null;
     };

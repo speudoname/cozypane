@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { ChevronRight, ChevronDown, FilePlus, FolderPlus, Pencil, Trash2, FileCode, FileJson, FileText, Braces } from 'lucide-react';
+import { useConfirm } from '../lib/confirmContext';
 
 interface Props {
   isOpen: boolean;
@@ -80,6 +81,7 @@ interface InlineInput {
 }
 
 export default function Sidebar({ isOpen, onToggle, onFileSelect, onDiffClick, activeFile, onCwdChange, cwd, changedFiles, lastWatcherEvent, fontSize, onZoomIn, onZoomOut, onZoomReset }: Props) {
+  const confirm = useConfirm();
   const [tree, setTree] = useState<TreeNode[]>([]);
   const [contextMenu, setContextMenu] = useState<ContextMenu | null>(null);
   const [inlineInput, setInlineInput] = useState<InlineInput | null>(null);
@@ -177,12 +179,36 @@ export default function Sidebar({ isOpen, onToggle, onFileSelect, onDiffClick, a
 
   const handleDelete = useCallback(async (node: TreeNode) => {
     setContextMenu(null);
-    if (!window.confirm(`Delete "${node.name}"?`)) return;
+    const ok = await confirm({
+      title: node.isDirectory ? 'Delete folder?' : 'Delete file?',
+      message: node.isDirectory
+        ? `Delete folder "${node.name}" and all its contents? This cannot be undone.`
+        : `Delete "${node.name}"? This cannot be undone.`,
+      confirmLabel: 'Delete',
+      destructive: true,
+    });
+    if (!ok) return;
     const result = node.isDirectory
-      ? await (window.cozyPane.fs as any).rmdir(node.path)
-      : await (window.cozyPane.fs as any).unlink(node.path);
-    if (result?.error) alert(result.error);
-  }, []);
+      ? await window.cozyPane.fs.rmdir(node.path)
+      : await window.cozyPane.fs.unlink(node.path);
+    if (result?.error) {
+      await confirm({
+        title: 'Delete failed',
+        message: result.error,
+        confirmLabel: 'OK',
+        cancelLabel: '',
+      });
+    }
+  }, [confirm]);
+
+  const showError = useCallback(async (message: string) => {
+    await confirm({
+      title: 'Error',
+      message,
+      confirmLabel: 'OK',
+      cancelLabel: '',
+    });
+  }, [confirm]);
 
   const commitInlineInput = useCallback(async () => {
     if (!inlineInput) return;
@@ -191,20 +217,20 @@ export default function Sidebar({ isOpen, onToggle, onFileSelect, onDiffClick, a
 
     if (inlineInput.mode === 'rename' && inlineInput.targetNode) {
       const newPath = inlineInput.parentPath + '/' + name;
-      const result = await (window.cozyPane.fs as any).rename(inlineInput.targetNode.path, newPath);
-      if (result?.error) alert(result.error);
+      const result = await window.cozyPane.fs.rename(inlineInput.targetNode.path, newPath);
+      if (result?.error) await showError(result.error);
     } else if (inlineInput.mode === 'new-folder') {
       const newPath = inlineInput.parentPath + '/' + name;
       const result = await window.cozyPane.fs.mkdir(newPath);
-      if (result?.error) alert(result.error);
+      if (result?.error) await showError(result.error);
     } else if (inlineInput.mode === 'new-file') {
       const newPath = inlineInput.parentPath + '/' + name;
       const result = await window.cozyPane.fs.writefile(newPath, '');
-      if (result?.error) alert(result.error);
+      if (result?.error) await showError(result.error);
       else onFileSelect(newPath, name);
     }
     setInlineInput(null);
-  }, [inlineInput, onFileSelect]);
+  }, [inlineInput, onFileSelect, showError]);
 
   async function handleClick(node: TreeNode) {
     try {

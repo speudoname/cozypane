@@ -105,13 +105,13 @@ export default function GitPanel({ cwd, onDiffClick, onBranchChange, activityEve
   }, [cwd, refresh, fetchRemoteInfo]);
 
   useEffect(() => {
-    const unsub1 = window.cozyPane.onMenuAction('github:auth-changed', () => {
+    const unsub1 = window.cozyPane.git.onAuthChanged(() => {
       fetchRemoteInfo();
     });
-    const unsub2 = window.cozyPane.onMenuAction('deploy:auth-success', () => {
+    const unsub2 = window.cozyPane.deploy.onAuthSuccess(() => {
       fetchRemoteInfo();
     });
-    const unsub3 = window.cozyPane.onMenuAction('deploy:auth-error', (_data: any) => {
+    const unsub3 = window.cozyPane.deploy.onAuthError(() => {
       showError('GitHub sign-in failed. Please try again.');
     });
     return () => { unsub1(); unsub2(); unsub3(); };
@@ -128,7 +128,16 @@ export default function GitPanel({ cwd, onDiffClick, onBranchChange, activityEve
 
   useEffect(() => {
     if (!isRepo) return;
-    const interval = setInterval(refresh, 15000);
+    // Poll every 15s but skip refreshes while the window is hidden /
+    // minimized. The component is already unmounted when the user switches
+    // right-panel tabs, but this guard also kills the ~4-processes-per-minute
+    // churn while the entire app is backgrounded — which matters for
+    // battery life on long sessions.
+    const tick = () => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+      refresh();
+    };
+    const interval = setInterval(tick, 15000);
     return () => clearInterval(interval);
   }, [isRepo, refresh]);
 

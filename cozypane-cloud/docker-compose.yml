@@ -8,8 +8,11 @@ services:
       - DOCKER_API_VERSION=1.45
     command:
       - "--log.level=INFO"
-      - "--api.dashboard=true"
-      - "--api.insecure=true"
+      # Dashboard disabled — previously exposed via a wildcard HostRegexp router
+      # that leaked the entire tenant topology to anyone visiting an unknown
+      # subdomain. Re-enable only behind proper auth (BasicAuth middleware or
+      # SSH tunnel) if debugging is needed.
+      - "--api.dashboard=false"
       - "--providers.docker=true"
       - "--providers.docker.exposedbydefault=false"
       - "--providers.docker.network=traefik-public"
@@ -32,7 +35,6 @@ services:
     ports:
       - "80:80"
       - "443:443"
-      # Dashboard only accessible via SSH tunnel: ssh -L 8080:localhost:8080 root@server
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - traefik-certs:/letsencrypt
@@ -41,22 +43,19 @@ services:
       - traefik-public
     labels:
       - "traefik.enable=true"
-      # Wildcard cert router — requests *.cozypane.com via DNS challenge
-      - "traefik.http.routers.wildcard.rule=HostRegexp(`.+\\.${DOMAIN:-cozypane.com}`)"
-      - "traefik.http.routers.wildcard.priority=1"
-      - "traefik.http.routers.wildcard.tls=true"
-      - "traefik.http.routers.wildcard.tls.certresolver=cloudflare"
-      - "traefik.http.routers.wildcard.tls.domains[0].main=${DOMAIN:-cozypane.com}"
-      - "traefik.http.routers.wildcard.tls.domains[0].sans=*.${DOMAIN:-cozypane.com}"
-      - "traefik.http.routers.wildcard.entrypoints=websecure"
-      - "traefik.http.routers.wildcard.service=dashboard-svc"
-      - "traefik.http.services.dashboard-svc.loadbalancer.server.port=8080"
+      # Wildcard certificate is served via the websecure entrypoint's default TLS
+      # config (see the --entrypoints.websecure.http.tls.domains flags above).
+      # No wildcard catch-all router is needed — unknown subdomains fall through
+      # to a 404, which is the intended behavior. Do NOT re-add a catch-all
+      # router pointing at the Traefik dashboard; that leaks tenant topology.
 
   api:
     build: .
     restart: unless-stopped
     depends_on:
       postgres:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     environment:
       - DATABASE_URL=${DATABASE_URL:-postgresql://cozypane:secret@postgres:5432/cozypane}
@@ -68,6 +67,10 @@ services:
       - ADMIN_GITHUB_CLIENT_SECRET=${ADMIN_GITHUB_CLIENT_SECRET}
       - NODE_ENV=production
       - TRAEFIK_DYNAMIC_DIR=/traefik-dynamic
+      - GITHUB_TOKEN_ENCRYPTION_KEY=${GITHUB_TOKEN_ENCRYPTION_KEY}
+      # M23: BullMQ queue backend. In-process worker + Queue both use this.
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
+      - DEPLOY_QUEUE_CONCURRENCY=${DEPLOY_QUEUE_CONCURRENCY:-4}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - traefik-dynamic:/traefik-dynamic
@@ -98,8 +101,28 @@ services:
       timeout: 5s
       retries: 5
 
+  # M23: Redis backs the BullMQ deploy build queue. In-process worker and
+  # Queue producer both live inside the `api` container; Redis holds job
+  # state + stalled-job recovery. Only reachable from the internal network,
+  # never exposed publicly. Append-only persistence so queued jobs survive
+  # Redis restarts.
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redisdata:/data
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
 volumes:
   pgdata:
+  redisdata:
   traefik-certs:
   traefik-dynamic:
 

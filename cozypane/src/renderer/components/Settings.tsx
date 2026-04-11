@@ -176,9 +176,30 @@ export default function Settings() {
             type="password"
             className="settings-input"
             value={apiKey}
-            onChange={e => setApiKey(e.target.value)}
-            placeholder={settings.hasApiKey ? 'Enter new key to replace' : 'Enter API key'}
+            // L25: trim whitespace on paste — copy/pasted keys often come
+            // with a trailing newline which silently breaks auth. Show a
+            // provider-specific format hint in the placeholder.
+            onChange={e => setApiKey(e.target.value.trim())}
+            placeholder={
+              settings.hasApiKey
+                ? 'Enter new key to replace'
+                : settings.provider === 'anthropic'
+                  ? 'sk-ant-...'
+                  : settings.provider === 'openai'
+                    ? 'sk-...'
+                    : 'Enter API key'
+            }
           />
+          {apiKey && settings.provider === 'anthropic' && !apiKey.startsWith('sk-ant-') && (
+            <div className="settings-hint" style={{ color: 'var(--warning)', fontSize: 11, marginTop: 4 }}>
+              Anthropic keys usually start with <code>sk-ant-</code>
+            </div>
+          )}
+          {apiKey && settings.provider === 'openai' && !apiKey.startsWith('sk-') && (
+            <div className="settings-hint" style={{ color: 'var(--warning)', fontSize: 11, marginTop: 4 }}>
+              OpenAI keys usually start with <code>sk-</code>
+            </div>
+          )}
           {settings.hasApiKey && (
             <button className="btn settings-clear-btn" onClick={handleClearKey} disabled={saving}>
               Remove key

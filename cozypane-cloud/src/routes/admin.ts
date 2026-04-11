@@ -1,8 +1,8 @@
 import type { FastifyInstance } from 'fastify';
 import { query } from '../db/index.js';
 import { adminAuth } from '../middleware/adminAuth.js';
-import { stopContainer, getContainerLogs, removeImage, removeNetworkIfEmpty } from '../services/container.js';
-import { dropDatabase } from '../services/database.js';
+import { stopContainer, restartContainer, getContainerLogs } from '../services/container.js';
+import { cleanupDeployment } from '../services/cleanup.js';
 
 export async function adminRoutes(app: FastifyInstance): Promise<void> {
   // All routes require admin auth
@@ -84,13 +84,22 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
     return { ...result.rows[0], deployments: deployments.rows };
   });
 
-  app.put<{ Params: { id: string }; Body: { is_admin?: boolean } }>(
+  app.put<{ Params: { id: string }; Body: { is_admin: boolean } }>(
     '/admin/users/:id',
+    {
+      schema: {
+        body: {
+          type: 'object',
+          required: ['is_admin'],
+          additionalProperties: false,
+          properties: {
+            is_admin: { type: 'boolean' },
+          },
+        },
+      },
+    },
     async (request, reply) => {
-      const { is_admin } = request.body || {};
-      if (typeof is_admin !== 'boolean') {
-        return reply.code(400).send({ error: 'Provide is_admin (boolean)' });
-      }
+      const { is_admin } = request.body;
       const result = await query(
         `UPDATE users SET is_admin = $1, updated_at = NOW() WHERE id = $2 RETURNING id, username, is_admin`,
         [is_admin, request.params.id],
@@ -102,6 +111,7 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
 
   app.delete<{ Params: { id: string } }>('/admin/users/:id', async (request, reply) => {
     const userId = parseInt(request.params.id, 10);
+    if (Number.isNaN(userId)) return reply.code(400).send({ error: 'Invalid user id' });
     const errors: string[] = [];
 
     // Get all deployments for cleanup
@@ -111,28 +121,18 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
     );
 
     for (const d of deps.rows) {
-      // Stop container
-      if (d.container_id) {
-        try {
-          await stopContainer(d.container_id);
-        } catch (err: any) {
-          errors.push(`container ${d.container_id.slice(0, 12)}: ${err.message}`);
-        }
-      }
-      // Drop provisioned database
-      if (d.db_name) {
-        try {
-          await dropDatabase(d.user_id, d.app_name);
-        } catch (err: any) {
-          errors.push(`database ${d.db_name}: ${err.message}`);
-        }
-      }
-      // Remove Docker image
-      await removeImage(`cozypane/${userId}-${d.app_name}:latest`);
+      // Defer network cleanup to a single pass after the loop so we don't
+      // flap the per-user network between deployments.
+      const { warnings } = await cleanupDeployment(d, { cleanNetwork: false });
+      if (warnings.length) errors.push(...warnings);
     }
 
-    // Remove user network
-    await removeNetworkIfEmpty(userId);
+    // Single network-cleanup pass at the end.
+    const { warnings: netWarnings } = await cleanupDeployment(
+      { user_id: userId, app_name: '', container_id: null, db_name: null },
+      { removeImageTag: false, cleanNetwork: true },
+    );
+    if (netWarnings.length) errors.push(...netWarnings);
 
     const result = await query('DELETE FROM users WHERE id = $1 RETURNING id', [request.params.id]);
     if (!result.rows[0]) return reply.code(404).send({ error: 'User not found' });
@@ -179,9 +179,23 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
         [...params, limit, offset],
       );
 
+      // Whitelist fields — do NOT spread `...r` which leaks internal column
+      // names (db_user, db_host, db_name) and potential secrets in build_log.
       return {
         deployments: result.rows.map(r => ({
-          ...r,
+          id: r.id,
+          appName: r.app_name,
+          subdomain: r.subdomain,
+          status: r.status,
+          projectType: r.project_type,
+          tier: r.tier,
+          port: r.port,
+          hasContainer: !!r.container_id,
+          hasDatabase: !!r.db_name,
+          createdAt: r.created_at,
+          updatedAt: r.updated_at,
+          username: r.username,
+          avatarUrl: r.avatar_url,
           url: `https://${r.subdomain}.${domain}`,
         })),
         total,
@@ -193,15 +207,44 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
 
   app.get<{ Params: { id: string } }>('/admin/deployments/:id', async (request, reply) => {
     const domain = process.env.DOMAIN || 'cozypane.com';
+    // Explicit column list rather than `d.*` — admin deployment detail was
+    // previously leaking build_log (which may contain secrets) and raw
+    // db_user/db_host values via `...row` spread.
     const result = await query(
-      `SELECT d.*, u.username, u.avatar_url
+      `SELECT d.id, d.app_name, d.subdomain, d.status, d.project_type, d.tier, d.port,
+              d.container_id, d.db_name, d.db_host, d.deploy_group, d.framework,
+              d.deploy_phase, d.detected_port, d.detected_database, d.error_detail,
+              d.created_at, d.updated_at,
+              u.id AS user_id, u.username, u.avatar_url
        FROM deployments d JOIN users u ON u.id = d.user_id
        WHERE d.id = $1`,
       [request.params.id],
     );
     if (!result.rows[0]) return reply.code(404).send({ error: 'Deployment not found' });
     const row = result.rows[0];
-    return { ...row, url: `https://${row.subdomain}.${domain}` };
+    return {
+      id: row.id,
+      appName: row.app_name,
+      subdomain: row.subdomain,
+      status: row.status,
+      projectType: row.project_type,
+      tier: row.tier,
+      port: row.port,
+      hasContainer: !!row.container_id,
+      hasDatabase: !!row.db_name,
+      deployGroup: row.deploy_group,
+      framework: row.framework,
+      deployPhase: row.deploy_phase,
+      detectedPort: row.detected_port,
+      detectedDatabase: row.detected_database,
+      errorDetail: row.error_detail,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+      userId: row.user_id,
+      username: row.username,
+      avatarUrl: row.avatar_url,
+      url: `https://${row.subdomain}.${domain}`,
+    };
   });
 
   app.post<{ Params: { id: string } }>('/admin/deployments/:id/stop', async (request, reply) => {
@@ -223,10 +266,7 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
     if (!result.rows[0]) return reply.code(404).send({ error: 'Deployment not found' });
     if (!result.rows[0].container_id) return reply.code(400).send({ error: 'No container to restart' });
 
-    const Docker = (await import('dockerode')).default;
-    const docker = new Docker({ socketPath: '/var/run/docker.sock' });
-    const container = docker.getContainer(result.rows[0].container_id);
-    await container.restart({ t: 10 });
+    await restartContainer(result.rows[0].container_id);
     await query(`UPDATE deployments SET status = 'running', updated_at = NOW() WHERE id = $1`, [request.params.id]);
     return { ok: true };
   });
@@ -239,42 +279,28 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
     if (!result.rows[0]) return reply.code(404).send({ error: 'Deployment not found' });
 
     const dep = result.rows[0];
-    const errors: string[] = [];
 
-    // Stop and remove container
-    if (dep.container_id) {
-      try {
-        await stopContainer(dep.container_id);
-      } catch (err: any) {
-        errors.push(`container: ${err.message}`);
-      }
-    }
-
-    // Drop provisioned database
-    if (dep.db_name) {
-      try {
-        await dropDatabase(dep.user_id, dep.app_name);
-      } catch (err: any) {
-        errors.push(`database: ${err.message}`);
-      }
-    }
-
-    // Remove Docker image
-    await removeImage(`cozypane/${dep.user_id}-${dep.app_name}:latest`);
+    // Full cleanup sequence (stop, drop DB, remove image). Skip network
+    // cleanup here so we can check deployment-count first.
+    const { warnings } = await cleanupDeployment(dep, { cleanNetwork: false });
 
     // Delete from DB
     await query('DELETE FROM deployments WHERE id = $1', [dep.id]);
 
-    // Clean up user network if no more deployments
+    // Clean up user network only if no more deployments remain for this user.
     const remaining = await query(
       'SELECT COUNT(*) as cnt FROM deployments WHERE user_id = $1',
       [dep.user_id],
     );
     if (parseInt(remaining.rows[0].cnt) === 0) {
-      await removeNetworkIfEmpty(dep.user_id);
+      const { warnings: netWarnings } = await cleanupDeployment(
+        { user_id: dep.user_id, app_name: '', container_id: null, db_name: null },
+        { removeImageTag: false, cleanNetwork: true },
+      );
+      if (netWarnings.length) warnings.push(...netWarnings);
     }
 
-    return { ok: true, ...(errors.length > 0 ? { warnings: errors } : {}) };
+    return { ok: true, ...(warnings.length > 0 ? { warnings } : {}) };
   });
 
   app.get<{ Params: { id: string }; Querystring: { tail?: string } }>(
@@ -284,7 +310,10 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
       if (!result.rows[0]) return reply.code(404).send({ error: 'Deployment not found' });
       if (!result.rows[0].container_id) return reply.code(400).send({ error: 'No container running' });
 
-      const tail = parseInt(request.query.tail || '500', 10);
+      // Cap at 10000 lines — matches the user-facing /deploy/:id/logs cap
+      // and prevents an admin `tail=999999999` from OOMing the API.
+      const rawTail = parseInt(request.query.tail || '500', 10);
+      const tail = Math.min(isNaN(rawTail) ? 500 : rawTail, 10000);
       const logs = await getContainerLogs(result.rows[0].container_id, tail);
       return { logs };
     },

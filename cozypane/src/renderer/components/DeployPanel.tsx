@@ -1,12 +1,10 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { isCozyModeEnabled, enableCozyMode, disableCozyMode } from '../lib/cozyMode';
-import type { AiAction } from '../lib/terminalAnalyzer';
+import { useConfirm } from '../lib/confirmContext';
 
 interface Props {
   cwd: string;
   onTerminalCommand: (command: string) => void;
-  claudeRunning: boolean;
-  aiAction: AiAction;
   onDeploymentsLoaded?: (deployments: Deployment[]) => void;
 }
 
@@ -19,7 +17,8 @@ const STATUS_COLORS: Record<string, string> = {
   unhealthy: 'var(--warning, #e6b800)',
 };
 
-export default function DeployPanel({ cwd, onTerminalCommand, claudeRunning, aiAction, onDeploymentsLoaded }: Props) {
+export default function DeployPanel({ cwd, onTerminalCommand, onDeploymentsLoaded }: Props) {
+  const confirm = useConfirm();
   const [auth, setAuth] = useState<DeployAuth>({ authenticated: false });
   const [loading, setLoading] = useState(true);
   const [deployments, setDeployments] = useState<Deployment[]>([]);
@@ -85,7 +84,7 @@ export default function DeployPanel({ cwd, onTerminalCommand, claudeRunning, aiA
 
   // Listen for auth success from protocol handler
   useEffect(() => {
-    const cleanup = window.cozyPane.onMenuAction('deploy:auth-success', () => {
+    const cleanup = window.cozyPane.deploy.onAuthSuccess(() => {
       window.cozyPane.deploy.getAuth().then(setAuth).catch(() => {});
     });
     return cleanup;
@@ -93,7 +92,7 @@ export default function DeployPanel({ cwd, onTerminalCommand, claudeRunning, aiA
 
   // Listen for auth error from protocol handler
   useEffect(() => {
-    const cleanup = window.cozyPane.onMenuAction('deploy:auth-error', () => {
+    const cleanup = window.cozyPane.deploy.onAuthError(() => {
       setDeployError('Authentication failed. Please try again.');
     });
     return cleanup;
@@ -132,19 +131,23 @@ export default function DeployPanel({ cwd, onTerminalCommand, claudeRunning, aiA
     };
   }, []);
 
-  // Poll while deploying or while any deployment is building
+  // Poll while deploying or while any deployment is building.
+  //
+  // L17: previously this effect depended on `deployments`, so every 3s
+  // poll response re-triggered the effect: clear interval, start new
+  // interval. Now the effect only watches a boolean derived from state
+  // — the interval is created once per building-state change.
+  const shouldPoll = isDeploying || deployments.some(d => d.status === 'building');
   useEffect(() => {
-    const shouldPoll = isDeploying || deployments.some(d => d.status === 'building');
-    if (shouldPoll) {
-      pollRef.current = setInterval(loadDeployments, 3000);
-    }
+    if (!shouldPoll) return;
+    pollRef.current = setInterval(loadDeployments, 3000);
     return () => {
       if (pollRef.current) {
         clearInterval(pollRef.current);
         pollRef.current = null;
       }
     };
-  }, [isDeploying, deployments, loadDeployments]);
+  }, [shouldPoll, loadDeployments]);
 
   const handleLogin = useCallback(async () => {
     await window.cozyPane.deploy.login();
@@ -186,14 +189,20 @@ export default function DeployPanel({ cwd, onTerminalCommand, claudeRunning, aiA
   }, []);
 
   const handleDelete = useCallback(async (id: number) => {
-    if (!window.confirm('Delete this deployment? This will stop the app.')) return;
+    const ok = await confirm({
+      title: 'Delete deployment?',
+      message: 'This will stop the app and remove its container, image, and provisioned database. Custom domains will be disconnected. This cannot be undone.',
+      confirmLabel: 'Delete',
+      destructive: true,
+    });
+    if (!ok) return;
     try {
       await window.cozyPane.deploy.delete(String(id));
       setDeployments(prev => prev.filter(d => d.id !== id));
     } catch (err: any) {
       setDeployError(err.message || 'Delete failed');
     }
-  }, []);
+  }, [confirm]);
 
   const handleToggleDomains = useCallback(async (id: string) => {
     if (domainViewId === id) {

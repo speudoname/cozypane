@@ -1,34 +1,65 @@
 import type { FastifyInstance } from 'fastify';
-import { createReadStream, createWriteStream, mkdirSync, rmSync, writeFileSync, unlinkSync, existsSync } from 'node:fs';
+import { mkdirSync, rmSync } from 'node:fs';
 import { join, normalize, isAbsolute } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomBytes } from 'node:crypto';
-import { pipeline } from 'node:stream/promises';
 import { createGunzip } from 'node:zlib';
 import tar from 'tar-fs';
 import { query } from '../db/index.js';
 import { authenticate } from '../middleware/auth.js';
 import { analyzeProject } from '../services/detector.js';
-import { buildImage } from '../services/builder.js';
 import {
-  runContainer,
-  stopContainer,
+  restartContainer,
   getContainerLogs,
   streamLogs,
   execInContainer,
-  ensureNetwork,
-  waitForHealthy,
 } from '../services/container.js';
-import { provisionDatabase, dropDatabase } from '../services/database.js';
+import { cleanupDeployment } from '../services/cleanup.js';
+import { appUrl, serializeDeploymentSummary, serializeDeploymentDetail } from '../services/serializers.js';
+import { enqueueDeploy } from '../services/deployQueue.js';
+import { writeCustomDomainConfig, removeCustomDomainConfig } from '../services/traefik.js';
 
 const APP_NAME_REGEX = /^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$/;
+
+// Per-user sliding-window rate limiter. @fastify/rate-limit's per-route
+// keyGenerator runs BEFORE the `authenticate` preHandler, so `req.user` is
+// always undefined there and the fallback IP keying collapsed all users
+// behind a shared NAT/Cloudflare edge into one bucket (or gave users on
+// unique IPs effectively no per-user limit). This in-handler limiter runs
+// after auth so it can key on `request.user.id`.
+const userRateLimits = new Map<string, number[]>();
+function checkUserRateLimit(userId: number, bucket: string, max: number, windowMs: number): boolean {
+  const key = `${bucket}:${userId}`;
+  const now = Date.now();
+  const hits = userRateLimits.get(key) || [];
+  // Drop hits outside the window
+  const recent = hits.filter((t) => now - t < windowMs);
+  if (recent.length >= max) {
+    userRateLimits.set(key, recent);
+    return false;
+  }
+  recent.push(now);
+  userRateLimits.set(key, recent);
+  // Opportunistic cleanup — keep the Map from growing unbounded across users
+  if (userRateLimits.size > 5000) {
+    for (const [k, v] of userRateLimits) {
+      if (v.length === 0 || now - v[v.length - 1] > windowMs * 2) {
+        userRateLimits.delete(k);
+      }
+    }
+  }
+  return true;
+}
 
 export async function deployRoutes(app: FastifyInstance): Promise<void> {
   // POST /deploy — create or redeploy (async: returns immediately, build runs in background)
   app.post('/deploy', {
     preHandler: authenticate,
-    config: { rateLimit: { max: 5, timeWindow: '1 minute', keyGenerator: (req: any) => req.user?.id?.toString() || req.ip } },
   }, async (request, reply) => {
+    // Per-user rate limit: 5 deploys per minute. See note at top of file.
+    if (!checkUserRateLimit(request.user.id, 'deploy', 5, 60_000)) {
+      return reply.code(429).send({ error: 'Rate limit exceeded. Try again in a minute.' });
+    }
     const data = await request.file();
     if (!data) {
       return reply.code(400).send({ error: 'Multipart upload with tar file required' });
@@ -50,22 +81,35 @@ export async function deployRoutes(app: FastifyInstance): Promise<void> {
     const userId = request.user.id;
     const username = request.user.username;
     const subdomain = `${appName}-${username}`;
-    const domain = process.env.DOMAIN || 'cozypane.com';
 
-    // Save uploaded tar to temp dir before doing anything else
+    // M18 — detect subdomain collision with another user's deployment BEFORE
+    // we try to write. The UNIQUE(subdomain) constraint would otherwise
+    // surface as a generic 500; we want a clean 409 with an actionable
+    // message. Collision is theoretical (would require e.g. user A's
+    // "app-oldusername" equals user B's "A-oldapp") but low-probability
+    // is not zero, and a 500 is a bad experience for what's a name clash.
+    const collisionCheck = await query(
+      'SELECT user_id FROM deployments WHERE subdomain = $1',
+      [subdomain],
+    );
+    if (collisionCheck.rowCount && collisionCheck.rows[0].user_id !== userId) {
+      return reply.code(409).send({
+        error: `Subdomain "${subdomain}" is taken by another user. Choose a different app name.`,
+      });
+    }
+
+    // Prepare extraction directory
     const tempId = randomBytes(8).toString('hex');
     const tempDir = join(tmpdir(), `cozypane-deploy-${tempId}`);
     const extractDir = join(tempDir, 'project');
     mkdirSync(extractDir, { recursive: true });
 
-    // Save and extract the upload synchronously (must finish before we return)
+    // Stream the upload directly into gunzip → tar-extract, no intermediate
+    // on-disk copy. Previously this wrote a `.tar.gz` file to the tempdir and
+    // then re-read it for extraction (+ re-tarred it again for the Docker
+    // build context), so a 100 MB upload incurred ~300 MB of I/O. Audit M16.
     try {
-      const tarPath = join(tempDir, 'upload.tar.gz');
-      const writeStream = createWriteStream(tarPath);
-      await pipeline(data.file, writeStream);
-
       await new Promise<void>((resolve, reject) => {
-        const readStream = createReadStream(tarPath);
         const gunzip = createGunzip();
         const extract = tar.extract(extractDir, {
           filter(name) {
@@ -78,11 +122,11 @@ export async function deployRoutes(app: FastifyInstance): Promise<void> {
             return header;
           },
         });
-        readStream.pipe(gunzip).pipe(extract);
+        data.file.pipe(gunzip).pipe(extract);
         extract.on('finish', resolve);
         extract.on('error', reject);
         gunzip.on('error', reject);
-        readStream.on('error', reject);
+        data.file.on('error', reject);
       });
     } catch (err: any) {
       rmSync(tempDir, { recursive: true, force: true });
@@ -131,8 +175,14 @@ export async function deployRoutes(app: FastifyInstance): Promise<void> {
     );
     const deploymentId = result.rows[0].id;
 
-    // Fire-and-forget background build — response is sent immediately
-    buildAndDeploy({
+    // M23 — enqueue the build on the BullMQ-backed deploy queue. The
+    // worker lives in-process (see services/deployQueue.ts) so the HTTP
+    // response still returns immediately while the queue schedules the
+    // actual build. Benefits over the old fire-and-forget:
+    //   * concurrency cap (DEPLOY_QUEUE_CONCURRENCY, default 4)
+    //   * stalled-job recovery on API crash
+    //   * graceful drain on SIGTERM (index.ts)
+    await enqueueDeploy({
       deploymentId,
       extractDir,
       tempDir,
@@ -142,13 +192,12 @@ export async function deployRoutes(app: FastifyInstance): Promise<void> {
       tier,
       userId,
       envJson,
-      log: app.log,
-    }).catch(() => {}); // errors are handled inside
+    });
 
     return {
       id: deploymentId,
       subdomain,
-      url: `https://${subdomain}.${domain}`,
+      url: appUrl(subdomain),
       status: 'building',
       phase: 'detecting',
       framework: analysis.framework,
@@ -160,35 +209,18 @@ export async function deployRoutes(app: FastifyInstance): Promise<void> {
     };
   });
 
-  // GET /deploy/list — user's deployments
+  // GET /deploy/list — user's deployments (hard-capped at 100 rows to avoid
+  // unbounded scans if the per-user deployment limit is ever raised).
   app.get('/deploy/list', { preHandler: authenticate }, async (request) => {
     const result = await query(
-      `SELECT id, app_name, subdomain, status, project_type, tier, port, db_name, deploy_group,
-              framework, deploy_phase, error_detail, detected_port, detected_database,
-              created_at, updated_at
-       FROM deployments WHERE user_id = $1 ORDER BY deploy_group NULLS LAST, updated_at DESC`,
+      `SELECT id, app_name, subdomain, status, project_type, tier, port, container_id,
+              db_name, deploy_group, framework, deploy_phase, error_detail,
+              detected_port, detected_database, created_at, updated_at
+       FROM deployments WHERE user_id = $1 ORDER BY deploy_group NULLS LAST, updated_at DESC
+       LIMIT 100`,
       [request.user.id],
     );
-
-    const domain = process.env.DOMAIN || 'cozypane.com';
-    return result.rows.map((row) => ({
-      id: row.id,
-      appName: row.app_name,
-      subdomain: row.subdomain,
-      url: `https://${row.subdomain}.${domain}`,
-      status: row.status,
-      projectType: row.project_type,
-      tier: row.tier,
-      port: row.port,
-      hasDatabase: !!row.db_name,
-      group: row.deploy_group || null,
-      framework: row.framework || null,
-      phase: row.deploy_phase || null,
-      detectedPort: row.detected_port || null,
-      detectedDatabase: row.detected_database || false,
-      createdAt: row.created_at,
-      updatedAt: row.updated_at,
-    }));
+    return result.rows.map((row) => serializeDeploymentSummary(row));
   });
 
   // GET /deploy/:id — deployment detail
@@ -210,34 +242,13 @@ export async function deployRoutes(app: FastifyInstance): Promise<void> {
         return reply.code(404).send({ error: 'Deployment not found' });
       }
 
+      // Canonical serializer (see services/serializers.ts) — same shape
+      // as admin detail + list endpoints; no drift possible.
       const row = result.rows[0];
-      const domain = process.env.DOMAIN || 'cozypane.com';
-
-      // Parse error_detail if it's JSON
-      let errorDetail = null;
-      if (row.error_detail) {
-        try { errorDetail = JSON.parse(row.error_detail); } catch { errorDetail = row.error_detail; }
-      }
-
-      return {
-        id: row.id,
-        appName: row.app_name,
-        subdomain: row.subdomain,
-        url: `https://${row.subdomain}.${domain}`,
-        status: row.status,
-        phase: row.deploy_phase || null,
-        framework: row.framework || null,
-        detectedPort: row.detected_port || null,
-        detectedDatabase: row.detected_database || false,
-        recommendedTier: row.tier,
-        errorDetail,
-        projectType: row.project_type,
-        tier: row.tier,
-        port: row.port,
+      return serializeDeploymentDetail({
+        ...row,
         customDomains: row.custom_domains || [],
-        createdAt: row.created_at,
-        updatedAt: row.updated_at,
-      };
+      });
     },
   );
 
@@ -275,19 +286,19 @@ export async function deployRoutes(app: FastifyInstance): Promise<void> {
         return reply.code(404).send({ error: 'Deployment not found' });
       }
 
-      if (deployment.container_id) {
-        await stopContainer(deployment.container_id).catch(() => {});
-      }
-
-      // Drop provisioned database if one exists
-      if (deployment.db_name) {
-        await dropDatabase(request.user.id, deployment.app_name).catch((err: any) => {
-          app.log.warn(`Failed to drop database ${deployment.db_name}: ${err.message}`);
-        });
-      }
+      // Full cleanup sequence: stop container, drop tenant DB, remove Docker
+      // image tag, remove per-user network if empty. The user-initiated path
+      // previously only did the first two, leaking images and networks.
+      const { warnings } = await cleanupDeployment({
+        user_id: request.user.id,
+        app_name: deployment.app_name,
+        container_id: deployment.container_id,
+        db_name: deployment.db_name,
+      });
+      if (warnings.length) app.log.warn({ warnings }, `cleanup warnings for deployment ${deployment.id}`);
 
       await query('DELETE FROM deployments WHERE id = $1', [deployment.id]);
-      return { ok: true };
+      return { ok: true, warnings: warnings.length ? warnings : undefined };
     },
   );
 
@@ -310,6 +321,10 @@ export async function deployRoutes(app: FastifyInstance): Promise<void> {
     '/deploy/:id/redeploy',
     { preHandler: authenticate },
     async (request, reply) => {
+      // 10 restarts per minute per user — prevents abuse of Docker API calls.
+      if (!checkUserRateLimit(request.user.id, 'redeploy', 10, 60_000)) {
+        return reply.code(429).send({ error: 'Rate limit exceeded. Try again in a minute.' });
+      }
       const deployment = await getDeployment(request.params.id, request.user.id);
       if (!deployment) {
         return reply.code(404).send({ error: 'Deployment not found' });
@@ -319,26 +334,24 @@ export async function deployRoutes(app: FastifyInstance): Promise<void> {
         return reply.code(400).send({ error: 'No container to restart. Redeploy by uploading the project again.' });
       }
 
-      // Restart existing container
-      const Docker = (await import('dockerode')).default;
-      const docker = new Docker({ socketPath: '/var/run/docker.sock' });
+      // Restart existing container via the shared helper (which uses the
+      // module-level Dockerode client in services/container.ts).
       try {
-        const container = docker.getContainer(deployment.container_id);
-        await container.restart({ t: 10 });
+        await restartContainer(deployment.container_id);
         await query(
           `UPDATE deployments SET status = 'running', deploy_phase = NULL, updated_at = NOW() WHERE id = $1`,
           [deployment.id],
         );
-      } catch {
+      } catch (err: any) {
+        request.log.warn({ err }, `restartContainer failed for ${deployment.container_id}`);
         return reply.code(500).send({ error: 'Failed to restart container' });
       }
 
-      const domain = process.env.DOMAIN || 'cozypane.com';
       return {
         id: deployment.id,
         appName: deployment.app_name,
         subdomain: deployment.subdomain,
-        url: `https://${deployment.subdomain}.${domain}`,
+        url: appUrl(deployment.subdomain),
         status: 'running',
         projectType: deployment.project_type,
         tier: deployment.tier,
@@ -367,25 +380,16 @@ export async function deployRoutes(app: FastifyInstance): Promise<void> {
     { preHandler: authenticate },
     async (request) => {
       const result = await query(
-        `SELECT id, app_name, subdomain, status, project_type, tier, port, db_name, deploy_group, created_at, updated_at
+        `SELECT id, app_name, subdomain, status, project_type, tier, port, container_id,
+                db_name, deploy_group, framework, deploy_phase, error_detail,
+                detected_port, detected_database, created_at, updated_at
          FROM deployments WHERE user_id = $1 AND deploy_group = $2 ORDER BY app_name`,
         [request.user.id, request.params.group],
       );
 
-      const domain = process.env.DOMAIN || 'cozypane.com';
       return {
         group: request.params.group,
-        services: result.rows.map((row) => ({
-          id: row.id,
-          appName: row.app_name,
-          subdomain: row.subdomain,
-          url: `https://${row.subdomain}.${domain}`,
-          status: row.status,
-          projectType: row.project_type,
-          tier: row.tier,
-          port: row.port,
-          hasDatabase: !!row.db_name,
-        })),
+        services: result.rows.map((row) => serializeDeploymentSummary(row)),
       };
     },
   );
@@ -395,14 +399,31 @@ export async function deployRoutes(app: FastifyInstance): Promise<void> {
   // POST /deploy/:id/domains — add a custom domain
   app.post<{ Params: { id: string }; Body: { domain: string } }>(
     '/deploy/:id/domains',
-    { preHandler: authenticate },
+    {
+      preHandler: authenticate,
+      schema: {
+        body: {
+          type: 'object',
+          required: ['domain'],
+          additionalProperties: false,
+          properties: {
+            domain: { type: 'string', minLength: 4, maxLength: 253 },
+          },
+        },
+      },
+    },
     async (request, reply) => {
+      // Per-user rate limit: 20 domain adds per 10min. Needs some headroom
+      // for bulk setup but blocks abusive squat attempts.
+      if (!checkUserRateLimit(request.user.id, 'domain-add', 20, 10 * 60_000)) {
+        return reply.code(429).send({ error: 'Too many domain additions. Try again in a few minutes.' });
+      }
       const deployment = await getDeployment(request.params.id, request.user.id);
       if (!deployment) {
         return reply.code(404).send({ error: 'Deployment not found' });
       }
 
-      const domainName = ((request.body as any)?.domain || '').trim().toLowerCase();
+      const domainName = (request.body.domain || '').trim().toLowerCase();
       if (!domainName || !/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/.test(domainName)) {
         return reply.code(400).send({ error: 'Invalid domain name' });
       }
@@ -440,6 +461,11 @@ export async function deployRoutes(app: FastifyInstance): Promise<void> {
     '/deploy/:id/domains/:domainId/verify',
     { preHandler: authenticate },
     async (request, reply) => {
+      // 10 verifications per minute per user. Verification performs DNS +
+      // outbound HTTP, making it the most abuse-prone endpoint.
+      if (!checkUserRateLimit(request.user.id, 'verify', 10, 60_000)) {
+        return reply.code(429).send({ error: 'Rate limit exceeded. Try again in a minute.' });
+      }
       const deployment = await getDeployment(request.params.id, request.user.id);
       if (!deployment) {
         return reply.code(404).send({ error: 'Deployment not found' });
@@ -488,25 +514,14 @@ export async function deployRoutes(app: FastifyInstance): Promise<void> {
               verified = customIps.some((ip: string) => targetIps.includes(ip));
             }
 
-            // If IPs don't match, the domain might be behind a CDN/proxy (e.g. Cloudflare).
-            // Try an HTTP request — if the domain serves our app, it's configured correctly.
-            if (!verified && customIps.length > 0) {
-              try {
-                const controller = new AbortController();
-                const timeout = setTimeout(() => controller.abort(), 5000);
-                const resp = await fetch(`http://${domainRow.domain}/`, {
-                  signal: controller.signal,
-                  redirect: 'manual',
-                  headers: { 'Host': domainRow.domain },
-                });
-                clearTimeout(timeout);
-                // If we get any response and the server header or response comes from our infra, consider verified
-                // Any non-connection-refused response means the domain points somewhere that serves HTTP
-                verified = true;
-              } catch {
-                // Connection failed — domain doesn't resolve to a working server
-              }
-            }
+            // NOTE: A previous revision verified domains when any HTTP request
+            // succeeded, even if the response didn't come from our infra. That
+            // allowed attackers to squat any public domain by claiming it and
+            // pointing verification at the real (victim) server. Removed —
+            // verification now requires a CNAME or A-record match. Users behind
+            // Cloudflare-proxied DNS must configure the subdomain as an unproxied
+            // CNAME (or use the proxied A-record path once a challenge-token
+            // verifier is implemented).
 
             if (!verified && customIps.length === 0) {
               dnsError = 'No DNS records found. DNS changes can take a few minutes to propagate.';
@@ -603,302 +618,41 @@ export async function deployRoutes(app: FastifyInstance): Promise<void> {
         [request.user.id, request.params.group],
       );
 
+      // Run the full cleanup for each deployment in the group. Image tag +
+      // per-user network are deferred until the last row so we don't flap the
+      // network; removeNetworkIfEmpty runs once at the end.
+      const allWarnings: string[] = [];
       for (const deployment of result.rows) {
-        if (deployment.container_id) {
-          await stopContainer(deployment.container_id).catch(() => {});
-        }
-        if (deployment.db_name) {
-          await dropDatabase(request.user.id, deployment.app_name).catch(() => {});
-        }
+        const { warnings } = await cleanupDeployment(
+          {
+            user_id: request.user.id,
+            app_name: deployment.app_name,
+            container_id: deployment.container_id,
+            db_name: deployment.db_name,
+          },
+          { cleanNetwork: false },
+        );
+        if (warnings.length) allWarnings.push(...warnings);
       }
+      // One network-cleanup pass at the end for the whole group
+      try {
+        const { warnings } = await cleanupDeployment(
+          { user_id: request.user.id, app_name: '', container_id: null, db_name: null },
+          { removeImageTag: false, cleanNetwork: true },
+        );
+        if (warnings.length) allWarnings.push(...warnings);
+      } catch { /* swallow — group delete is best-effort */ }
 
       await query(
         'DELETE FROM deployments WHERE user_id = $1 AND deploy_group = $2',
         [request.user.id, request.params.group],
       );
 
-      return { ok: true, deleted: result.rows.length };
+      if (allWarnings.length) app.log.warn({ warnings: allWarnings }, `cleanup warnings for group ${request.params.group}`);
+
+      return { ok: true, deleted: result.rows.length, warnings: allWarnings.length ? allWarnings : undefined };
     },
   );
-}
-
-async function updatePhase(deploymentId: number, phase: string): Promise<void> {
-  await query(
-    `UPDATE deployments SET deploy_phase = $1, updated_at = NOW() WHERE id = $2`,
-    [phase, deploymentId],
-  ).catch(() => {});
-}
-
-function sanitizeErrorMessage(msg: string): string {
-  // Strip internal infrastructure details from error messages shown to users
-  return msg
-    .replace(/\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b/g, '[internal-ip]')  // IPs
-    .replace(/\b[0-9a-f]{64}\b/g, '[container-id]')                          // Full container IDs
-    .replace(/\b[0-9a-f]{12}\b/g, '[container-id]')                          // Short container IDs
-    .replace(/postgresql:\/\/[^@]+@[^/]+\/\S+/g, 'postgresql://[redacted]')   // Connection strings
-    .replace(/password\s*[:=]\s*\S+/gi, 'password=[redacted]');               // Passwords
-}
-
-function makeErrorDetail(phase: string, code: string, message: string, suggestion: string, logs?: string): string {
-  return JSON.stringify({
-    phase,
-    code,
-    message: sanitizeErrorMessage(message),
-    suggestion,
-    ...(logs ? { logs: sanitizeErrorMessage(logs.slice(-2000)) } : {}),
-  });
-}
-
-// --- Traefik file provider for custom domains ---
-// Writes/removes YAML configs in the shared volume. Traefik watches and auto-reloads.
-// No container restart needed.
-
-const TRAEFIK_DYNAMIC_DIR = process.env.TRAEFIK_DYNAMIC_DIR || '/traefik-dynamic';
-
-function customDomainConfigPath(domain: string): string {
-  const safe = domain.replace(/[^a-z0-9.-]/g, '-');
-  return join(TRAEFIK_DYNAMIC_DIR, `custom-${safe}.yml`);
-}
-
-function writeCustomDomainConfig(subdomain: string, domain: string, port: number): void {
-  const routerName = `cp-${subdomain}`;
-  const safeDomain = domain.replace(/\./g, '-');
-  const customRouter = `cp-custom-${safeDomain}`;
-
-  // The service is defined by Docker labels on the container (Docker provider).
-  // File provider routers can reference Docker provider services via @docker suffix.
-  const yaml = `http:
-  routers:
-    ${customRouter}:
-      rule: "Host(\`${domain}\`)"
-      entrypoints:
-        - websecure
-      tls:
-        certResolver: cloudflare
-      service: ${routerName}@docker
-`;
-
-  try {
-    mkdirSync(TRAEFIK_DYNAMIC_DIR, { recursive: true });
-    writeFileSync(customDomainConfigPath(domain), yaml);
-    console.log(`Wrote Traefik config for custom domain: ${domain}`);
-  } catch (err: any) {
-    console.warn(`Failed to write Traefik config for ${domain}: ${err.message}`);
-  }
-}
-
-function removeCustomDomainConfig(domain: string): void {
-  try {
-    const filePath = customDomainConfigPath(domain);
-    if (existsSync(filePath)) {
-      unlinkSync(filePath);
-      console.log(`Removed Traefik config for custom domain: ${domain}`);
-    }
-  } catch (err: any) {
-    console.warn(`Failed to remove Traefik config for ${domain}: ${err.message}`);
-  }
-}
-
-function classifyBuildError(err: any, buildLog: string): { code: string; message: string; suggestion: string } {
-  const errMsg = err?.message || String(err);
-
-  // OOM kill (exit 137)
-  if (errMsg.includes('137') || errMsg.includes('killed') || errMsg.includes('OOM')) {
-    return {
-      code: 'OOM',
-      message: 'Build killed: out of memory',
-      suggestion: 'The project may be too large for the current tier. Try tier: large.',
-    };
-  }
-
-  // npm/yarn install failures
-  if (buildLog.includes('npm ERR!') || buildLog.includes('npm error')) {
-    return {
-      code: 'INSTALL_FAILED',
-      message: 'Package installation failed',
-      suggestion: 'Check that package.json and lock files are valid. Look at build logs for details.',
-    };
-  }
-
-  if (errMsg.includes('timed out')) {
-    return {
-      code: 'TIMEOUT',
-      message: 'Build timed out after 10 minutes',
-      suggestion: 'The build is taking too long. Try simplifying the build or using a larger tier.',
-    };
-  }
-
-  return {
-    code: 'BUILD_FAILED',
-    message: errMsg,
-    suggestion: 'Check build logs with cozypane_get_logs (type="build") for details.',
-  };
-}
-
-async function buildAndDeploy(params: {
-  deploymentId: number;
-  extractDir: string;
-  tempDir: string;
-  analysis: ReturnType<typeof analyzeProject>;
-  appName: string;
-  subdomain: string;
-  tier: string;
-  userId: number;
-  envJson: string | undefined;
-  log: any;
-}): Promise<void> {
-  const { deploymentId, extractDir, tempDir, analysis, appName, subdomain, tier, userId, envJson, log } = params;
-  let newContainerId: string | undefined;
-
-  try {
-    // Stop old container if redeploying
-    const existing = await query(
-      'SELECT container_id FROM deployments WHERE id = $1 AND container_id IS NOT NULL',
-      [deploymentId],
-    );
-    if (existing.rows.length > 0 && existing.rows[0].container_id) {
-      await stopContainer(existing.rows[0].container_id).catch(() => {});
-    }
-
-    // Phase: building
-    await updatePhase(deploymentId, 'building');
-    let buildLog = '';
-    let imageTag: string;
-    try {
-      const result = await buildImage(extractDir, analysis, appName, userId);
-      imageTag = result.tag;
-      buildLog = result.buildLog;
-    } catch (err: any) {
-      // buildImage attaches partial log to the error object
-      buildLog = err.buildLog || buildLog;
-      const errInfo = classifyBuildError(err, buildLog);
-      const errorDetail = makeErrorDetail('build', errInfo.code, errInfo.message, errInfo.suggestion, buildLog);
-      await query(
-        `UPDATE deployments SET status = 'failed', deploy_phase = 'build', error_detail = $1, build_log = $2, updated_at = NOW() WHERE id = $3`,
-        [errorDetail, buildLog.slice(-50000), deploymentId],
-      ).catch(() => {});
-      throw err;
-    }
-
-    // Store build log
-    const trimmedLog = buildLog.length > 50000 ? '...' + buildLog.slice(-50000) : buildLog;
-    await query(`UPDATE deployments SET build_log = $1 WHERE id = $2`, [trimmedLog, deploymentId]).catch(() => {});
-
-    // Build env vars
-    const env: Record<string, string> = {};
-    if (envJson) {
-      try {
-        const parsed = JSON.parse(envJson);
-        if (typeof parsed === 'object' && parsed !== null) {
-          for (const [k, v] of Object.entries(parsed)) {
-            if (typeof v === 'string') env[k] = v;
-          }
-        }
-      } catch { /* ignore */ }
-    }
-
-    // Phase: provisioning_db (if needed)
-    if (analysis.needsDatabase) {
-      await updatePhase(deploymentId, 'provisioning_db');
-      try {
-        const db = await provisionDatabase(userId, appName);
-        env.DATABASE_URL = db.connectionString;
-        await query(
-          `UPDATE deployments SET db_name = $1, db_user = $2, db_host = $3 WHERE id = $4`,
-          [db.name, db.user, db.host, deploymentId],
-        );
-      } catch (err: any) {
-        const errorDetail = makeErrorDetail('provisioning_db', 'DB_PROVISION_FAILED', err.message || 'Database provisioning failed', 'Platform failed to create database. Try redeploying or contact support.');
-        await query(
-          `UPDATE deployments SET status = 'failed', deploy_phase = 'provisioning_db', error_detail = $1, updated_at = NOW() WHERE id = $2`,
-          [errorDetail, deploymentId],
-        ).catch(() => {});
-        throw err;
-      }
-    }
-
-    // Phase: starting
-    await updatePhase(deploymentId, 'starting');
-    newContainerId = await runContainer(
-      imageTag,
-      { id: deploymentId, appName, subdomain, port: analysis.port, tier, env },
-      userId,
-    );
-
-    await query(
-      `UPDATE deployments SET container_id = $1 WHERE id = $2`,
-      [newContainerId, deploymentId],
-    ).catch(() => {});
-
-    // Phase: health_check
-    await updatePhase(deploymentId, 'health_check');
-    const health = await waitForHealthy(newContainerId, analysis.port, 120000);
-
-    if (health.healthy) {
-      await query(
-        `UPDATE deployments SET status = 'running', deploy_phase = NULL, updated_at = NOW() WHERE id = $1`,
-        [deploymentId],
-      );
-
-      // Regenerate Traefik file provider configs for any verified custom domains.
-      // On redeploy the container is recreated — the Docker service name stays the same
-      // but Traefik needs the file configs to exist for custom domain routing.
-      try {
-        const domainRows = await query(
-          'SELECT domain FROM domains WHERE deployment_id = (SELECT id FROM deployments WHERE user_id = $1 AND app_name = $2) AND verified = TRUE',
-          [userId, appName],
-        );
-        for (const row of domainRows.rows) {
-          writeCustomDomainConfig(subdomain, (row as any).domain, analysis.port);
-        }
-      } catch { /* non-fatal */ }
-    } else {
-      // Check if container crashed within first few seconds
-      const errorCode = health.error?.includes('exited') ? 'APP_CRASH' : 'UNHEALTHY';
-      const suggestion = errorCode === 'APP_CRASH'
-        ? 'The app crashed on startup. Check runtime logs with cozypane_get_logs for errors.'
-        : 'The server started but is not responding to HTTP requests. Verify it listens on the correct port.';
-      const errorDetail = makeErrorDetail('health_check', errorCode, health.error || 'Health check failed', suggestion, health.logs);
-
-      await query(
-        `UPDATE deployments SET status = 'unhealthy', deploy_phase = 'health_check', error_detail = $1, updated_at = NOW() WHERE id = $2`,
-        [errorDetail, deploymentId],
-      );
-
-      // For non-crash cases, schedule a delayed re-check — the server may come up
-      // after migrations or slow startup. Don't block the response.
-      if (errorCode === 'UNHEALTHY') {
-        const reCheckId = newContainerId;
-        const reCheckPort = analysis.port;
-        const reCheckDeployId = deploymentId;
-        setTimeout(async () => {
-          try {
-            const reCheck = await waitForHealthy(reCheckId, reCheckPort, 60000);
-            if (reCheck.healthy) {
-              await query(
-                `UPDATE deployments SET status = 'running', deploy_phase = NULL, error_detail = NULL, updated_at = NOW() WHERE id = $1 AND status = 'unhealthy'`,
-                [reCheckDeployId],
-              );
-            }
-          } catch { /* non-fatal background check */ }
-        }, 5000);
-      }
-    }
-  } catch (err: any) {
-    if (newContainerId) await stopContainer(newContainerId).catch(() => {});
-
-    // Only update if not already set by phase-specific error handling above
-    const current = await query('SELECT status FROM deployments WHERE id = $1', [deploymentId]).catch(() => null);
-    if (current?.rows?.[0]?.status === 'building') {
-      await query(
-        `UPDATE deployments SET status = 'failed', build_log = COALESCE(build_log, '') || $1, updated_at = NOW() WHERE id = $2`,
-        [`\n\nBUILD ERROR: ${err.message}`, deploymentId],
-      ).catch(() => {});
-    }
-    log.error(err, `Background build failed for deployment ${deploymentId}`);
-  } finally {
-    rmSync(tempDir, { recursive: true, force: true });
-  }
 }
 
 async function getDeployment(id: string, userId: number) {

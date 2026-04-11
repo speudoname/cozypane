@@ -7,15 +7,13 @@ interface Props {
   onNewTerminal: () => void;
 }
 
-type Step = 'choose' | 'style-open' | 'style-create' | 'create-name';
+type Step = 'choose' | 'style-create' | 'create-name';
 
 export default function TabLauncher({ onOpenProject, onCreateProject, onNewTerminal }: Props) {
   const [step, setStep] = useState<Step>('choose');
   const [projectName, setProjectName] = useState('');
   const [parentDir, setParentDir] = useState('');
   const [error, setError] = useState('');
-
-  const [selectedDir, setSelectedDir] = useState('');
 
   const handleOpenProject = useCallback(async () => {
     try {
@@ -28,12 +26,6 @@ export default function TabLauncher({ onOpenProject, onCreateProject, onNewTermi
       }
     } catch {}
   }, [onOpenProject]);
-
-  const handleOpenWithStyle = useCallback((cozyMode: boolean) => {
-    if (selectedDir) {
-      onOpenProject(selectedDir, cozyMode);
-    }
-  }, [onOpenProject, selectedDir]);
 
   const handleCreateStep = useCallback(async () => {
     // Use saved default dir, fall back to home
@@ -109,35 +101,6 @@ export default function TabLauncher({ onOpenProject, onCreateProject, onNewTermi
             <button onClick={() => setStep('choose')} style={smallActionBtnStyle}>Back</button>
             <button onClick={handleCreateConfirm} style={accentBtnStyle}>Next</button>
           </div>
-        </div>
-      </div>
-    );
-  }
-
-  if (step === 'style-open') {
-    return (
-      <div style={containerStyle}>
-        <div style={cardContainerStyle}>
-          <h2 style={titleStyle}>How should Claude work?</h2>
-          <p style={subtitleStyle}>
-            Opening <strong>{selectedDir.split('/').pop()}</strong>
-          </p>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75em', marginTop: '1em' }}>
-            <button onClick={() => handleOpenWithStyle(true)} style={styleCardStyle}>
-              <div style={styleCardTitleStyle}>Cozy Style</div>
-              <div style={styleCardDescStyle}>
-                Claude builds deployment-ready from the start. Project structure, Dockerfiles,
-                database setup, and environment configs are all handled for CozyPane Cloud.
-              </div>
-            </button>
-            <button onClick={() => handleOpenWithStyle(false)} style={{ ...styleCardStyle, borderColor: 'var(--border, #2a2b3e)' }}>
-              <div style={styleCardTitleStyle}>Free Form</div>
-              <div style={styleCardDescStyle}>
-                Claude works with no deployment opinions. Build whatever you want, deploy wherever you want.
-              </div>
-            </button>
-          </div>
-          <button onClick={() => setStep('choose')} style={{ ...smallActionBtnStyle, marginTop: '1em' }}>Back</button>
         </div>
       </div>
     );

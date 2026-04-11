@@ -54,10 +54,7 @@ contextBridge.exposeInMainWorld('cozyPane', {
     login: () => ipcRenderer.invoke('deploy:login'),
     logout: () => ipcRenderer.invoke('deploy:logout'),
     getAuth: () => ipcRenderer.invoke('deploy:getAuth'),
-    detectProject: (cwd: string) => ipcRenderer.invoke('deploy:detectProject', cwd),
-    start: (cwd: string, appName: string, tier?: string) => ipcRenderer.invoke('deploy:start', cwd, appName, tier),
     list: () => ipcRenderer.invoke('deploy:list'),
-    get: (id: string) => ipcRenderer.invoke('deploy:get', id),
     logs: (id: string) => ipcRenderer.invoke('deploy:logs', id),
     delete: (id: string) => ipcRenderer.invoke('deploy:delete', id),
     redeploy: (id: string) => ipcRenderer.invoke('deploy:redeploy', id),
@@ -69,6 +66,16 @@ contextBridge.exposeInMainWorld('cozyPane', {
       const listener = (_event: any, url: string) => callback(url);
       ipcRenderer.on('deploy:protocol-callback', listener);
       return () => ipcRenderer.removeListener('deploy:protocol-callback', listener);
+    },
+    onAuthSuccess: (callback: (payload: { username: string; avatarUrl: string }) => void) => {
+      const listener = (_event: any, payload: any) => callback(payload);
+      ipcRenderer.on('deploy:auth-success', listener);
+      return () => ipcRenderer.removeListener('deploy:auth-success', listener);
+    },
+    onAuthError: (callback: (payload: { error: string }) => void) => {
+      const listener = (_event: any, payload: any) => callback(payload);
+      ipcRenderer.on('deploy:auth-error', listener);
+      return () => ipcRenderer.removeListener('deploy:auth-error', listener);
     },
   },
   preview: {
@@ -91,14 +98,19 @@ contextBridge.exposeInMainWorld('cozyPane', {
       return () => ipcRenderer.removeListener('updates:available', listener);
     },
   },
+  // Menu event subscriber — restricted to `menu:*` channels. Non-menu
+  // channels (deploy:auth-*, github:auth-changed, updater:status) now have
+  // their own namespaced subscribers on `deploy.*`, `git.*`, `updates.*`.
   onMenuAction: (channel: string, callback: (...args: any[]) => void) => {
-    const ALLOWED_CHANNELS = new Set([
+    const ALLOWED_MENU_CHANNELS = new Set([
       'menu:new-tab', 'menu:close-tab', 'menu:toggle-panels', 'menu:toggle-layout',
       'menu:settings', 'menu:clear-terminal', 'menu:split-view',
       'menu:zoom-in', 'menu:zoom-out', 'menu:zoom-reset',
-      'updater:status', 'updates:available', 'deploy:auth-success', 'deploy:auth-error', 'github:auth-changed',
     ]);
-    if (!ALLOWED_CHANNELS.has(channel)) return () => {};
+    if (!ALLOWED_MENU_CHANNELS.has(channel)) {
+      console.warn('[CozyPane] onMenuAction called with non-menu channel:', channel);
+      return () => {};
+    }
     const listener = (_event: any, ...args: any[]) => callback(...args);
     ipcRenderer.on(channel, listener);
     return () => ipcRenderer.removeListener(channel, listener);
@@ -118,5 +130,10 @@ contextBridge.exposeInMainWorld('cozyPane', {
     createRepo: (cwd: string, isPrivate?: boolean) => ipcRenderer.invoke('git:createRepo', cwd, isPrivate),
     listRepos: (query: string) => ipcRenderer.invoke('git:listRepos', query),
     addRemote: (cwd: string, cloneUrl: string) => ipcRenderer.invoke('git:addRemote', cwd, cloneUrl),
+    onAuthChanged: (callback: (payload: { username: string; avatarUrl: string }) => void) => {
+      const listener = (_event: any, payload: any) => callback(payload);
+      ipcRenderer.on('github:auth-changed', listener);
+      return () => ipcRenderer.removeListener('github:auth-changed', listener);
+    },
   },
 });

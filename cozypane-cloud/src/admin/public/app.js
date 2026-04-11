@@ -2,20 +2,24 @@
 
 // Admin SPA may be served from admin.cozypane.com but API lives at api.cozypane.com
 const API = window.location.origin.replace('admin.', 'api.');
-let token = localStorage.getItem('admin_token') || '';
+
+// Auth: the /auth/admin-callback endpoint sets an HttpOnly cookie named
+// `admin_session`. This SPA cannot read HttpOnly cookies (that's the point),
+// so we just set `credentials: 'include'` on every API fetch and let the
+// browser send the cookie automatically. There is no token in localStorage
+// or in the URL fragment anywhere — the old `?token=`/`#token=` flow has
+// been removed.
 
 // --- API ---
 
 async function api(path, opts = {}) {
-  const headers = {
-    Authorization: `Bearer ${token}`,
-    ...(opts.headers || {}),
-  };
+  const headers = { ...(opts.headers || {}) };
   // Only set Content-Type for requests that have a body
   if (opts.body) headers['Content-Type'] = 'application/json';
   const res = await fetch(`${API}${path}`, {
     ...opts,
     headers,
+    credentials: 'include',
   });
   if (res.status === 401 || res.status === 403) {
     showLogin();
@@ -53,9 +57,10 @@ function doLogin() {
 }
 
 async function checkAuth() {
-  if (!token) { showLogin(); return false; }
+  // The cookie is HttpOnly — we can't read it. Just hit /admin/stats and
+  // see if the server rejects us. If it does, show the login screen.
   try {
-    const stats = await api('/admin/stats');
+    await api('/admin/stats');
     showApp();
     return true;
   } catch {
@@ -64,37 +69,13 @@ async function checkAuth() {
   }
 }
 
-// Handle OAuth callback (code or direct token)
-async function handleCallback() {
-  const params = new URLSearchParams(window.location.search);
-
-  // Direct token login (e.g. from CozyPane app or manual)
-  const directToken = params.get('token');
-  if (directToken) {
-    token = directToken;
-    localStorage.setItem('admin_token', token);
-    window.history.replaceState({}, '', '/admin/');
-    return;
-  }
-
-  const code = params.get('code');
-  if (!code) return;
-
-  try {
-    const res = await fetch(`${API}/auth/github`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ code }),
-    });
-    const data = await res.json();
-    if (data.token) {
-      token = data.token;
-      localStorage.setItem('admin_token', token);
-      window.history.replaceState({}, '', '/admin/');
-    }
-  } catch (e) {
-    console.error('Auth failed:', e);
-  }
+// OAuth callback no longer needs client-side handling: /auth/admin-callback
+// on the server sets the admin_session cookie and redirects back to
+// /admin/. The SPA just calls checkAuth() on boot.
+// This stub exists only to clear any legacy localStorage entries from
+// previous sessions.
+function clearLegacyStorage() {
+  try { localStorage.removeItem('admin_token'); } catch { /* ignore */ }
 }
 
 // --- Rendering ---
@@ -463,17 +444,13 @@ window.addEventListener('hashchange', route);
 // --- Init ---
 
 (async () => {
-  // Handle OAuth callback (redirected with ?token= or ?code=)
-  if (window.location.search.includes('token=') || window.location.search.includes('code=')) {
-    await handleCallback();
-  }
+  // Clear any legacy localStorage token from the old URL-fragment flow.
+  clearLegacyStorage();
 
   if (await checkAuth()) {
-    // Show user info in nav
+    // Show user info in nav — the cookie carries auth now.
     try {
-      const res = await fetch(`${API}/auth/me`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
+      const res = await fetch(`${API}/auth/me`, { credentials: 'include' });
       if (res.ok) {
         const user = await res.json();
         $('nav-user').innerHTML = `

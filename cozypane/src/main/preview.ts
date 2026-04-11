@@ -43,9 +43,13 @@ function startStaticServer(cwd: string): Promise<{ port: number }> {
         const url = new URL(req.url || '/', `http://localhost:${port}`);
         let filePath = path.join(cwd, decodeURIComponent(url.pathname));
 
-        // Path traversal protection
+        // Path traversal protection — must use path.sep so that a sibling
+        // directory like /home/user/project-leak is NOT treated as a child of
+        // /home/user/project. Without the trailing separator, startsWith() was
+        // permissive and allowed cross-project reads.
+        const root = path.resolve(cwd);
         const resolved = path.resolve(filePath);
-        if (!resolved.startsWith(path.resolve(cwd))) {
+        if (resolved !== root && !resolved.startsWith(root + path.sep)) {
           res.writeHead(403); res.end('Forbidden'); return;
         }
 
@@ -64,16 +68,18 @@ function startStaticServer(cwd: string): Promise<{ port: number }> {
               if (err2) { res.writeHead(404); res.end('Not found'); return; }
               res.writeHead(200, {
                 'Content-Type': 'text/html',
-                'Access-Control-Allow-Origin': '*',
               });
               res.end(indexData);
             });
             return;
           }
           const ext = path.extname(filePath).toLowerCase();
+          // No Access-Control-Allow-Origin header: the preview server is only
+          // reached from the same-origin Electron webview. A wildcard CORS
+          // header combined with brute-forceable ports (9100-9200) let any
+          // website the user visited read project files cross-origin.
           res.writeHead(200, {
             'Content-Type': MIME_TYPES[ext] || 'application/octet-stream',
-            'Access-Control-Allow-Origin': '*',
           });
           res.end(data);
         });
@@ -122,6 +128,10 @@ function savePreviewUrls(data: Record<string, any>) {
 
 // --- Project detection (for static HTML serving) ---
 
+// NOTE: `cozypane-cloud/src/services/detector.ts` has a parallel
+// framework detector for choosing the build-time Dockerfile template.
+// Keep the framework list + DB_DEPS list here in sync with that file —
+// see audit finding M39. When adding a framework, update both places.
 function detectProjectInfo(cwd: string): { type: string | null; devCommand: string | null; productionUrl: string | null; serveStatic: boolean; needsDatabase: boolean } {
   let type: string | null = null;
   let devCommand: string | null = null;
@@ -200,10 +210,36 @@ export function registerPreviewHandlers() {
     savePreviewUrls(all);
   });
 
-  ipcMain.handle('preview:writeDevToolsData', async (_event, data: object) => {
+  ipcMain.handle('preview:writeDevToolsData', async (_event, data: any) => {
     try {
+      // M2: the devtools blob flows from the webview (possibly attacker-
+      // controlled) → disk → MCP server → Claude's context. Cap individual
+      // fields so a hostile page can't fill the disk or stuff a giant
+      // prompt-injection payload into Claude's input. 256 KB total is way
+      // more than legitimate console+network data ever needs.
+      const MAX_FIELD_CHARS = 64 * 1024;
+      const MAX_TOTAL_CHARS = 256 * 1024;
+      const truncate = (value: any): any => {
+        if (typeof value === 'string') {
+          return value.length > MAX_FIELD_CHARS
+            ? value.slice(0, MAX_FIELD_CHARS) + '\n...[truncated by CozyPane]'
+            : value;
+        }
+        if (Array.isArray(value)) return value.slice(0, 200).map(truncate);
+        if (value && typeof value === 'object') {
+          const out: Record<string, any> = {};
+          for (const [k, v] of Object.entries(value)) out[k] = truncate(v);
+          return out;
+        }
+        return value;
+      };
+      const capped = truncate(data);
+      let serialized = JSON.stringify(capped, null, 2);
+      if (serialized.length > MAX_TOTAL_CHARS) {
+        serialized = serialized.slice(0, MAX_TOTAL_CHARS) + '\n...[truncated by CozyPane]\n}';
+      }
       const filePath = path.join(app.getPath('userData'), 'preview-devtools.json');
-      fs.writeFileSync(filePath, JSON.stringify(data, null, 2));
+      fs.writeFileSync(filePath, serialized, { mode: 0o600 });
     } catch (err: any) {
       return { error: err.message || 'Failed to write devtools data' };
     }
@@ -211,8 +247,16 @@ export function registerPreviewHandlers() {
 
   ipcMain.handle('preview:captureScreenshot', async (_event, base64Png: string) => {
     try {
+      // Cap screenshot size at 2 MB (decoded). PNG base64 is ~4/3 the binary
+      // size, so a 3 MB base64 string maps to ~2 MB of image — enough for a
+      // full-viewport capture at retina density, too small for a hostile
+      // page to use as a disk-fill vector.
+      const MAX_BASE64_LEN = 3 * 1024 * 1024;
+      const safe = typeof base64Png === 'string' && base64Png.length > MAX_BASE64_LEN
+        ? base64Png.slice(0, MAX_BASE64_LEN)
+        : base64Png;
       const filePath = path.join(app.getPath('userData'), 'preview-screenshot.png');
-      fs.writeFileSync(filePath, Buffer.from(base64Png, 'base64'));
+      fs.writeFileSync(filePath, Buffer.from(safe, 'base64'), { mode: 0o600 });
       return filePath;
     } catch (err: any) {
       return { error: err.message || 'Failed to capture screenshot' };

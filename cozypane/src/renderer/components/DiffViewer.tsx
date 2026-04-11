@@ -1,6 +1,10 @@
 import React, { useEffect, useRef } from 'react';
 import * as monaco from 'monaco-editor';
 import { getLanguage } from '../lib/languageMap';
+// Register cozy themes (cozy-dark / ocean / forest / cozy-light). Previously
+// DiffViewer relied on FilePreview being imported first to define these
+// themes; the shared module makes the dependency explicit.
+import '../lib/monacoThemes';
 
 interface Props {
   filePath: string;

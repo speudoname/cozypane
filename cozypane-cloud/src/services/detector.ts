@@ -112,7 +112,12 @@ function analyzeNodeProject(dir: string, analysis: ProjectAnalysis): void {
 
   const deps = { ...pkg.dependencies, ...pkg.devDependencies };
 
-  // Detect framework
+  // Detect framework.
+  //
+  // NOTE: `cozypane/src/main/preview.ts` has a parallel framework detector
+  // for choosing the local dev command. If you add a framework here you
+  // should also add it there (and vice versa). The two lists currently
+  // overlap but aren't identical — see audit finding M39.
   if (deps.next) {
     analysis.framework = 'nextjs';
     analysis.port = 3000;
@@ -122,9 +127,17 @@ function analyzeNodeProject(dir: string, analysis: ProjectAnalysis): void {
     analysis.framework = 'nuxt';
     analysis.port = 3000;
     analysis.recommendedTier = 'medium';
+  } else if (deps['@angular/core']) {
+    // Angular builds to static files via `ng build`, served by nginx.
+    analysis.framework = 'angular';
+    analysis.port = 8080;
   } else if (deps.vite && !deps.express && !deps.fastify && !deps.hono && !deps['@nestjs/core']) {
-    // Vite with no server framework = SPA
+    // Vite with no server framework = SPA (svelte/vue/react via vite all land here).
     analysis.framework = 'vite';
+    analysis.port = 8080;
+  } else if (deps['react-scripts']) {
+    // Create React App — static SPA after `npm run build`.
+    analysis.framework = 'cra';
     analysis.port = 8080;
   } else if (deps.express) {
     analysis.framework = 'express';
@@ -162,6 +175,12 @@ function analyzeNodeProject(dir: string, analysis: ProjectAnalysis): void {
     analysis.needsDatabase = true;
     analysis.migrationCommand = 'npx typeorm migration:run -d dist/data-source.js';
   } else if (deps.pg || deps.postgres || deps['pg-promise']) {
+    analysis.needsDatabase = true;
+  } else if (deps.mongoose || deps.mysql2 || deps['better-sqlite3']) {
+    // Mark the deployment as needing a database even though we only
+    // provision postgres today. The user either brings their own DB URL
+    // (via env vars) or the deploy fails loudly — either way, we know
+    // the app expects persistence. Syncs with preview.ts DB_DEPS list.
     analysis.needsDatabase = true;
   }
 
@@ -332,7 +351,4 @@ export function analyzeProject(dir: string): ProjectAnalysis {
 
   return analysis;
 }
-
-// Keep backward compat export name
-export { analyzeProject as detectProject };
-export type { ProjectAnalysis as ProjectInfo };
+// (Dead re-exports `detectProject` / `ProjectInfo` removed — audit L13.)

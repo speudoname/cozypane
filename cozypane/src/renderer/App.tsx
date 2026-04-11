@@ -1,4 +1,6 @@
 import React, { useState, useCallback, useRef, useEffect, useMemo } from 'react';
+import { useDragResize } from './lib/useDragResize';
+import { useConfirm } from './lib/confirmContext';
 import { Eye, GitBranch, Rocket, Settings2 } from 'lucide-react';
 import Sidebar from './components/Sidebar';
 import FilePreview from './components/FilePreview';
@@ -17,7 +19,8 @@ import { enableCozyMode } from './lib/cozyMode';
 import CommandPalette from './components/CommandPalette';
 import type { PaletteAction } from './components/CommandPalette';
 import TerminalTabBar from './components/TerminalTabBar';
-import type { TerminalTab, PreviewError, ConsoleLog, NetworkError } from './components/TerminalTabBar';
+// PreviewError, ConsoleLog, NetworkError, TerminalTab are declared in the
+// global ambient types (src/renderer/types.d.ts) — no explicit import needed.
 import type { AiAction } from './lib/terminalAnalyzer';
 
 type LayoutMode = 'two-col' | 'three-col';
@@ -53,6 +56,7 @@ function makeTerminalTab(cwd: string, counter: number, launched = false): Termin
 }
 
 export default function App() {
+  const confirm = useConfirm();
   const [panelsOpen, setPanelsOpen] = useState(() => loadPersisted('panelsOpen', true));
   const terminalCounterRef = useRef(1);
   const [openTabs, setOpenTabs] = useState<OpenTab[]>(() => loadPersisted('openTabs', []));
@@ -61,7 +65,7 @@ export default function App() {
   const [panelWidth, setPanelWidth] = useState(() => loadPersisted('panelWidth', 360));
   const [isResizing, setIsResizing] = useState(false);
   const [sidebarRatio, setSidebarRatio] = useState(() => loadPersisted('sidebarRatio', 0.35));
-  const resizeCleanupRef = useRef<(() => void) | null>(null);
+  // (resize cleanup refs have moved into the useDragResize hook in lib/useDragResize.ts)
   const [activityEvents, setActivityEvents] = useState<FileChangeEvent[]>([]);
   const [lastWatcherEvent, setLastWatcherEvent] = useState<FileChangeEvent | null>(null);
 
@@ -205,12 +209,18 @@ export default function App() {
     });
   }, []);
 
-  const closeTerminalTab = useCallback((id: string) => {
+  const closeTerminalTab = useCallback(async (id: string) => {
     const tabs = terminalTabsRef.current;
     const tab = tabs.find(t => t.id === id);
     if (!tab || tabs.length <= 1) return; // Can't close last tab
 
-    if (!window.confirm(`Close terminal "${tab.customLabel || tab.label}"?`)) return;
+    const ok = await confirm({
+      title: 'Close terminal?',
+      message: `Close terminal "${tab.customLabel || tab.label}"? Any running processes will be stopped.`,
+      confirmLabel: 'Close',
+      destructive: true,
+    });
+    if (!ok) return;
 
     setTerminalTabs(prev => {
       if (prev.length <= 1) return prev;
@@ -271,7 +281,30 @@ export default function App() {
   }, [updateTab, buildClaudeAutoCommand]);
 
   const launchCreateProject = useCallback(async (fullPath: string, _projectName: string, cozyMode: boolean) => {
-    await window.cozyPane.fs.mkdir(fullPath);
+    // L24: check if the directory already exists. Previously `mkdir` would
+    // silently succeed (it's recursive) or error obscurely if the path was
+    // a non-empty existing directory; the user would land in a new tab
+    // with no feedback. Now we surface a clear confirmation.
+    const existing = await window.cozyPane.fs.readdir(fullPath).catch(() => null);
+    if (existing && existing.length > 0) {
+      const ok = await confirm({
+        title: 'Directory exists',
+        message: `"${fullPath}" already exists and is not empty. Open it as an existing project instead of creating a new one?`,
+        confirmLabel: 'Open existing',
+      });
+      if (!ok) return;
+    } else {
+      const result = await window.cozyPane.fs.mkdir(fullPath);
+      if (result?.error) {
+        await confirm({
+          title: 'Could not create project',
+          message: result.error,
+          confirmLabel: 'OK',
+          cancelLabel: '',
+        });
+        return;
+      }
+    }
     if (cozyMode) {
       await enableCozyMode(fullPath);
     }
@@ -281,7 +314,7 @@ export default function App() {
       launched: true,
       autoCommand,
     });
-  }, [updateTab, buildClaudeAutoCommand]);
+  }, [updateTab, buildClaudeAutoCommand, confirm]);
 
   const launchNewTerminal = useCallback(async () => {
     const tab = terminalTabsRef.current.find(t => t.id === activeTerminalIdRef.current);
@@ -323,106 +356,73 @@ export default function App() {
   const openTabsRef = useRef(openTabs);
   openTabsRef.current = openTabs;
 
-  const handleCloseTab = useCallback((filePath: string, e: React.MouseEvent) => {
-    e.stopPropagation();
+  const closeFileTab = useCallback(async (filePath: string): Promise<boolean> => {
+    // Returns true if the tab was actually closed, false if the user
+    // cancelled due to unsaved changes.
+    const tab = openTabsRef.current.find(t => t.path === filePath);
+    if (tab?.dirty) {
+      const ok = await confirm({
+        title: 'Unsaved changes',
+        message: `${tab.name} has unsaved changes. Close without saving?`,
+        confirmLabel: 'Discard',
+        destructive: true,
+      });
+      if (!ok) return false;
+    }
     const remaining = openTabsRef.current.filter(t => t.path !== filePath);
     setOpenTabs(remaining);
     setActiveTab(prev => {
       if (prev !== filePath) return prev;
       return remaining.length > 0 ? remaining[remaining.length - 1].path : null;
     });
-  }, []);
+    return true;
+  }, [confirm]);
+
+  const handleCloseTab = useCallback((filePath: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    void closeFileTab(filePath);
+  }, [closeFileTab]);
 
   const panelWidthRef = useRef(panelWidth);
   panelWidthRef.current = panelWidth;
 
-  const handlePanelResizeStart = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    setIsResizing(true);
-    const startX = e.clientX;
-    const startWidth = panelWidthRef.current;
-
-    const onMouseMove = (e: MouseEvent) => {
-      const delta = startX - e.clientX;
-      const newWidth = Math.max(200, Math.min(startWidth + delta, window.innerWidth * 0.6));
-      setPanelWidth(newWidth);
-    };
-
-    const cleanup = () => {
-      setIsResizing(false);
-      document.removeEventListener('mousemove', onMouseMove);
-      document.removeEventListener('mouseup', cleanup);
-      resizeCleanupRef.current = null;
-    };
-
-    resizeCleanupRef.current?.();
-    resizeCleanupRef.current = cleanup;
-    document.addEventListener('mousemove', onMouseMove);
-    document.addEventListener('mouseup', cleanup);
-  }, []);
-
-  const splitCleanupRef = useRef<(() => void) | null>(null);
-
-  const handleSplitResizeStart = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    const container = (e.target as HTMLElement).parentElement;
-    if (!container) return;
-    const containerRect = container.getBoundingClientRect();
-
-    const onMouseMove = (e: MouseEvent) => {
-      const deltaY = e.clientY - containerRect.top;
-      const newRatio = Math.max(0.15, Math.min(deltaY / containerRect.height, 0.85));
-      setSidebarRatio(newRatio);
-    };
-
-    const cleanup = () => {
-      document.removeEventListener('mousemove', onMouseMove);
-      document.removeEventListener('mouseup', cleanup);
-      splitCleanupRef.current = null;
-    };
-
-    splitCleanupRef.current?.();
-    splitCleanupRef.current = cleanup;
-    document.addEventListener('mousemove', onMouseMove);
-    document.addEventListener('mouseup', cleanup);
-  }, []);
-
   const previewWidthRef = useRef(previewWidth);
   previewWidthRef.current = previewWidth;
-  const previewResizeCleanupRef = useRef<(() => void) | null>(null);
 
-  const handlePreviewResizeStart = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    setIsResizingPreview(true);
-    const startX = e.clientX;
-    const startWidth = previewWidthRef.current;
+  // H19/L9 — three drag-resize handlers were previously 80 lines of
+  // near-identical boilerplate (cleanup refs, mousemove/mouseup wiring,
+  // unmount effect). Extracted to `lib/useDragResize.ts`; each handler is
+  // now ~7 lines and the unmount cleanup is built into the hook.
 
-    const onMouseMove = (e: MouseEvent) => {
-      const delta = startX - e.clientX;
-      const newWidth = Math.max(250, Math.min(startWidth + delta, window.innerWidth * 0.6));
-      setPreviewWidth(newWidth);
-    };
+  const handlePanelResizeStart = useDragResize({
+    onStart: () => setIsResizing(true),
+    onEnd:   () => setIsResizing(false),
+    getStartValue: () => panelWidthRef.current,
+    onMove: (e, ctx) => {
+      const delta = ctx.startX - e.clientX;
+      setPanelWidth(Math.max(200, Math.min(ctx.startWidth + delta, window.innerWidth * 0.6)));
+    },
+  });
 
-    const cleanup = () => {
-      setIsResizingPreview(false);
-      document.removeEventListener('mousemove', onMouseMove);
-      document.removeEventListener('mouseup', cleanup);
-      previewResizeCleanupRef.current = null;
-    };
+  const handleSplitResizeStart = useDragResize({
+    getContainer: (target) => target.parentElement,
+    onMove: (e, ctx) => {
+      if (!ctx.containerRect) return;
+      const deltaY = e.clientY - ctx.containerRect.top;
+      const newRatio = Math.max(0.15, Math.min(deltaY / ctx.containerRect.height, 0.85));
+      setSidebarRatio(newRatio);
+    },
+  });
 
-    previewResizeCleanupRef.current?.();
-    previewResizeCleanupRef.current = cleanup;
-    document.addEventListener('mousemove', onMouseMove);
-    document.addEventListener('mouseup', cleanup);
-  }, []);
-
-  useEffect(() => {
-    return () => {
-      resizeCleanupRef.current?.();
-      splitCleanupRef.current?.();
-      previewResizeCleanupRef.current?.();
-    };
-  }, []);
+  const handlePreviewResizeStart = useDragResize({
+    onStart: () => setIsResizingPreview(true),
+    onEnd:   () => setIsResizingPreview(false),
+    getStartValue: () => previewWidthRef.current,
+    onMove: (e, ctx) => {
+      const delta = ctx.startX - e.clientX;
+      setPreviewWidth(Math.max(250, Math.min(ctx.startWidth + delta, window.innerWidth * 0.6)));
+    },
+  });
 
   const togglePanels = useCallback(() => {
     setPanelsOpen(prev => !prev);
@@ -447,12 +447,24 @@ export default function App() {
       }
       if (mod && e.key === 'w') {
         e.preventDefault();
+        // Scope Cmd+W to the currently-hovered pane so editors with unsaved
+        // files get a dirty-check prompt, while terminal-focused Cmd+W still
+        // closes the active terminal tab. Without this, Cmd+W silently
+        // discarded unsaved file edits when the user thought they were
+        // closing an editor tab.
+        if (hoverZoneRef.current === 'editor') {
+          const active = activeTab;
+          if (active) {
+            void closeFileTab(active);
+            return;
+          }
+        }
         closeTerminalTab(activeTerminalIdRef.current);
       }
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [addTerminalTab, closeTerminalTab]);
+  }, [addTerminalTab, closeTerminalTab, closeFileTab, activeTab]);
 
   // Per-panel zoom via Cmd+/- based on hover zone
   const adjustZoom = useCallback((delta: number, reset?: boolean) => {
@@ -580,67 +592,112 @@ export default function App() {
     updateTab(activeTerminalIdRef.current, { cwd: newCwd });
   }, [updateTab]);
 
+  // H26 — Monaco container must ALWAYS stay mounted (CLAUDE.md rule).
+  //
+  // Previously `renderBottomPanel()` returned completely different JSX trees
+  // for each panel state — Settings/Git/Deploy/Preview/Diff/Empty — which
+  // meant React unmounted `FilePreview` (and disposed its Monaco editor)
+  // every time the user switched the right-panel tab, opened a diff, or
+  // closed the last file tab. Monaco spin-up is expensive and caused
+  // visible flicker.
+  //
+  // The fix: FilePreview is rendered exactly once, permanently. Its
+  // container is toggled via `display: none` (or an absolute-positioned
+  // stacking layer) based on which sub-view is active. Same trick we
+  // already use for terminal tabs.
   const renderBottomPanel = () => {
-    if (rightPanelTab === 'settings') {
-      return <ErrorBoundary panel="Settings"><Settings /></ErrorBoundary>;
-    }
+    const showPreviewTab = rightPanelTab === 'preview';
+    const showDiff = showPreviewTab && !!diffState;
+    const showEditor = showPreviewTab && !diffState && openTabs.length > 0;
+    const showEmpty  = showPreviewTab && !diffState && openTabs.length === 0;
 
-    if (rightPanelTab === 'git') {
-      return (
-        <ErrorBoundary panel="Git">
-          <GitPanel
-            cwd={cwd}
-            onDiffClick={handleGitDiffClick}
-            onBranchChange={setGitBranch}
-            activityEvents={activityEvents}
-            onTerminalCommand={sendTerminalCommand}
-            claudeRunning={isClaudeRunning}
-          />
-        </ErrorBoundary>
-      );
-    }
-
-    if (rightPanelTab === 'deploy') {
-      return <ErrorBoundary panel="Deploy"><DeployPanel cwd={cwd} onTerminalCommand={sendTerminalCommand} claudeRunning={isClaudeRunning} aiAction={aiAction} onDeploymentsLoaded={setDeployments} /></ErrorBoundary>;
-    }
-
-    // Preview tab — show diff viewer or editor
-    if (diffState) {
-      return (
-        <>
-          <div className="editor-tabs">
-            <div className="editor-tab active">
-              <span>Diff: {diffState.filePath.split('/').pop()}</span>
-              <span className="tab-close" role="button" aria-label="Close diff" onClick={() => setDiffState(null)}>x</span>
-            </div>
-          </div>
-          <DiffViewer filePath={diffState.filePath} before={diffState.before} after={diffState.after} fontSize={editorFontSize} />
-        </>
-      );
-    }
-
-    if (openTabs.length === 0) {
-      return (
-        <div className="empty-state">
-          <div className="empty-state-text">Select a file to preview</div>
-        </div>
-      );
-    }
     return (
       <>
-        <div className="editor-tabs">
-          {openTabs.map(tab => (
-            <div
-              key={tab.path}
-              className={`editor-tab ${activeTab === tab.path ? 'active' : ''}`}
-              onClick={() => { setActiveTab(tab.path); setDiffState(null); }}
-            >
-              <span>{tab.dirty ? '● ' : ''}{tab.name}</span>
-              <span className="tab-close" role="button" aria-label={`Close ${tab.name}`} onClick={e => handleCloseTab(tab.path, e)}>x</span>
+        {/* --- Preview tab contents (editor / diff / empty). FilePreview is
+            ALWAYS mounted below; the wrappers around it use display:none to
+            toggle visibility so Monaco is never disposed. --- */}
+        <div
+          className="bottom-panel-editor-root"
+          style={{
+            display: showPreviewTab ? 'flex' : 'none',
+            flex: 1,
+            minHeight: 0,
+            flexDirection: 'column',
+          }}
+        >
+          {/* Editor tabs row — only visible when showing open files */}
+          <div
+            className="editor-tabs"
+            style={{ display: showEditor ? 'flex' : 'none' }}
+          >
+            {openTabs.map(tab => (
+              <div
+                key={tab.path}
+                className={`editor-tab ${activeTab === tab.path ? 'active' : ''}`}
+                onClick={() => { setActiveTab(tab.path); setDiffState(null); }}
+              >
+                <span>{tab.dirty ? '● ' : ''}{tab.name}</span>
+                <span className="tab-close" role="button" aria-label={`Close ${tab.name}`} onClick={e => handleCloseTab(tab.path, e)}>x</span>
+              </div>
+            ))}
+          </div>
+
+          {/* Diff tab row */}
+          {showDiff && diffState && (
+            <div className="editor-tabs">
+              <div className="editor-tab active">
+                <span>Diff: {diffState.filePath.split('/').pop()}</span>
+                <span className="tab-close" role="button" aria-label="Close diff" onClick={() => setDiffState(null)}>x</span>
+              </div>
             </div>
-          ))}
+          )}
+
+          {/* FilePreview (Monaco) — ALWAYS mounted. Hidden via display:none
+              when the diff viewer is active or no files are open. */}
+          <div style={{ display: showEditor ? 'flex' : 'none', flex: 1, minHeight: 0, flexDirection: 'column' }}>
+            <FilePreview filePath={activeTab} onDirtyChange={handleDirtyChange} fontSize={editorFontSize} />
+          </div>
+
+          {/* Diff viewer — mounted only when a diff is active. DiffViewer
+              is less expensive to remount than FilePreview and its content
+              (before/after) is diff-specific, so conditional mounting is
+              fine here. */}
+          {showDiff && diffState && (
+            <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+              <DiffViewer filePath={diffState.filePath} before={diffState.before} after={diffState.after} fontSize={editorFontSize} />
+            </div>
+          )}
+
+          {/* Empty state */}
+          {showEmpty && (
+            <div className="empty-state">
+              <div className="empty-state-text">Select a file to preview</div>
+            </div>
+          )}
         </div>
-        <FilePreview filePath={activeTab} onDirtyChange={handleDirtyChange} fontSize={editorFontSize} />
+
+        {/* Non-preview panels — safe to conditionally mount because they
+            don't hold expensive persistent state. */}
+        {rightPanelTab === 'settings' && (
+          <ErrorBoundary panel="Settings"><Settings /></ErrorBoundary>
+        )}
+        {rightPanelTab === 'git' && (
+          <ErrorBoundary panel="Git">
+            <GitPanel
+              cwd={cwd}
+              onDiffClick={handleGitDiffClick}
+              onBranchChange={setGitBranch}
+              activityEvents={activityEvents}
+              onTerminalCommand={sendTerminalCommand}
+              claudeRunning={isClaudeRunning}
+            />
+          </ErrorBoundary>
+        )}
+        {rightPanelTab === 'deploy' && (
+          <ErrorBoundary panel="Deploy">
+            <DeployPanel cwd={cwd} onTerminalCommand={sendTerminalCommand} onDeploymentsLoaded={setDeployments} />
+          </ErrorBoundary>
+        )}
       </>
     );
   };
@@ -788,35 +845,41 @@ export default function App() {
                     }
                   }}
                 >
-                  <Terminal
-                    terminalId={tab.ptyId}
-                    cwd={tab.cwd}
-                    isVisible={visible}
-                    fontSize={terminalFontSize}
-                    autoCommand={tab.autoCommand}
-                    onTerminalReady={(ptyId) => updateTab(tab.id, { ptyId })}
-                    onCwdChange={(newCwd) => updateTab(tab.id, { cwd: newCwd })}
-                    onActionChange={(action) => updateTab(tab.id, { aiAction: action })}
-                    onClaudeRunningChange={(running) => updateTab(tab.id, { claudeRunning: running })}
-                    onLocalUrlDetected={(url) => {
-                      updateTab(tab.id, { previewLocalUrl: url });
-                      if (tab.id === activeTerminalIdRef.current) {
-                        setPreviewLocalUrl(url);
-                      }
-                    }}
-                    onLocalUrlsDetected={(urls) => {
-                      updateTab(tab.id, { previewLocalUrls: urls });
-                      if (tab.id === activeTerminalIdRef.current) {
-                        setPreviewLocalUrls(urls);
-                      }
-                    }}
-                    onProdUrlDetected={(url) => {
-                      updateTab(tab.id, { previewProdUrl: url });
-                      if (tab.id === activeTerminalIdRef.current) {
-                        setPreviewProdUrl(url);
-                      }
-                    }}
-                  />
+                  {/* L16 — wrap each Terminal in its own ErrorBoundary so a
+                      runtime error in xterm/PTY wiring for one tab doesn't
+                      crash the entire app. The boundary key is the tab id so
+                      React treats each Terminal as its own error scope. */}
+                  <ErrorBoundary panel={`Terminal ${tab.label}`}>
+                    <Terminal
+                      terminalId={tab.ptyId}
+                      cwd={tab.cwd}
+                      isVisible={visible}
+                      fontSize={terminalFontSize}
+                      autoCommand={tab.autoCommand}
+                      onTerminalReady={(ptyId) => updateTab(tab.id, { ptyId })}
+                      onCwdChange={(newCwd) => updateTab(tab.id, { cwd: newCwd })}
+                      onActionChange={(action) => updateTab(tab.id, { aiAction: action })}
+                      onClaudeRunningChange={(running) => updateTab(tab.id, { claudeRunning: running })}
+                      onLocalUrlDetected={(url) => {
+                        updateTab(tab.id, { previewLocalUrl: url });
+                        if (tab.id === activeTerminalIdRef.current) {
+                          setPreviewLocalUrl(url);
+                        }
+                      }}
+                      onLocalUrlsDetected={(urls) => {
+                        updateTab(tab.id, { previewLocalUrls: urls });
+                        if (tab.id === activeTerminalIdRef.current) {
+                          setPreviewLocalUrls(urls);
+                        }
+                      }}
+                      onProdUrlDetected={(url) => {
+                        updateTab(tab.id, { previewProdUrl: url });
+                        if (tab.id === activeTerminalIdRef.current) {
+                          setPreviewProdUrl(url);
+                        }
+                      }}
+                    />
+                  </ErrorBoundary>
                 </div>
               );
             })}
