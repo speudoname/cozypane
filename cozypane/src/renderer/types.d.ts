@@ -183,6 +183,9 @@ declare global {
       onAvailable: (callback: (info: UpdateInfo) => void) => () => void;
     };
     onMenuAction: (channel: string, callback: (...args: any[]) => void) => () => void;
+    mcp: {
+      writeProjectConfig: (projectDir: string, enable: boolean) => Promise<{ success?: boolean; error?: string }>;
+    };
     git: {
       isRepo: (cwd: string) => Promise<{ isRepo: boolean }>;
       status: (cwd: string) => Promise<{ files: GitFileStatus[]; error?: string }>;

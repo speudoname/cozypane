@@ -250,6 +250,8 @@ export default function App() {
     if (cozyMode) {
       await enableCozyMode(cwd);
     }
+    // Keep project-local .mcp.json in sync with cozy mode: written when on, removed when off.
+    await window.cozyPane.mcp.writeProjectConfig(cwd, cozyMode);
     updateTab(activeTerminalIdRef.current, {
       cwd,
       launched: true,
@@ -262,6 +264,8 @@ export default function App() {
     if (cozyMode) {
       await enableCozyMode(fullPath);
     }
+    // Keep project-local .mcp.json in sync with cozy mode: written when on, removed when off.
+    await window.cozyPane.mcp.writeProjectConfig(fullPath, cozyMode);
     updateTab(activeTerminalIdRef.current, {
       cwd: fullPath,
       launched: true,

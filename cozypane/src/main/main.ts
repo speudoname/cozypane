@@ -323,6 +323,21 @@ ipcMain.handle('fs:saveClipboardImage', async () => {
   }
 });
 
+// Write/remove the cozypane entry in a project's local .mcp.json.
+// Called from the renderer when a project is opened/created or when the cozy
+// mode toggle is flipped, so the MCP tools only appear in cozy-mode projects.
+ipcMain.handle('mcp:writeProjectConfig', async (_event, projectDir: string, enable: boolean) => {
+  try {
+    if (typeof projectDir !== 'string' || !projectDir) {
+      return { error: 'projectDir is required' };
+    }
+    writeProjectMcpConfig(projectDir, !!enable);
+    return { success: true };
+  } catch (err: any) {
+    return { error: err?.message || 'Failed to write project MCP config' };
+  }
+});
+
 // Check if clipboard has file paths (copied files in Finder)
 ipcMain.handle('fs:clipboardFilePaths', async () => {
   // On macOS, copied files are available as file URLs
@@ -385,56 +400,84 @@ function setupAutoUpdater() {
   setInterval(() => autoUpdater.checkForUpdates().catch((err: any) => console.error('[CozyPane] checkForUpdates failed:', err.message)), 4 * 60 * 60 * 1000);
 }
 
-// Register MCP server config in ~/.claude.json so Claude Code discovers CozyPane tools
-function registerMcpConfig() {
+// MCP server config is written per-project (project-local .mcp.json) rather than to
+// ~/.claude.json globally. A project gets the cozypane MCP entry only when cozy mode
+// is enabled for it. Wiring lives in the renderer (App.tsx open/create, DeployPanel
+// toggle) and calls the 'mcp:writeProjectConfig' IPC handler below.
+
+let extractedMcpServerPath: string | null = null;
+
+function ensureMcpServerExtracted(): string {
+  if (extractedMcpServerPath) return extractedMcpServerPath;
+
+  if (isDev) {
+    extractedMcpServerPath = path.join(__dirname, 'mcp-server.js');
+    return extractedMcpServerPath;
+  }
+
+  // Node.js can't require files from inside an asar archive directly.
+  // Extract the MCP server to a real path on disk so Claude Code can run it.
+  const asarSource = path.join(process.resourcesPath!, 'app.asar', 'dist', 'main', 'mcp-server.js');
+  const extractDir = path.join(app.getPath('userData'), 'mcp');
+  const extractPath = path.join(extractDir, 'mcp-server.js');
+
+  if (!fs.existsSync(extractDir)) fs.mkdirSync(extractDir, { recursive: true });
+  // Always overwrite to keep in sync with app version
+  fs.copyFileSync(asarSource, extractPath);
+  extractedMcpServerPath = extractPath;
+  return extractedMcpServerPath;
+}
+
+function writeProjectMcpConfig(projectDir: string, enable: boolean): void {
+  const mcpJsonPath = path.join(projectDir, '.mcp.json');
+
+  let config: Record<string, any> = {};
   try {
-    let mcpServerPath: string;
-
-    if (isDev) {
-      mcpServerPath = path.join(__dirname, 'mcp-server.js');
-    } else {
-      // Node.js can't require files from inside an asar archive directly.
-      // Extract the MCP server to a real path on disk so Claude Code can run it.
-      const asarSource = path.join(process.resourcesPath!, 'app.asar', 'dist', 'main', 'mcp-server.js');
-      const extractDir = path.join(app.getPath('userData'), 'mcp');
-      const extractPath = path.join(extractDir, 'mcp-server.js');
-
-      if (!fs.existsSync(extractDir)) fs.mkdirSync(extractDir, { recursive: true });
-      // Always overwrite to keep in sync with app version
-      fs.copyFileSync(asarSource, extractPath);
-      mcpServerPath = extractPath;
+    const raw = fs.readFileSync(mcpJsonPath, 'utf-8');
+    const parsed = JSON.parse(raw);
+    if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
+      config = parsed;
     }
+  } catch {
+    // Missing or malformed — start fresh (preserving existing is only meaningful when readable)
+  }
 
-    const claudeConfigPath = path.join(os.homedir(), '.claude.json');
-    let config: Record<string, any> = {};
+  const servers: Record<string, any> =
+    (config.mcpServers && typeof config.mcpServers === 'object' && !Array.isArray(config.mcpServers))
+      ? config.mcpServers
+      : {};
 
+  if (enable) {
+    const mcpServerPath = ensureMcpServerExtracted();
+    servers.cozypane = {
+      type: 'stdio',
+      command: 'node',
+      args: [mcpServerPath],
+    };
+  } else {
+    delete servers.cozypane;
+  }
+
+  if (Object.keys(servers).length > 0) {
+    config.mcpServers = servers;
+  } else {
+    delete config.mcpServers;
+  }
+
+  if (Object.keys(config).length === 0) {
+    // Don't leave an empty .mcp.json lying around.
     try {
-      const parsed = JSON.parse(fs.readFileSync(claudeConfigPath, 'utf-8'));
-      if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
-        config = parsed;
-      }
+      if (fs.existsSync(mcpJsonPath)) fs.unlinkSync(mcpJsonPath);
     } catch (err) {
-      console.error('[CozyPane] ~/.claude.json is malformed — skipping MCP registration to avoid data loss:', err);
-      return;
+      console.error('[CozyPane] Failed to remove empty .mcp.json:', err);
     }
+    return;
+  }
 
-    if (!config.mcpServers) config.mcpServers = {};
-
-    if (getToken()) {
-      config.mcpServers.cozypane = {
-        type: 'stdio',
-        command: 'node',
-        args: [mcpServerPath],
-      };
-      console.log('[CozyPane] MCP server registered in ~/.claude.json');
-    } else {
-      delete config.mcpServers.cozypane;
-      console.log('[CozyPane] Not logged in — removed cozypane MCP entry from ~/.claude.json');
-    }
-
-    fs.writeFileSync(claudeConfigPath, JSON.stringify(config, null, 2));
+  try {
+    fs.writeFileSync(mcpJsonPath, JSON.stringify(config, null, 2));
   } catch (err) {
-    console.error('[CozyPane] Failed to register MCP config:', err);
+    console.error('[CozyPane] Failed to write project .mcp.json:', err);
   }
 }
 
@@ -469,7 +512,6 @@ app.whenReady().then(() => {
   createWindow();
   setupAutoUpdater();
   startPeriodicCheck(getWindow);
-  registerMcpConfig();
   // Write askpass helper if GitHub token exists (for git push/pull auth)
   if (getGithubToken()) writeAskpassHelper();
 });
