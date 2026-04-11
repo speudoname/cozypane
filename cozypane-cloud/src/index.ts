@@ -13,8 +13,10 @@ import { pool, platformPool, initDb } from './db/index.js';
 import { healthRoutes } from './routes/health.js';
 import { authRoutes } from './routes/auth.js';
 import { deployRoutes } from './routes/deploy.js';
+import { domainRoutes } from './routes/domains.js';
 import { adminRoutes } from './routes/admin.js';
 import { startDeployWorker, drainAndClose as drainDeployQueue } from './services/deployQueue.js';
+import { cancelPendingHealthRechecks } from './services/deployer.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -144,9 +146,11 @@ app.setErrorHandler((err: FastifyError, request, reply) => {
 await app.register(healthRoutes);
 await app.register(authRoutes);
 await app.register(deployRoutes);
+await app.register(domainRoutes);
 await app.register(adminRoutes);
 await app.register(authRoutes, { prefix: '/v1' });
 await app.register(deployRoutes, { prefix: '/v1' });
+await app.register(domainRoutes, { prefix: '/v1' });
 await app.register(adminRoutes, { prefix: '/v1' });
 
 // Start server
@@ -170,7 +174,13 @@ const shutdown = async (signal: string) => {
   app.log.info(`Received ${signal}, shutting down...`);
   // 1. Stop accepting new HTTP requests.
   await app.close();
-  // 2. Drain the deploy queue: wait for in-flight builds to finish, then
+  // 2. Cancel any pending delayed health re-check timers in the deployer.
+  //    These are short (<= 65s) background tasks that were queued via
+  //    setTimeout when a container failed its initial health check. They
+  //    would otherwise fire after the Postgres pools close and silently
+  //    error. Wave 7 cleanup.
+  cancelPendingHealthRechecks();
+  // 3. Drain the deploy queue: wait for in-flight builds to finish, then
   //    close worker + producer connections to Redis. Must happen BEFORE
   //    closing the Postgres pools because `buildAndDeploy` writes to
   //    `deployments` during shutdown.
@@ -179,7 +189,7 @@ const shutdown = async (signal: string) => {
   } catch (err) {
     app.log.error({ err }, 'Error draining deploy queue on shutdown');
   }
-  // 3. Close Postgres pools last.
+  // 4. Close Postgres pools last.
   await Promise.allSettled([pool.end(), platformPool.end()]);
   process.exit(0);
 };

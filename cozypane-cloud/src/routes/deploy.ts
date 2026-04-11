@@ -6,7 +6,9 @@ import { randomBytes } from 'node:crypto';
 import { createGunzip } from 'node:zlib';
 import tar from 'tar-fs';
 import { query } from '../db/index.js';
+import { getDeployment } from '../db/deployments.js';
 import { authenticate } from '../middleware/auth.js';
+import { checkUserRateLimit } from '../middleware/rateLimit.js';
 import { analyzeProject } from '../services/detector.js';
 import {
   restartContainer,
@@ -17,46 +19,26 @@ import {
 import { cleanupDeployment } from '../services/cleanup.js';
 import { appUrl, serializeDeploymentSummary, serializeDeploymentDetail } from '../services/serializers.js';
 import { enqueueDeploy } from '../services/deployQueue.js';
-import { writeCustomDomainConfig, removeCustomDomainConfig } from '../services/traefik.js';
+
+// Wave 7 — this file used to be 671 lines because custom-domain handlers,
+// a sliding-window rate limiter, and the shared `getDeployment` helper
+// were all inlined alongside the deploy CRUD. They've been split out:
+//   - `middleware/rateLimit.ts`   → checkUserRateLimit
+//   - `db/deployments.ts`         → getDeployment
+//   - `routes/domains.ts`         → POST/verify/DELETE/GET /deploy/:id/domains*
+// This file now owns: POST /deploy (upload + enqueue), GET list, GET :id,
+// GET logs, DELETE :id, WS logs/stream, POST redeploy, WS exec, GET group,
+// DELETE group. No domain logic and no inline utilities.
 
 const APP_NAME_REGEX = /^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$/;
-
-// Per-user sliding-window rate limiter. @fastify/rate-limit's per-route
-// keyGenerator runs BEFORE the `authenticate` preHandler, so `req.user` is
-// always undefined there and the fallback IP keying collapsed all users
-// behind a shared NAT/Cloudflare edge into one bucket (or gave users on
-// unique IPs effectively no per-user limit). This in-handler limiter runs
-// after auth so it can key on `request.user.id`.
-const userRateLimits = new Map<string, number[]>();
-function checkUserRateLimit(userId: number, bucket: string, max: number, windowMs: number): boolean {
-  const key = `${bucket}:${userId}`;
-  const now = Date.now();
-  const hits = userRateLimits.get(key) || [];
-  // Drop hits outside the window
-  const recent = hits.filter((t) => now - t < windowMs);
-  if (recent.length >= max) {
-    userRateLimits.set(key, recent);
-    return false;
-  }
-  recent.push(now);
-  userRateLimits.set(key, recent);
-  // Opportunistic cleanup — keep the Map from growing unbounded across users
-  if (userRateLimits.size > 5000) {
-    for (const [k, v] of userRateLimits) {
-      if (v.length === 0 || now - v[v.length - 1] > windowMs * 2) {
-        userRateLimits.delete(k);
-      }
-    }
-  }
-  return true;
-}
 
 export async function deployRoutes(app: FastifyInstance): Promise<void> {
   // POST /deploy — create or redeploy (async: returns immediately, build runs in background)
   app.post('/deploy', {
     preHandler: authenticate,
   }, async (request, reply) => {
-    // Per-user rate limit: 5 deploys per minute. See note at top of file.
+    // Per-user rate limit: 5 deploys per minute. See middleware/rateLimit.ts
+    // for why this runs in-handler instead of via @fastify/rate-limit.
     if (!checkUserRateLimit(request.user.id, 'deploy', 5, 60_000)) {
       return reply.code(429).send({ error: 'Rate limit exceeded. Try again in a minute.' });
     }
@@ -394,220 +376,6 @@ export async function deployRoutes(app: FastifyInstance): Promise<void> {
     },
   );
 
-  // --- Custom domain management ---
-
-  // POST /deploy/:id/domains — add a custom domain
-  app.post<{ Params: { id: string }; Body: { domain: string } }>(
-    '/deploy/:id/domains',
-    {
-      preHandler: authenticate,
-      schema: {
-        body: {
-          type: 'object',
-          required: ['domain'],
-          additionalProperties: false,
-          properties: {
-            domain: { type: 'string', minLength: 4, maxLength: 253 },
-          },
-        },
-      },
-    },
-    async (request, reply) => {
-      // Per-user rate limit: 20 domain adds per 10min. Needs some headroom
-      // for bulk setup but blocks abusive squat attempts.
-      if (!checkUserRateLimit(request.user.id, 'domain-add', 20, 10 * 60_000)) {
-        return reply.code(429).send({ error: 'Too many domain additions. Try again in a few minutes.' });
-      }
-      const deployment = await getDeployment(request.params.id, request.user.id);
-      if (!deployment) {
-        return reply.code(404).send({ error: 'Deployment not found' });
-      }
-
-      const domainName = (request.body.domain || '').trim().toLowerCase();
-      if (!domainName || !/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/.test(domainName)) {
-        return reply.code(400).send({ error: 'Invalid domain name' });
-      }
-
-      // Check domain isn't already taken
-      const existing = await query('SELECT id FROM domains WHERE domain = $1', [domainName]);
-      if (existing.rows.length > 0) {
-        return reply.code(409).send({ error: 'Domain already in use' });
-      }
-
-      const result = await query(
-        'INSERT INTO domains (deployment_id, domain) VALUES ($1, $2) RETURNING id, domain, verified, created_at',
-        [deployment.id, domainName],
-      );
-
-      const row = result.rows[0];
-      const cname = `${deployment.subdomain}.${process.env.DOMAIN || 'cozypane.com'}`;
-
-      return {
-        id: row.id,
-        domain: row.domain,
-        verified: row.verified,
-        dnsInstructions: {
-          type: 'CNAME',
-          name: domainName,
-          value: cname,
-          message: `Add a CNAME record pointing "${domainName}" to "${cname}". Then click Verify.`,
-        },
-      };
-    },
-  );
-
-  // POST /deploy/:id/domains/:domainId/verify — verify DNS and activate
-  app.post<{ Params: { id: string; domainId: string } }>(
-    '/deploy/:id/domains/:domainId/verify',
-    { preHandler: authenticate },
-    async (request, reply) => {
-      // 10 verifications per minute per user. Verification performs DNS +
-      // outbound HTTP, making it the most abuse-prone endpoint.
-      if (!checkUserRateLimit(request.user.id, 'verify', 10, 60_000)) {
-        return reply.code(429).send({ error: 'Rate limit exceeded. Try again in a minute.' });
-      }
-      const deployment = await getDeployment(request.params.id, request.user.id);
-      if (!deployment) {
-        return reply.code(404).send({ error: 'Deployment not found' });
-      }
-
-      const domainResult = await query(
-        'SELECT * FROM domains WHERE id = $1 AND deployment_id = $2',
-        [request.params.domainId, deployment.id],
-      );
-      if (domainResult.rows.length === 0) {
-        return reply.code(404).send({ error: 'Domain not found' });
-      }
-
-      const domainRow = domainResult.rows[0];
-      const expectedCname = `${deployment.subdomain}.${process.env.DOMAIN || 'cozypane.com'}`;
-
-      // DNS lookup — check CNAME or A record
-      // Apex domains (e.g. example.com) can't have true CNAMEs — providers like
-      // Cloudflare flatten them to A records. So we check both:
-      // 1. CNAME pointing to our subdomain
-      // 2. A records matching our server's IP (domain resolves to us)
-      let verified = false;
-      let dnsError: string | null = null;
-      try {
-        const dns = await import('node:dns/promises');
-
-        // Try CNAME first
-        try {
-          const cnameRecords = await dns.resolve(domainRow.domain, 'CNAME');
-          verified = cnameRecords.some((r: string) =>
-            r.toLowerCase().replace(/\.$/, '') === expectedCname.toLowerCase()
-          );
-        } catch {
-          // No CNAME — try A record comparison (for apex/flattened domains)
-        }
-
-        if (!verified) {
-          try {
-            // Resolve both the custom domain and our target to IPs and compare
-            const [customIps, targetIps] = await Promise.all([
-              dns.resolve(domainRow.domain, 'A').catch(() => [] as string[]),
-              dns.resolve(expectedCname, 'A').catch(() => [] as string[]),
-            ]);
-            if (customIps.length > 0 && targetIps.length > 0) {
-              // Direct IP match
-              verified = customIps.some((ip: string) => targetIps.includes(ip));
-            }
-
-            // NOTE: A previous revision verified domains when any HTTP request
-            // succeeded, even if the response didn't come from our infra. That
-            // allowed attackers to squat any public domain by claiming it and
-            // pointing verification at the real (victim) server. Removed —
-            // verification now requires a CNAME or A-record match. Users behind
-            // Cloudflare-proxied DNS must configure the subdomain as an unproxied
-            // CNAME (or use the proxied A-record path once a challenge-token
-            // verifier is implemented).
-
-            if (!verified && customIps.length === 0) {
-              dnsError = 'No DNS records found. DNS changes can take a few minutes to propagate.';
-            } else if (!verified) {
-              dnsError = `Domain resolves but could not reach the server. Check your DNS configuration.`;
-            }
-          } catch {
-            dnsError = 'DNS lookup failed. Try again in a few minutes.';
-          }
-        }
-      } catch (err: any) {
-        dnsError = `DNS lookup failed: ${err.message}`;
-      }
-
-      if (verified) {
-        // Mark verified
-        await query('UPDATE domains SET verified = TRUE WHERE id = $1', [domainRow.id]);
-
-        // Write Traefik file provider config — no container restart needed.
-        // Traefik watches the dynamic config directory and picks up changes automatically.
-        writeCustomDomainConfig(deployment.subdomain, domainRow.domain, deployment.port);
-      }
-
-      return {
-        id: domainRow.id,
-        domain: domainRow.domain,
-        verified,
-        error: dnsError,
-      };
-    },
-  );
-
-  // DELETE /deploy/:id/domains/:domainId — remove a custom domain
-  app.delete<{ Params: { id: string; domainId: string } }>(
-    '/deploy/:id/domains/:domainId',
-    { preHandler: authenticate },
-    async (request, reply) => {
-      const deployment = await getDeployment(request.params.id, request.user.id);
-      if (!deployment) {
-        return reply.code(404).send({ error: 'Deployment not found' });
-      }
-
-      const result = await query(
-        'DELETE FROM domains WHERE id = $1 AND deployment_id = $2 RETURNING domain',
-        [request.params.domainId, deployment.id],
-      );
-
-      if (result.rows.length === 0) {
-        return reply.code(404).send({ error: 'Domain not found' });
-      }
-
-      // Remove Traefik file provider config
-      removeCustomDomainConfig(result.rows[0].domain);
-
-      return { ok: true, domain: result.rows[0].domain };
-    },
-  );
-
-  // GET /deploy/:id/domains — list domains for a deployment
-  app.get<{ Params: { id: string } }>(
-    '/deploy/:id/domains',
-    { preHandler: authenticate },
-    async (request, reply) => {
-      const deployment = await getDeployment(request.params.id, request.user.id);
-      if (!deployment) {
-        return reply.code(404).send({ error: 'Deployment not found' });
-      }
-
-      const result = await query(
-        'SELECT id, domain, verified, created_at FROM domains WHERE deployment_id = $1 ORDER BY created_at',
-        [deployment.id],
-      );
-
-      const cname = `${deployment.subdomain}.${process.env.DOMAIN || 'cozypane.com'}`;
-      return {
-        domains: result.rows.map((r: any) => ({
-          id: r.id,
-          domain: r.domain,
-          verified: r.verified,
-          createdAt: r.created_at,
-          cname,
-        })),
-      };
-    },
-  );
-
   // DELETE /deploy/group/:group — delete all deployments in a group
   app.delete<{ Params: { group: string } }>(
     '/deploy/group/:group',
@@ -653,14 +421,6 @@ export async function deployRoutes(app: FastifyInstance): Promise<void> {
       return { ok: true, deleted: result.rows.length, warnings: allWarnings.length ? allWarnings : undefined };
     },
   );
-}
-
-async function getDeployment(id: string, userId: number) {
-  const result = await query(
-    'SELECT * FROM deployments WHERE id = $1 AND user_id = $2',
-    [id, userId],
-  );
-  return result.rows[0] || null;
 }
 
 function fieldValue(field: any): string | undefined {
