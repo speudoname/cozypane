@@ -1,8 +1,8 @@
 import type { FastifyInstance } from 'fastify';
 import { mkdirSync, rmSync } from 'node:fs';
 import { join, normalize, isAbsolute } from 'node:path';
-import { tmpdir } from 'node:os';
 import { randomBytes } from 'node:crypto';
+import { getBuildDataDir } from '../services/buildDataDir.js';
 import { createGunzip } from 'node:zlib';
 import tar from 'tar-fs';
 import { query } from '../db/index.js';
@@ -70,9 +70,10 @@ export async function deployRoutes(app: FastifyInstance): Promise<void> {
       });
     }
 
-    // Prepare extraction directory
+    // Prepare extraction directory on a persistent volume so API container
+    // restarts don't wipe in-flight builds mid-flight.
     const tempId = randomBytes(8).toString('hex');
-    const tempDir = join(tmpdir(), `cozypane-deploy-${tempId}`);
+    const tempDir = join(getBuildDataDir(), `cozypane-deploy-${tempId}`);
     const extractDir = join(tempDir, 'project');
     mkdirSync(extractDir, { recursive: true });
 

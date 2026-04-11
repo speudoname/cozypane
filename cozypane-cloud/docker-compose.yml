@@ -71,9 +71,14 @@ services:
       # M23: BullMQ queue backend. In-process worker + Queue both use this.
       - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
       - DEPLOY_QUEUE_CONCURRENCY=${DEPLOY_QUEUE_CONCURRENCY:-4}
+      # Persistent directory for uploaded tarball extracts. Survives API
+      # container recreates so in-flight builds can resume after `docker
+      # compose up -d --build api` (the case that orphaned deployment 110).
+      - BUILD_DATA_DIR=/var/cozypane/builds
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - traefik-dynamic:/traefik-dynamic
+      - builddata:/var/cozypane/builds
     networks:
       - traefik-public
       - internal
@@ -125,6 +130,7 @@ volumes:
   redisdata:
   traefik-certs:
   traefik-dynamic:
+  builddata:
 
 networks:
   traefik-public:

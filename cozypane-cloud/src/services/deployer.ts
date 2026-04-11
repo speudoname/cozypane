@@ -1,18 +1,12 @@
-// Deployment orchestration — the `buildAndDeploy` fire-and-forget worker
-// that takes an uploaded tarball through:
+// Deployment orchestration. Takes an uploaded tarball through:
 //   building → provisioning_db (optional) → starting → health_check → running
-//
-// Split out of routes/deploy.ts (audit H18). The route handler is now a
-// thin HTTP shell that parses multipart, inserts the deployment row, and
-// hands off to `buildAndDeploy()` via `.catch(() => {})` so the HTTP
-// response returns immediately while the background worker continues.
 //
 // Error classification (OOM, INSTALL_FAILED, TIMEOUT, DOCKER_UNAVAILABLE,
 // PORT_CONFLICT, STARTUP_FAILED, APP_CRASH, UNHEALTHY), sanitization, and
-// the JSON error_detail shape all live in this file so the routes layer
-// doesn't know the deployment state machine.
+// the JSON error_detail shape all live here so the routes layer doesn't
+// know the deployment state machine.
 
-import { rmSync } from 'node:fs';
+import { rmSync, existsSync } from 'node:fs';
 import { query } from '../db/index.js';
 import { analyzeProject } from './detector.js';
 import { buildImage } from './builder.js';
@@ -125,6 +119,28 @@ export interface BuildAndDeployParams {
 export async function buildAndDeploy(params: BuildAndDeployParams): Promise<void> {
   const { deploymentId, extractDir, tempDir, analysis, appName, subdomain, tier, userId, envJson, log } = params;
   let newContainerId: string | undefined;
+
+  // Pre-flight: the extracted project must still exist. On a clean first
+  // run it always does. It can vanish if the API container was recreated
+  // between enqueue and worker pickup AND the old build data volume was
+  // lost — now that BUILD_DATA_DIR lives on a named volume that case is
+  // prevented, but stalled-job recovery can also resurrect jobs after an
+  // arbitrary delay, so we still validate before handing off to Dockerode
+  // (which would otherwise throw an uncaught-exception on its tar stream).
+  if (!existsSync(extractDir)) {
+    const errorDetail = makeErrorDetail(
+      'pre_flight',
+      'BUILD_DATA_LOST',
+      `Build context missing at ${extractDir}`,
+      'The build data volume was recreated or the upload extract directory was deleted. Please redeploy.',
+    );
+    await query(
+      `UPDATE deployments SET status = 'failed', deploy_phase = 'pre_flight', error_detail = $1, updated_at = NOW() WHERE id = $2 AND status = 'building'`,
+      [errorDetail, deploymentId],
+    ).catch(() => {});
+    log.error({ extractDir, deploymentId }, 'Build aborted: extractDir missing');
+    return;
+  }
 
   try {
     // Stop old container if redeploying
@@ -300,6 +316,10 @@ export async function buildAndDeploy(params: BuildAndDeployParams): Promise<void
     }
     log.error(err, `Background build failed for deployment ${deploymentId}`);
   } finally {
-    rmSync(tempDir, { recursive: true, force: true });
+    try {
+      rmSync(tempDir, { recursive: true, force: true });
+    } catch (cleanupErr) {
+      log.warn({ tempDir, err: cleanupErr }, 'Failed to clean up build tempDir');
+    }
   }
 }

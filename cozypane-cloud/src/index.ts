@@ -17,6 +17,8 @@ import { domainRoutes } from './routes/domains.js';
 import { adminRoutes } from './routes/admin.js';
 import { startDeployWorker, drainAndClose as drainDeployQueue } from './services/deployQueue.js';
 import { cancelPendingHealthRechecks } from './services/deployer.js';
+import { cleanupOrphanBuildDirs } from './services/buildCleanup.js';
+import { startPeriodicImagePrune, stopPeriodicImagePrune } from './services/imagePrune.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -164,10 +166,20 @@ try {
   process.exit(1);
 }
 
+// Sweep orphan build data directories left over from previous process
+// lifetimes. Runs alongside the DB reconcile above — rows are marked
+// failed, directories are removed. Order matters: the sweep is SAFE to
+// run before the worker starts because the worker's stalled-job recovery
+// won't touch disk until its first job.
+cleanupOrphanBuildDirs(app.log);
+
 // M23 — start the deploy queue worker after the HTTP listener is up so
 // the Postgres pools are definitely ready by the time the worker starts
 // claiming jobs. Runs in-process; see services/deployQueue.ts for why.
 startDeployWorker(app.log);
+
+// Periodic Docker image + build-cache prune to keep the host disk bounded.
+startPeriodicImagePrune(app.log);
 
 // Graceful shutdown
 const shutdown = async (signal: string) => {
@@ -184,6 +196,7 @@ const shutdown = async (signal: string) => {
     app.log.error({ err }, 'Error draining deploy queue on shutdown');
   }
   cancelPendingHealthRechecks();
+  stopPeriodicImagePrune();
   await Promise.allSettled([pool.end(), platformPool.end()]);
   process.exit(0);
 };
@@ -194,9 +207,32 @@ process.on('SIGTERM', () => shutdown('SIGTERM'));
 // Log unhandled async errors but do NOT exit — one bad promise from a single
 // request should not drop every tenant's in-flight builds and log streams.
 // Intentional termination happens only via shutdown() on SIGINT/SIGTERM.
-process.on('unhandledRejection', (reason) => {
-  app.log.error({ reason }, 'Unhandled promise rejection');
+//
+// These handlers exist for *unknown* bugs. Known failure paths (build
+// failures, DB errors, validation) should be caught in their originating
+// routes and never bubble up here. Anything that DOES bubble up is a real
+// bug — log the full stack + context at error level so it surfaces in
+// pino-pretty and external log aggregators, and rate-limit to prevent a
+// flood from taking down the logging pipeline.
+const rateLimitedErrors = new Map<string, number>();
+function rateLimitErrorLog(key: string, max: number, windowMs: number): boolean {
+  const now = Date.now();
+  const last = rateLimitedErrors.get(key) || 0;
+  if (now - last < windowMs / max) return false;
+  rateLimitedErrors.set(key, now);
+  return true;
+}
+process.on('unhandledRejection', (reason: any) => {
+  if (!rateLimitErrorLog('rejection', 10, 60_000)) return;
+  app.log.error(
+    { err: reason instanceof Error ? reason : new Error(String(reason)), stack: reason?.stack },
+    'Unhandled promise rejection — this is a bug, please fix the originating await',
+  );
 });
 process.on('uncaughtException', (err) => {
-  app.log.error({ err }, 'Uncaught exception');
+  if (!rateLimitErrorLog('exception', 10, 60_000)) return;
+  app.log.error(
+    { err, stack: err?.stack, name: err?.name, code: (err as any)?.code },
+    'Uncaught exception — this is a bug, please wrap the originating call in try/catch',
+  );
 });
