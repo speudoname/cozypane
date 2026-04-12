@@ -150,8 +150,8 @@ function savePreviewUrls(data: Record<string, any>) {
 
 // --- Project detection (for static HTML serving) ---
 
-// Framework detection data — single source of truth in shared/framework-data.json.
-import frameworkData from '../../../shared/framework-data.json';
+// Framework detection data — local copy of shared/framework-data.json (must be local so it's bundled into app.asar).
+import frameworkData from './framework-data.json';
 
 function detectProjectInfo(cwd: string): { type: string | null; devCommand: string | null; productionUrl: string | null; serveStatic: boolean; needsDatabase: boolean } {
   let type: string | null = null;
