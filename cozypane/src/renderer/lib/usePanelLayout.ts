@@ -4,9 +4,9 @@ import { useDragResize } from './useDragResize';
 import { usePersistedState } from './usePersistedState';
 
 export type LayoutMode = 'two-col' | 'three-col';
-export type RightPanelTab = 'preview' | 'settings' | 'git' | 'deploy';
+export type RightPanelTab = 'preview' | 'settings' | 'git' | 'deploy' | 'inspect';
 
-const VALID_RIGHT_PANEL_TABS: RightPanelTab[] = ['preview', 'settings', 'git', 'deploy'];
+const VALID_RIGHT_PANEL_TABS: RightPanelTab[] = ['preview', 'settings', 'git', 'deploy', 'inspect'];
 
 export interface UsePanelLayoutReturn {
   panelsOpen: boolean;

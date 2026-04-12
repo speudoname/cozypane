@@ -16,6 +16,8 @@ interface Props {
   initialConsoleLogs?: ConsoleLog[];
   initialNetworkErrors?: NetworkError[];
   onConsoleUpdate?: (errors: PreviewError[], consoleLogs: ConsoleLog[], networkErrors: NetworkError[]) => void;
+  onNetworkRequest?: (req: NetworkRequest) => void;
+  onScreenshotCaptured?: (path: string) => void;
 }
 
 type DeviceMode = 'desktop' | 'tablet' | 'phone';
@@ -37,13 +39,17 @@ function getPort(url: string): number {
   return match ? parseInt(match[1], 10) : 0;
 }
 
-export default function Preview({ localUrl, localUrls = [], productionUrl, cwd, onSendToTerminal, deployments = [], claudeRunning, initialErrors = [], initialConsoleLogs = [], initialNetworkErrors = [], onConsoleUpdate }: Props) {
+export default function Preview({ localUrl, localUrls = [], productionUrl, cwd, onSendToTerminal, deployments = [], claudeRunning, initialErrors = [], initialConsoleLogs = [], initialNetworkErrors = [], onConsoleUpdate, onNetworkRequest, onScreenshotCaptured }: Props) {
   const [device, setDevice] = useState<DeviceMode>('desktop');
   const [errors, setErrors] = useState<PreviewError[]>(initialErrors);
   const [consoleLogs, setConsoleLogs] = useState<ConsoleLog[]>(initialConsoleLogs);
   const [networkErrors, setNetworkErrors] = useState<NetworkError[]>(initialNetworkErrors);
   const onConsoleUpdateRef = useRef(onConsoleUpdate);
   onConsoleUpdateRef.current = onConsoleUpdate;
+  const onNetworkRequestRef = useRef(onNetworkRequest);
+  onNetworkRequestRef.current = onNetworkRequest;
+  const onScreenshotCapturedRef = useRef(onScreenshotCaptured);
+  onScreenshotCapturedRef.current = onScreenshotCaptured;
   // Keep latest initial values in refs so the cwd-change effect can read them
   const initialErrorsRef = useRef(initialErrors);
   initialErrorsRef.current = initialErrors;
@@ -230,6 +236,33 @@ export default function Preview({ localUrl, localUrls = [], productionUrl, cwd, 
       };
       setConsoleLogs(prev => [...prev.slice(-99), log]);
 
+      // All-request capture (new: captures successes too)
+      if (e.message.startsWith('[CozyPreview:request]')) {
+        try {
+          const json = JSON.parse(e.message.slice('[CozyPreview:request]'.length));
+          onNetworkRequestRef.current?.({
+            method: json.method || 'GET',
+            url: json.url || '',
+            status: json.status || 0,
+            statusText: json.statusText || '',
+            duration: json.duration || 0,
+            size: json.size,
+            timestamp: Date.now(),
+            ok: json.ok ?? (json.status >= 200 && json.status < 400),
+          });
+          // Also track failures in the legacy networkErrors for backward compat
+          if (!json.ok && json.status !== 0) {
+            setNetworkErrors(prev => [...prev.slice(-49), {
+              method: json.method || 'GET',
+              url: json.url || '',
+              status: json.status || 0,
+              statusText: json.statusText || 'Unknown',
+              timestamp: Date.now(),
+            }]);
+          }
+        } catch {}
+        return;
+      }
       if (e.message.startsWith('[CozyPreview:netdata]')) {
         try {
           const json = JSON.parse(e.message.slice('[CozyPreview:netdata]'.length));
@@ -279,15 +312,25 @@ export default function Preview({ localUrl, localUrls = [], productionUrl, cwd, 
           window.fetch = async function(...args) {
             const method = (args[1]?.method || 'GET').toUpperCase();
             const url = typeof args[0] === 'string' ? args[0] : (args[0]?.url || String(args[0]));
+            const start = performance.now();
             try {
               const res = await origFetch.apply(this, args);
+              const duration = Math.round(performance.now() - start);
+              const size = parseInt(res.headers.get('content-length') || '0', 10) || undefined;
+              console.error('[CozyPreview:request]' + JSON.stringify({
+                method: method, url: url, status: res.status, statusText: res.statusText,
+                duration: duration, size: size, ok: res.ok
+              }));
               if (!res.ok) {
-                console.error('[CozyPreview:netdata]' + JSON.stringify({method: method, url: url, status: res.status, statusText: res.statusText}));
                 console.error('[CozyPreview:network] ' + res.status + ' ' + res.statusText + ' - ' + url);
               }
               return res;
             } catch(e) {
-              console.error('[CozyPreview:netdata]' + JSON.stringify({method: method, url: url, status: 0, statusText: e.message}));
+              const duration = Math.round(performance.now() - start);
+              console.error('[CozyPreview:request]' + JSON.stringify({
+                method: method, url: url, status: 0, statusText: e.message,
+                duration: duration, ok: false
+              }));
               console.error('[CozyPreview:network] Fetch failed: ' + e.message + ' - ' + url);
               throw e;
             }
@@ -302,15 +345,31 @@ export default function Preview({ localUrl, localUrls = [], productionUrl, cwd, 
       `).catch(() => {});
     };
 
+    // Auto-capture screenshot on page navigation for Inspect panel
+    const handleDidNavigate = () => {
+      setTimeout(async () => {
+        try {
+          const nativeImage = await wv.capturePage();
+          const base64 = nativeImage.toPNG().toString('base64');
+          const path = await window.cozyPane.preview.captureScreenshot(base64);
+          onScreenshotCapturedRef.current?.(path);
+        } catch {}
+      }, 1000); // Wait 1s for page to render
+    };
+
     wv.addEventListener('console-message', handleConsoleMessage);
     wv.addEventListener('did-fail-load', handleDidFailLoad);
     wv.addEventListener('did-start-loading', handleDidStartLoading);
     wv.addEventListener('did-stop-loading', handleDidStopLoading);
     wv.addEventListener('dom-ready', injectNetworkWatcher);
+    wv.addEventListener('did-navigate', handleDidNavigate);
+    wv.addEventListener('did-navigate-in-page', handleDidNavigate);
 
     return () => {
       wv.removeEventListener('console-message', handleConsoleMessage);
       wv.removeEventListener('did-fail-load', handleDidFailLoad);
+      wv.removeEventListener('did-navigate', handleDidNavigate);
+      wv.removeEventListener('did-navigate-in-page', handleDidNavigate);
       wv.removeEventListener('did-start-loading', handleDidStartLoading);
       wv.removeEventListener('did-stop-loading', handleDidStopLoading);
       wv.removeEventListener('dom-ready', injectNetworkWatcher);

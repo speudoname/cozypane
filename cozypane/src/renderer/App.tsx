@@ -5,7 +5,7 @@ import { useTerminalTabs } from './lib/useTerminalTabs';
 import { usePanelLayout } from './lib/usePanelLayout';
 import { useFontSizes } from './lib/useFontSizes';
 import { useKeyboardShortcuts } from './lib/useKeyboardShortcuts';
-import { Eye, GitBranch, Rocket, Settings2, Cloud } from 'lucide-react';
+import { Eye, GitBranch, Rocket, Settings2, Cloud, Activity } from 'lucide-react';
 import Sidebar from './components/Sidebar';
 import FilePreview from './components/FilePreview';
 import Terminal from './components/Terminal';
@@ -16,6 +16,7 @@ import GitPanel from './components/GitPanel';
 import DeployTab from './components/DeployTab';
 import DeployManagement from './components/DeployManagement';
 import Preview from './components/Preview';
+import InspectPanel from './components/InspectPanel';
 import ErrorBoundary from './components/ErrorBoundary';
 import TabLauncher from './components/TabLauncher';
 import UpdateBanner from './components/UpdateBanner';
@@ -79,6 +80,8 @@ export default function App() {
   const [previewInitialErrors, setPreviewInitialErrors] = useState<PreviewError[]>([]);
   const [previewInitialConsoleLogs, setPreviewInitialConsoleLogs] = useState<ConsoleLog[]>([]);
   const [previewInitialNetworkErrors, setPreviewInitialNetworkErrors] = useState<NetworkError[]>([]);
+  const [networkRequests, setNetworkRequests] = useState<NetworkRequest[]>([]);
+  const [screenshotPath, setScreenshotPath] = useState<string | null>(null);
   const [diffState, setDiffState] = useState<DiffState | null>(null);
   const [gitBranch, setGitBranch] = useState('');
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -163,6 +166,31 @@ export default function App() {
     setActiveCwd: setCwd,
     reorderTabs,
   } = useTerminalTabs({ confirm });
+
+  // Refresh screenshot on demand (for Inspect panel)
+  const handleRefreshSnapshot = useCallback(async () => {
+    // Trigger a screenshot capture in Preview via a custom event
+    window.dispatchEvent(new CustomEvent('cozyPane:captureScreenshot'));
+  }, []);
+
+  // Debounced inspect data persistence (3s)
+  const inspectWriteTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    if (networkRequests.length === 0 && previewInitialConsoleLogs.length === 0) return;
+    if (inspectWriteTimer.current) clearTimeout(inspectWriteTimer.current);
+    inspectWriteTimer.current = setTimeout(() => {
+      const devTab = terminalTabsRef.current.find(t => t.isDevServer && t.cwd === cwd);
+      window.cozyPane.preview.writeInspectData({
+        consoleLogs: previewInitialConsoleLogs.slice(-200),
+        networkRequests: networkRequests.slice(-200),
+        devServer: devTab?.devServerState || null,
+        screenshotPath,
+        url: previewLocalUrl || previewProdUrl || null,
+        timestamp: Date.now(),
+      }).catch(() => {});
+    }, 3000);
+    return () => { if (inspectWriteTimer.current) clearTimeout(inspectWriteTimer.current); };
+  }, [networkRequests, previewInitialConsoleLogs, screenshotPath, previewLocalUrl, previewProdUrl, cwd]);
 
   // Debounced dev server state persistence (2s, matching preview-devtools cadence)
   const devServerWriteTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -461,6 +489,7 @@ export default function App() {
     { id: 'tab-git', label: 'Show Git Panel', category: 'Tab', action: () => setRightPanelTab('git') },
     { id: 'tab-settings', label: 'Show Settings', category: 'Tab', action: () => setRightPanelTab('settings') },
     { id: 'tab-deploy', label: 'Show Deploy', category: 'Tab', action: () => setRightPanelTab('deploy') },
+    { id: 'tab-inspect', label: 'Show Inspect', category: 'Tab', action: () => setRightPanelTab('inspect') },
     { id: 'toggle-preview', label: 'Toggle Preview Panel', category: 'View', action: () => setPreviewOpen(p => !p) },
     { id: 'toggle-auto-preview', label: `Auto-Preview on Dev Server: ${autoPreviewDisabled ? 'OFF' : 'ON'}`, category: 'View', action: toggleAutoPreview },
     { id: 'git-stage-all', label: 'Stage All Changes', category: 'Git', action: () => { sendTerminalCommand('git add -A'); setRightPanelTab('git'); } },
@@ -595,6 +624,18 @@ export default function App() {
             />
           </ErrorBoundary>
         )}
+        {rightPanelTab === 'inspect' && (
+          <ErrorBoundary panel="Inspect">
+            <InspectPanel
+              consoleLogs={previewInitialConsoleLogs}
+              networkRequests={networkRequests}
+              devServerState={terminalTabsRef.current.find(t => t.isDevServer && t.cwd === cwd)?.devServerState}
+              previewUrl={previewLocalUrl || previewProdUrl || null}
+              screenshotPath={screenshotPath}
+              onRefreshSnapshot={handleRefreshSnapshot}
+            />
+          </ErrorBoundary>
+        )}
       </>
     );
   };
@@ -624,6 +665,12 @@ export default function App() {
         onClick={() => setRightPanelTab('settings')}
       >
         <Settings2 size={13} /> Settings
+      </button>
+      <button
+        className={`panel-tab ${rightPanelTab === 'inspect' ? 'active' : ''}`}
+        onClick={() => setRightPanelTab('inspect')}
+      >
+        <Activity size={13} /> Inspect
       </button>
       {rightPanelTab === 'preview' && (
         <div className="zoom-controls">
@@ -905,6 +952,10 @@ export default function App() {
                   onConsoleUpdate={(errors, consoleLogs, networkErrors) => {
                     updateTab(activeTerminalId, { previewErrors: errors, previewConsoleLogs: consoleLogs, previewNetworkErrors: networkErrors });
                   }}
+                  onNetworkRequest={(req) => {
+                    setNetworkRequests(prev => [...prev.slice(-199), req]);
+                  }}
+                  onScreenshotCaptured={(path) => setScreenshotPath(path)}
                 />
               </ErrorBoundary>
             </div>

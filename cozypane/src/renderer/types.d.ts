@@ -72,6 +72,17 @@ declare global {
     line?: number;
   }
 
+  interface NetworkRequest {
+    method: string;
+    url: string;
+    status: number;
+    statusText: string;
+    duration: number;
+    size?: number;
+    timestamp: number;
+    ok: boolean;
+  }
+
   interface NetworkError {
     method: string;
     url: string;
@@ -245,6 +256,7 @@ declare global {
       captureScreenshot: (base64Png: string) => Promise<string>;
       suggestPort: (preferredPort?: number) => Promise<{ port: number }>;
       writeDevServerState: (data: object) => Promise<void>;
+      writeInspectData: (data: object) => Promise<void>;
     };
     updates: {
       check: () => Promise<UpdateInfo>;

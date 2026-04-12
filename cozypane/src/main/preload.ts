@@ -90,6 +90,7 @@ contextBridge.exposeInMainWorld('cozyPane', {
     captureScreenshot: (base64Png: string) => ipcRenderer.invoke('preview:captureScreenshot', base64Png),
     suggestPort: (preferredPort?: number) => ipcRenderer.invoke('preview:suggestPort', preferredPort),
     writeDevServerState: (data: object) => ipcRenderer.invoke('preview:writeDevServerState', data),
+    writeInspectData: (data: object) => ipcRenderer.invoke('preview:writeInspectData', data),
   },
   updates: {
     check: () => ipcRenderer.invoke('updates:check'),
