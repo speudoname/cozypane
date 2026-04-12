@@ -202,6 +202,114 @@ export function detectDeployUrl(rollingBuffer: string, preStripped = false): str
 // Combined pattern for local URL detection — single regex, compiled once.
 const LOCAL_URL_RE = /https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::\]):\d{2,5}\b[^\s)}\]]*/gi;
 
+// --- Terminal error classification for dev server observability ---
+
+export interface TerminalError {
+  type: 'typescript' | 'build' | 'runtime' | 'warning' | 'hmr';
+  message: string;
+  file?: string;
+  line?: number;
+  timestamp: number;
+}
+
+// TypeScript compiler error: src/App.tsx(42,5): error TS2304: ...
+const TS_ERROR_RE = /^(.*?\.[tj]sx?)\((\d+),\d+\):\s*error\s+TS\d+:\s*(.+)/;
+// Next.js / webpack style: ./src/App.tsx:42:5  Type error: ...
+const TS_ERROR_ALT_RE = /^\.\/(.*?\.[tj]sx?):(\d+):\d+\s+.*(?:Type error|error):\s*(.+)/;
+// Vite / esbuild errors
+const VITE_ERROR_RE = /^\[vite\].*(?:error|failed)/i;
+const ESBUILD_ERROR_RE = /^✘\s+\[ERROR\]\s*(.+)/;
+// Build failures
+const BUILD_ERROR_RE = /(?:Module not found|Cannot find module|SyntaxError|ENOENT|Failed to compile|Build error)/i;
+// HMR errors
+const HMR_ERROR_RE = /\[hmr\].*(?:error|fail)|\[vite\]\s*hmr.*fail/i;
+// Runtime errors (unhandled)
+const RUNTIME_ERROR_RE = /^(?:Error|TypeError|ReferenceError|RangeError|SyntaxError|URIError):\s*(.+)/;
+const UNHANDLED_RE = /unhandled(?:Rejection| promise rejection)/i;
+// Warnings
+const WARNING_RE = /^(?:warn(?:ing)?)\b|\bWARN\b|\[warn\]/i;
+
+/**
+ * Classify terminal output lines into structured errors.
+ * Returns deduplicated errors, most recent first.
+ */
+export function classifyTerminalErrors(lines: string[]): TerminalError[] {
+  const now = Date.now();
+  const errors: TerminalError[] = [];
+  const seen = new Set<string>();
+
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (!line) continue;
+
+    let error: TerminalError | null = null;
+
+    // TypeScript errors (standard format)
+    let m = TS_ERROR_RE.exec(line);
+    if (m) {
+      error = { type: 'typescript', message: m[3], file: m[1], line: parseInt(m[2], 10), timestamp: now };
+    }
+
+    // TypeScript errors (Next.js/webpack format)
+    if (!error) {
+      m = TS_ERROR_ALT_RE.exec(line);
+      if (m) {
+        error = { type: 'typescript', message: m[3], file: m[1], line: parseInt(m[2], 10), timestamp: now };
+      }
+    }
+
+    // esbuild errors
+    if (!error) {
+      m = ESBUILD_ERROR_RE.exec(line);
+      if (m) {
+        error = { type: 'build', message: m[1], timestamp: now };
+      }
+    }
+
+    // HMR errors
+    if (!error && HMR_ERROR_RE.test(line)) {
+      error = { type: 'hmr', message: line, timestamp: now };
+    }
+
+    // Vite errors
+    if (!error && VITE_ERROR_RE.test(line)) {
+      error = { type: 'build', message: line, timestamp: now };
+    }
+
+    // Build errors
+    if (!error && BUILD_ERROR_RE.test(line)) {
+      error = { type: 'build', message: line, timestamp: now };
+    }
+
+    // Runtime errors
+    if (!error) {
+      m = RUNTIME_ERROR_RE.exec(line);
+      if (m) {
+        error = { type: 'runtime', message: m[1], timestamp: now };
+      }
+    }
+    if (!error && UNHANDLED_RE.test(line)) {
+      error = { type: 'runtime', message: line, timestamp: now };
+    }
+
+    // Warnings (lower priority)
+    if (!error && WARNING_RE.test(line)) {
+      error = { type: 'warning', message: line, timestamp: now };
+    }
+
+    if (error) {
+      // Deduplicate by message
+      const key = `${error.type}:${error.message}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        errors.push(error);
+      }
+    }
+  }
+
+  return errors;
+}
+
 export function detectLocalUrls(rollingBuffer: string, preStripped = false): string[] {
   const cleaned = preStripped ? rollingBuffer : stripAnsi(rollingBuffer);
 

@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { Terminal as XTerm } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
-import { stripAnsi, TUI_ENTER, TUI_EXIT, decideFocus, detectClaudeExit, analyzeAction, detectDeployUrl, detectLocalUrls, type AiAction } from '../lib/terminalAnalyzer';
+import { stripAnsi, TUI_ENTER, TUI_EXIT, decideFocus, detectClaudeExit, analyzeAction, detectDeployUrl, detectLocalUrls, classifyTerminalErrors, type AiAction } from '../lib/terminalAnalyzer';
 import { shellEscape } from '../lib/shellUtils';
 import CommandInput from './CommandInput';
 import '@xterm/xterm/css/xterm.css';
@@ -20,9 +20,11 @@ interface Props {
   onLocalUrlDetected?: (url: string) => void;
   onLocalUrlsDetected?: (urls: string[]) => void;
   onProdUrlDetected?: (url: string) => void;
+  onDevServerStateChange?: (state: DevServerState) => void;
+  bufferSize?: number;
 }
 
-export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, autoCommand, onCwdChange, onActionChange, onClaudeRunningChange, onTerminalReady, onLocalUrlDetected, onLocalUrlsDetected, onProdUrlDetected }: Props) {
+export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, autoCommand, onCwdChange, onActionChange, onClaudeRunningChange, onTerminalReady, onLocalUrlDetected, onLocalUrlsDetected, onProdUrlDetected, onDevServerStateChange, bufferSize = 50 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<XTerm | null>(null);
   const [termDragOver, setTermDragOver] = useState(false);
@@ -53,6 +55,9 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, au
   onLocalUrlsDetectedRef.current = onLocalUrlsDetected;
   const onProdUrlDetectedRef = useRef(onProdUrlDetected);
   onProdUrlDetectedRef.current = onProdUrlDetected;
+  const onDevServerStateChangeRef = useRef(onDevServerStateChange);
+  onDevServerStateChangeRef.current = onDevServerStateChange;
+  const bufferSizeRef = useRef(bufferSize);
   const isVisibleRef = useRef(isVisible);
   isVisibleRef.current = isVisible;
   const followOutputRef = useRef(true);
@@ -347,8 +352,9 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, au
       const newLines = strippedData.split('\n').filter(l => l.trim());
       if (newLines.length > 0) {
         rollingBufferRef.current.push(...newLines);
-        if (rollingBufferRef.current.length > 50) {
-          rollingBufferRef.current = rollingBufferRef.current.slice(-50);
+        const maxBuf = bufferSizeRef.current;
+        if (rollingBufferRef.current.length > maxBuf) {
+          rollingBufferRef.current = rollingBufferRef.current.slice(-maxBuf);
         }
       }
 
@@ -378,6 +384,26 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, au
         if (deployUrl && deployUrl !== lastDeployUrlRef.current) {
           lastDeployUrlRef.current = deployUrl;
           onProdUrlDetectedRef.current?.(deployUrl);
+        }
+
+        // Dev server state: classify errors and emit state for all terminals
+        if (onDevServerStateChangeRef.current) {
+          const errors = classifyTerminalErrors(lines);
+          const hasErrors = errors.some(e => e.type !== 'warning');
+          const url = lastLocalUrlRef.current || null;
+          const status: DevServerState['status'] = hasErrors ? 'error' : url ? 'running' : 'starting';
+          const typeCounts: Record<string, number> = {};
+          for (const e of errors) { typeCounts[e.type] = (typeCounts[e.type] || 0) + 1; }
+          const summaryParts = Object.entries(typeCounts).map(([t, n]) => `${n} ${t}`);
+          onDevServerStateChangeRef.current({
+            status,
+            url,
+            hasErrors,
+            errorSummary: summaryParts.length > 0 ? summaryParts.join(', ') : '',
+            errors,
+            recentOutput: lines.slice(-30),
+            timestamp: Date.now(),
+          });
         }
 
         // Skip expensive focus/action analysis for hidden terminals

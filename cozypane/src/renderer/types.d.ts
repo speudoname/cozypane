@@ -82,6 +82,24 @@ declare global {
 
   type AiAction = 'idle' | 'reading' | 'writing' | 'executing' | 'thinking';
 
+  interface TerminalError {
+    type: 'typescript' | 'build' | 'runtime' | 'warning' | 'hmr';
+    message: string;
+    file?: string;
+    line?: number;
+    timestamp: number;
+  }
+
+  interface DevServerState {
+    status: 'running' | 'error' | 'starting' | 'stopped';
+    url: string | null;
+    hasErrors: boolean;
+    errorSummary: string;
+    errors: TerminalError[];
+    recentOutput: string[];
+    timestamp: number;
+  }
+
   interface TerminalTab {
     id: string;
     ptyId: string | null;
@@ -99,6 +117,8 @@ declare global {
     previewConsoleLogs?: ConsoleLog[];
     previewNetworkErrors?: NetworkError[];
     devServerAutoOpened?: boolean;
+    devServerState?: DevServerState;
+    isDevServer?: boolean;
   }
 
   interface CustomDomain {
@@ -224,6 +244,7 @@ declare global {
       writeDevToolsData: (data: object) => Promise<void>;
       captureScreenshot: (base64Png: string) => Promise<string>;
       suggestPort: (preferredPort?: number) => Promise<{ port: number }>;
+      writeDevServerState: (data: object) => Promise<void>;
     };
     updates: {
       check: () => Promise<UpdateInfo>;

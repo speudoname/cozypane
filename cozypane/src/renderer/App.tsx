@@ -164,6 +164,16 @@ export default function App() {
     reorderTabs,
   } = useTerminalTabs({ confirm });
 
+  // Debounced dev server state persistence (2s, matching preview-devtools cadence)
+  const devServerWriteTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const handleDevServerStateChange = useCallback((tabId: string, state: DevServerState) => {
+    updateTab(tabId, { devServerState: state });
+    if (devServerWriteTimer.current) clearTimeout(devServerWriteTimer.current);
+    devServerWriteTimer.current = setTimeout(() => {
+      window.cozyPane.preview.writeDevServerState(state).catch(() => {});
+    }, 2000);
+  }, [updateTab]);
+
   // Persist `cwd` whenever the active terminal's cwd changes. This stays
   // as a manual effect because `cwd` is DERIVED from the active terminal
   // tab (inside the hook), not a dedicated state slice that
@@ -244,6 +254,7 @@ export default function App() {
         customLabel: 'Dev Server',
         autoCommand: cmd + portFlag,
         launched: true,
+        isDevServer: true,
       });
       // addTerminalTab makes the new tab active — switch back to the Claude tab
       // Use requestAnimationFrame to let the state update settle first
@@ -792,6 +803,11 @@ export default function App() {
                           setPreviewProdUrl(url);
                         }
                       }}
+                      onDevServerStateChange={tab.isDevServer
+                        ? (state) => handleDevServerStateChange(tab.id, state)
+                        : undefined
+                      }
+                      bufferSize={tab.isDevServer ? 150 : 50}
                     />
                   </ErrorBoundary>
                 </div>

@@ -19,6 +19,7 @@ export interface AddTabOptions {
   customLabel?: string;
   autoCommand?: string;
   launched?: boolean;
+  isDevServer?: boolean;
 }
 
 export interface UseTerminalTabsReturn {
@@ -163,6 +164,7 @@ export function useTerminalTabs(options: UseTerminalTabsOptions): UseTerminalTab
       );
       if (opts?.customLabel !== undefined) newTab.customLabel = opts.customLabel;
       if (opts?.autoCommand !== undefined) newTab.autoCommand = opts.autoCommand;
+      if (opts?.isDevServer) newTab.isDevServer = true;
       setActiveId(newTab.id);
       return [...prev, newTab];
     });
