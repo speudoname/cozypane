@@ -3,8 +3,16 @@ import { join } from 'node:path';
 import { createRequire } from 'node:module';
 
 // Framework detection data — single source of truth in shared/framework-data.json.
-const require = createRequire(import.meta.url);
-const frameworkData = require('../../../shared/framework-data.json');
+// In Docker the compiled JS is at dist/services/, so we resolve relative to
+// the source tree root via import.meta.url fallback chain.
+import { fileURLToPath } from 'node:url';
+import { dirname } from 'node:path';
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+const frameworkDataPath = existsSync(join(__dirname, 'framework-data.json'))
+  ? join(__dirname, 'framework-data.json')
+  : join(__dirname, '..', '..', '..', 'shared', 'framework-data.json');
+const frameworkData = JSON.parse(readFileSync(frameworkDataPath, 'utf-8'));
 
 export interface ProjectAnalysis {
   type: 'docker' | 'node' | 'python' | 'go' | 'static';
