@@ -1,0 +1,26 @@
+{
+  "frameworks": {
+    "nextjs": { "dep": "next", "port": 3000, "tier": "medium", "devCommand": "npm run dev", "devFallback": "npx next dev" },
+    "nuxt": { "dep": "nuxt", "altDeps": ["nuxt3"], "port": 3000, "tier": "medium", "devCommand": "npm run dev", "devFallback": "npx nuxi dev" },
+    "angular": { "dep": "@angular/core", "port": 8080, "tier": "small", "devCommand": "ng serve" },
+    "vite": { "dep": "vite", "excludeIfPresent": ["express", "fastify", "hono", "@nestjs/core"], "port": 8080, "tier": "small", "devCommand": "npm run dev", "devFallback": "npx vite" },
+    "cra": { "dep": "react-scripts", "port": 8080, "tier": "small", "devCommand": "npm start" },
+    "vue": { "dep": "vue", "port": 8080, "tier": "small", "devCommand": "npm run dev", "devFallback": "npx vite" },
+    "svelte": { "dep": "svelte", "altDeps": ["@sveltejs/kit"], "port": 8080, "tier": "small", "devCommand": "npm run dev", "devFallback": "npx vite" },
+    "express": { "dep": "express", "port": 3000, "tier": "small", "serverOnly": true },
+    "fastify": { "dep": "fastify", "port": 3000, "tier": "small", "serverOnly": true },
+    "hono": { "dep": "hono", "altDeps": ["@hono/node-server"], "port": 3000, "tier": "small", "serverOnly": true },
+    "nestjs": { "dep": "@nestjs/core", "port": 3000, "tier": "small", "serverOnly": true }
+  },
+  "dbDeps": [
+    "pg", "mysql2", "prisma", "@prisma/client", "mongoose", "sequelize",
+    "typeorm", "knex", "drizzle-orm", "better-sqlite3", "postgres", "pg-promise"
+  ],
+  "orms": {
+    "prisma": { "deps": ["prisma", "@prisma/client"], "migrationCommand": "npx prisma migrate deploy" },
+    "drizzle": { "deps": ["drizzle-orm"], "migrationCommand": "npx drizzle-kit migrate" },
+    "knex": { "deps": ["knex"], "migrationCommand": "npx knex migrate:latest" },
+    "sequelize": { "deps": ["sequelize"], "migrationCommand": "npx sequelize-cli db:migrate" },
+    "typeorm": { "deps": ["typeorm"], "migrationCommand": "npx typeorm migration:run -d dist/data-source.js" }
+  }
+}
