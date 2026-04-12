@@ -31,7 +31,13 @@ export default function DeployTab({ cwd, auth, deployments, onLogin, onTerminalC
   const [logsLoading, setLogsLoading] = useState(false);
 
   const projectName = (cwd.split('/').pop() || '').toLowerCase();
-  const matched = deployments.find(d => d.appName === projectName);
+  // Match deployment by folder name: exact match, or appName starts with
+  // the folder name (handles cases where username was appended at deploy time)
+  const matched = deployments.find(d =>
+    d.appName === projectName ||
+    d.appName.startsWith(projectName + '-') ||
+    d.subdomain.startsWith(projectName + '-')
+  );
 
   useEffect(() => {
     if (cwd) isCozyModeEnabled(cwd).then(setCozyMode);
