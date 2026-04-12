@@ -208,21 +208,7 @@ export default function DeployTab({ cwd, auth, deployments, onLogin, onTerminalC
 
           {/* This project's database */}
           {matched.hasDatabase && (
-            <div className="deploy-card" style={{ borderLeft: '3px solid var(--info, #3b82f6)' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.4em', marginBottom: '0.2em' }}>
-                <span style={{ fontSize: '0.78em', color: 'var(--info, #3b82f6)', fontWeight: 600 }}>
-                  {matched.databaseType === 'redis' ? 'Redis' : matched.databaseType === 'mysql' ? 'MySQL' : 'PostgreSQL'}
-                </span>
-              </div>
-              {matched.databaseName && (
-                <div style={{ fontSize: '0.75em', color: 'var(--text-secondary)', fontFamily: 'monospace' }}>
-                  {matched.databaseName}
-                </div>
-              )}
-              <div style={{ fontSize: '0.72em', color: 'var(--text-secondary)', marginTop: '0.2em' }}>
-                Managed by CozyPane &middot; Auto-provisioned
-              </div>
-            </div>
+            <DatabaseCard deploymentId={String(matched.id)} databaseType={matched.databaseType} databaseName={matched.databaseName} />
           )}
         </div>
       ) : (
@@ -263,6 +249,84 @@ export default function DeployTab({ cwd, auth, deployments, onLogin, onTerminalC
           </button>
         </div>
       </div>
+    </div>
+  );
+}
+
+// --- Database Card with table browser ---
+
+function DatabaseCard({ deploymentId, databaseType, databaseName }: {
+  deploymentId: string;
+  databaseType?: string | null;
+  databaseName?: string | null;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const [dbInfo, setDbInfo] = useState<{ exists: boolean; name?: string; size?: string; tables?: Array<{ name: string; rowCount: number; size: string }> } | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  const label = databaseType === 'redis' ? 'Redis' : databaseType === 'mysql' ? 'MySQL' : 'PostgreSQL';
+
+  const loadDbInfo = useCallback(async () => {
+    setLoading(true);
+    try {
+      const info = await window.cozyPane.deploy.databaseInfo(deploymentId);
+      if (info && !info.error) setDbInfo(info);
+    } catch {}
+    setLoading(false);
+  }, [deploymentId]);
+
+  const handleToggle = useCallback(() => {
+    if (!expanded && !dbInfo) loadDbInfo();
+    setExpanded(e => !e);
+  }, [expanded, dbInfo, loadDbInfo]);
+
+  return (
+    <div className="deploy-card" style={{ borderLeft: '3px solid var(--info, #3b82f6)' }}>
+      <div
+        style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', cursor: 'pointer' }}
+        onClick={handleToggle}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.4em' }}>
+          <span style={{ fontSize: '0.78em', color: 'var(--info, #3b82f6)', fontWeight: 600 }}>{label}</span>
+          {dbInfo?.size && (
+            <span style={{ fontSize: '0.72em', color: 'var(--text-secondary)' }}>&middot; {dbInfo.size}</span>
+          )}
+        </div>
+        <span style={{ fontSize: '0.72em', color: 'var(--text-secondary)' }}>{expanded ? '\u25BC' : '\u25B6'}</span>
+      </div>
+
+      {databaseName && (
+        <div style={{ fontSize: '0.73em', color: 'var(--text-secondary)', fontFamily: 'monospace', marginTop: '0.15em' }}>
+          {databaseName}
+        </div>
+      )}
+
+      {expanded && (
+        <div style={{ marginTop: '0.4em' }}>
+          {loading && <div style={{ fontSize: '0.78em', color: 'var(--text-secondary)' }}>Loading...</div>}
+          {dbInfo?.tables && dbInfo.tables.length > 0 ? (
+            <div style={{ fontSize: '0.75em' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', padding: '0.2em 0', borderBottom: '1px solid var(--border, #2a2b3e)', fontWeight: 600, color: 'var(--text-secondary)' }}>
+                <span>Table</span>
+                <span>Rows / Size</span>
+              </div>
+              {dbInfo.tables.map(t => (
+                <div key={t.name} style={{ display: 'flex', justifyContent: 'space-between', padding: '0.2em 0', borderBottom: '1px solid var(--border, #2a2b3e)22' }}>
+                  <span style={{ fontFamily: 'monospace', color: 'var(--text-primary)' }}>{t.name}</span>
+                  <span style={{ color: 'var(--text-secondary)' }}>{t.rowCount.toLocaleString()} &middot; {t.size}</span>
+                </div>
+              ))}
+            </div>
+          ) : dbInfo?.tables && dbInfo.tables.length === 0 ? (
+            <div style={{ fontSize: '0.75em', color: 'var(--text-secondary)' }}>No tables yet</div>
+          ) : !loading ? (
+            <div style={{ fontSize: '0.75em', color: 'var(--text-secondary)' }}>Could not load database info</div>
+          ) : null}
+          <button onClick={loadDbInfo} className="deploy-btn-tiny" style={{ marginTop: '0.3em' }}>
+            Refresh
+          </button>
+        </div>
+      )}
     </div>
   );
 }

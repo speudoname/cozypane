@@ -10,6 +10,7 @@ import { getDeployment, countActiveDeployments, checkSubdomainCollision } from '
 import { authenticate } from '../middleware/auth.js';
 import { checkUserRateLimit } from '../middleware/rateLimit.js';
 import { analyzeProject } from '../services/detector.js';
+import { getDatabaseInfo, getInfrastructureStatus } from '../services/database.js';
 import {
   restartContainer,
   getContainerLogs,
@@ -415,6 +416,25 @@ export async function deployRoutes(app: FastifyInstance): Promise<void> {
       return { ok: true, deleted: result.rows.length, warnings: allWarnings.length ? allWarnings : undefined };
     },
   );
+
+  // GET /deploy/:id/database — database info for a deployment (tables, size)
+  app.get<{ Params: { id: string } }>(
+    '/deploy/:id/database',
+    { preHandler: authenticate, schema: idParamSchema },
+    async (request, reply) => {
+      const deployment = await getDeployment(request.params.id, request.user.id);
+      if (!deployment) return reply.code(404).send({ error: 'Deployment not found' });
+      if (!deployment.db_name) return reply.code(404).send({ error: 'No database provisioned' });
+
+      const info = await getDatabaseInfo(request.user.id, deployment.app_name);
+      return info;
+    },
+  );
+
+  // GET /deploy/infrastructure — Postgres + Redis server status
+  app.get('/deploy/infrastructure', { preHandler: authenticate }, async () => {
+    return getInfrastructureStatus();
+  });
 }
 
 function fieldValue(field: any): string | undefined {

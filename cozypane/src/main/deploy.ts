@@ -190,6 +190,22 @@ export function registerDeployHandlers() {
     }
   });
 
+  ipcMain.handle('deploy:databaseInfo', async (_event, deployId: string) => {
+    try {
+      return await apiFetch(`/deploy/${encodeURIComponent(deployId)}/database`);
+    } catch (err: any) {
+      return { error: err.message || 'Failed to get database info' };
+    }
+  });
+
+  ipcMain.handle('deploy:infrastructure', async () => {
+    try {
+      return await apiFetch('/deploy/infrastructure');
+    } catch (err: any) {
+      return { error: err.message || 'Failed to get infrastructure status' };
+    }
+  });
+
 }
 
 export async function processProtocolUrl(url: string): Promise<void> {

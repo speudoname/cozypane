@@ -132,24 +132,121 @@ export async function dropDatabase(
 }
 
 /**
- * Get info about a tenant's database (for admin panel).
+ * Get info about a tenant's database (size + tables).
  */
 export async function getDatabaseInfo(
   userId: number,
   appName: string,
-): Promise<{ exists: boolean; size?: string }> {
+): Promise<{
+  exists: boolean;
+  name?: string;
+  size?: string;
+  tables?: Array<{ name: string; rowCount: number; size: string }>;
+}> {
   const name = dbName(userId, appName);
+  const user = dbUser(userId, appName);
 
   try {
-    const result = await platformPool.query(
+    const sizeResult = await platformPool.query(
       `SELECT pg_size_pretty(pg_database_size($1)) as size`,
       [name],
     );
-    if (result.rows.length > 0) {
-      return { exists: true, size: result.rows[0].size };
+    if (sizeResult.rows.length === 0) return { exists: false };
+
+    // Query table info by connecting as the tenant user's role.
+    // We use the platform pool but set the search path to the tenant DB's
+    // public schema via a cross-database query. Since tenant DBs are on the
+    // same Postgres cluster, we can query pg_catalog tables directly.
+    let tables: Array<{ name: string; rowCount: number; size: string }> = [];
+    try {
+      // Connect to the tenant DB directly via a temporary pool
+      const { Pool } = await import('pg');
+      const tenantPool = new Pool({
+        host: 'postgres',
+        port: 5432,
+        database: name,
+        user: 'cozypane', // superuser can read any DB
+        password: process.env.POSTGRES_PASSWORD || 'secret',
+        max: 1,
+        idleTimeoutMillis: 5000,
+      });
+      const tablesResult = await tenantPool.query(`
+        SELECT
+          c.relname AS name,
+          c.reltuples::bigint AS row_count,
+          pg_size_pretty(pg_total_relation_size(c.oid)) AS size
+        FROM pg_class c
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = 'public'
+          AND c.relkind = 'r'
+        ORDER BY c.relname
+      `);
+      tables = tablesResult.rows.map(r => ({
+        name: r.name,
+        rowCount: parseInt(r.row_count) || 0,
+        size: r.size,
+      }));
+      await tenantPool.end();
+    } catch (err: any) {
+      log.warn({ dbName: name, err: err.message }, 'Failed to query tenant DB tables');
     }
-    return { exists: false };
+
+    return {
+      exists: true,
+      name,
+      size: sizeResult.rows[0].size,
+      tables,
+    };
   } catch {
     return { exists: false };
   }
+}
+
+/**
+ * Get infrastructure-level database status (Postgres + Redis).
+ */
+export async function getInfrastructureStatus(): Promise<{
+  postgres: { status: string; version?: string; databases: number; totalSize?: string };
+  redis: { status: string; keys?: number; memory?: string };
+}> {
+  let postgres = { status: 'unknown' as string, version: undefined as string | undefined, databases: 0, totalSize: undefined as string | undefined };
+  let redis = { status: 'unknown' as string, keys: undefined as number | undefined, memory: undefined as string | undefined };
+
+  try {
+    const versionResult = await platformPool.query('SELECT version()');
+    const dbCountResult = await platformPool.query("SELECT COUNT(*) as cnt FROM pg_database WHERE datname LIKE 'cp_%'");
+    const sizeResult = await platformPool.query("SELECT pg_size_pretty(SUM(pg_database_size(datname))) as total FROM pg_database WHERE datname LIKE 'cp_%'");
+    postgres = {
+      status: 'running',
+      version: versionResult.rows[0]?.version?.split(' ').slice(0, 2).join(' ') || 'PostgreSQL',
+      databases: parseInt(dbCountResult.rows[0]?.cnt) || 0,
+      totalSize: sizeResult.rows[0]?.total || '0 bytes',
+    };
+  } catch {
+    postgres.status = 'unreachable';
+  }
+
+  try {
+    // Redis check via the existing getRedis or direct connection
+    const ioredis = await import('ioredis');
+    const Redis = ioredis.default || ioredis;
+    const redisClient = new (Redis as any)(process.env.REDIS_URL || 'redis://redis:6379/0', {
+      connectTimeout: 3000, lazyConnect: true,
+    });
+    await redisClient.connect();
+    const info = await redisClient.info('memory');
+    const keyspace = await redisClient.info('keyspace');
+    const memMatch = info.match(/used_memory_human:(\S+)/);
+    const keysMatch = keyspace.match(/keys=(\d+)/);
+    redis = {
+      status: 'running',
+      keys: keysMatch ? parseInt(keysMatch[1]) : 0,
+      memory: memMatch ? memMatch[1] : undefined,
+    };
+    await redisClient.quit();
+  } catch {
+    redis.status = 'unreachable';
+  }
+
+  return { postgres, redis };
 }

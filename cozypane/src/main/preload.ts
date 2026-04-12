@@ -62,6 +62,8 @@ contextBridge.exposeInMainWorld('cozyPane', {
     verifyDomain: (deployId: string, domainId: string) => ipcRenderer.invoke('deploy:verifyDomain', deployId, domainId),
     removeDomain: (deployId: string, domainId: string) => ipcRenderer.invoke('deploy:removeDomain', deployId, domainId),
     listDomains: (deployId: string) => ipcRenderer.invoke('deploy:listDomains', deployId),
+    databaseInfo: (deployId: string) => ipcRenderer.invoke('deploy:databaseInfo', deployId),
+    infrastructure: () => ipcRenderer.invoke('deploy:infrastructure'),
     onProtocolCallback: (callback: (url: string) => void) => {
       const listener = (_event: any, url: string) => callback(url);
       ipcRenderer.on('deploy:protocol-callback', listener);

@@ -11,7 +11,7 @@ interface Props {
   onTerminalCommand: (command: string) => void;
 }
 
-type Tab = 'deployments' | 'databases';
+type Tab = 'deployments' | 'databases' | 'infrastructure';
 
 const STATUS_COLORS: Record<string, string> = {
   building: 'var(--warning, #e6b800)',
@@ -43,6 +43,24 @@ export default function DeployManagement({ auth, deployments, onLogin, onLogout,
   const [actionError, setActionError] = useState<string | null>(null);
 
   const deploymentsWithDb = deployments.filter(d => d.hasDatabase);
+  const [infra, setInfra] = useState<{
+    postgres: { status: string; version?: string; databases: number; totalSize?: string };
+    redis: { status: string; keys?: number; memory?: string };
+  } | null>(null);
+  const [infraLoading, setInfraLoading] = useState(false);
+
+  const loadInfra = useCallback(async () => {
+    setInfraLoading(true);
+    try {
+      const result = await window.cozyPane.deploy.infrastructure();
+      if (result && !result.error) setInfra(result);
+    } catch {}
+    setInfraLoading(false);
+  }, []);
+
+  useEffect(() => {
+    if (tab === 'infrastructure' && !infra) loadInfra();
+  }, [tab, infra, loadInfra]);
 
   // --- Actions ---
 
@@ -189,6 +207,9 @@ export default function DeployManagement({ auth, deployments, onLogin, onLogout,
         <button className={`deploy-mgmt-tab ${tab === 'databases' ? 'active' : ''}`} onClick={() => setTab('databases')}>
           Databases ({deploymentsWithDb.length})
         </button>
+        <button className={`deploy-mgmt-tab ${tab === 'infrastructure' ? 'active' : ''}`} onClick={() => setTab('infrastructure')}>
+          Infra
+        </button>
       </div>
 
       {actionError && (
@@ -314,6 +335,65 @@ export default function DeployManagement({ auth, deployments, onLogin, onLogout,
                 </div>
               </div>
             ))}
+          </>
+        )}
+
+        {tab === 'infrastructure' && (
+          <>
+            {infraLoading && <div style={{ color: 'var(--text-secondary)', fontSize: '0.85em', padding: '1em 0', textAlign: 'center' }}>Loading...</div>}
+            {infra && (
+              <>
+                {/* PostgreSQL Server */}
+                <div className="deploy-card" style={{ borderLeft: '3px solid var(--info, #3b82f6)' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.3em' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.4em' }}>
+                      <span style={{ fontSize: '0.85em', color: 'var(--info, #3b82f6)', fontWeight: 700 }}>PG</span>
+                      <span style={{ fontWeight: 600, fontSize: '0.88em' }}>PostgreSQL Server</span>
+                    </div>
+                    <span style={{
+                      fontSize: '0.7em', padding: '1px 6px', borderRadius: 3,
+                      backgroundColor: infra.postgres.status === 'running' ? 'color-mix(in srgb, var(--success) 20%, transparent)' : 'color-mix(in srgb, var(--danger) 20%, transparent)',
+                      color: infra.postgres.status === 'running' ? 'var(--success)' : 'var(--danger)',
+                      fontWeight: 600, textTransform: 'uppercase',
+                    }}>
+                      {infra.postgres.status}
+                    </span>
+                  </div>
+                  {infra.postgres.version && (
+                    <div style={{ fontSize: '0.75em', color: 'var(--text-secondary)' }}>{infra.postgres.version}</div>
+                  )}
+                  <div style={{ fontSize: '0.75em', color: 'var(--text-secondary)', marginTop: '0.15em' }}>
+                    {infra.postgres.databases} tenant database{infra.postgres.databases !== 1 ? 's' : ''}
+                    {infra.postgres.totalSize && <> &middot; {infra.postgres.totalSize} total</>}
+                  </div>
+                </div>
+
+                {/* Redis Server */}
+                <div className="deploy-card" style={{ borderLeft: '3px solid var(--warning, #e6b800)' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.3em' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.4em' }}>
+                      <span style={{ fontSize: '0.85em', color: 'var(--warning, #e6b800)', fontWeight: 700 }}>RD</span>
+                      <span style={{ fontWeight: 600, fontSize: '0.88em' }}>Redis</span>
+                    </div>
+                    <span style={{
+                      fontSize: '0.7em', padding: '1px 6px', borderRadius: 3,
+                      backgroundColor: infra.redis.status === 'running' ? 'color-mix(in srgb, var(--success) 20%, transparent)' : 'color-mix(in srgb, var(--danger) 20%, transparent)',
+                      color: infra.redis.status === 'running' ? 'var(--success)' : 'var(--danger)',
+                      fontWeight: 600, textTransform: 'uppercase',
+                    }}>
+                      {infra.redis.status}
+                    </span>
+                  </div>
+                  <div style={{ fontSize: '0.75em', color: 'var(--text-secondary)' }}>
+                    {infra.redis.keys !== undefined ? `${infra.redis.keys} keys` : 'Unknown'}
+                    {infra.redis.memory && <> &middot; {infra.redis.memory} memory</>}
+                    <span> &middot; Deploy queue + caching</span>
+                  </div>
+                </div>
+
+                <button onClick={loadInfra} className="deploy-btn-tiny" style={{ marginTop: '0.3em' }}>Refresh</button>
+              </>
+            )}
           </>
         )}
       </div>

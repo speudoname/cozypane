@@ -208,6 +208,8 @@ declare global {
       verifyDomain: (deployId: string, domainId: string) => Promise<{ success?: boolean; verified?: boolean; error?: string }>;
       removeDomain: (deployId: string, domainId: string) => Promise<{ success?: boolean; error?: string }>;
       listDomains: (deployId: string) => Promise<{ domains?: CustomDomain[]; error?: string }>;
+      databaseInfo: (deployId: string) => Promise<{ exists: boolean; name?: string; size?: string; tables?: Array<{ name: string; rowCount: number; size: string }>; error?: string }>;
+      infrastructure: () => Promise<{ postgres: { status: string; version?: string; databases: number; totalSize?: string }; redis: { status: string; keys?: number; memory?: string }; error?: string }>;
       onProtocolCallback: (callback: (url: string) => void) => () => void;
       onAuthSuccess: (callback: (payload: { username: string; avatarUrl: string }) => void) => () => void;
       onAuthError: (callback: (payload: { error: string }) => void) => () => void;
