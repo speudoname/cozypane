@@ -24,7 +24,7 @@ export default function DiffViewer({ filePath, before, after, fontSize = 13 }: P
       theme: 'cozy-dark',
       automaticLayout: true,
       readOnly: true,
-      fontSize: 13,
+      fontSize,
       minimap: { enabled: false },
       scrollBeyondLastLine: false,
       renderSideBySide: true,

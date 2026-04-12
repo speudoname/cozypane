@@ -38,15 +38,7 @@ function writeTruncatedJson(filename: string, data: any): void {
 
 const staticServers = new Map<string, { server: http.Server; port: number }>();
 
-const MIME_TYPES: Record<string, string> = {
-  '.html': 'text/html', '.css': 'text/css', '.js': 'application/javascript',
-  '.json': 'application/json', '.png': 'image/png', '.jpg': 'image/jpeg',
-  '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.svg': 'image/svg+xml',
-  '.ico': 'image/x-icon', '.woff': 'font/woff', '.woff2': 'font/woff2',
-  '.ttf': 'font/ttf', '.webp': 'image/webp', '.mp4': 'video/mp4',
-  '.webm': 'video/webm', '.txt': 'text/plain', '.xml': 'application/xml',
-  '.mjs': 'application/javascript', '.map': 'application/json',
-};
+import { MIME_TYPES } from './mime';
 
 function findFreePort(start: number): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -158,9 +150,8 @@ function savePreviewUrls(data: Record<string, any>) {
 
 // --- Project detection (for static HTML serving) ---
 
-// Framework detection data — shared with cozypane-cloud/src/services/detector.ts.
-// Source of truth is shared/framework-data.json; this is a copy kept in sync.
-import frameworkData from './framework-data.json';
+// Framework detection data — single source of truth in shared/framework-data.json.
+import frameworkData from '../../../shared/framework-data.json';
 
 function detectProjectInfo(cwd: string): { type: string | null; devCommand: string | null; productionUrl: string | null; serveStatic: boolean; needsDatabase: boolean } {
   let type: string | null = null;

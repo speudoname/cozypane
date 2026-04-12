@@ -483,8 +483,10 @@ export async function waitForHealthy(
 function redactInternals(text: string): string {
   // Redact full container IDs (64-char hex)
   text = text.replace(/\b[0-9a-f]{64}\b/g, '[container]');
-  // Redact short container IDs (12-char hex, only when they look like Docker IDs)
-  text = text.replace(/\b[0-9a-f]{12}\b/g, '[container]');
+  // Redact short container IDs (12-char hex). Only match standalone 12-char
+  // hex strings that don't appear inside longer hex sequences (timestamps,
+  // UUIDs, etc.) — require whitespace or line boundary on both sides.
+  text = text.replace(/(?<=^|[\s:])([0-9a-f]{12})(?=$|[\s,.])/gm, '[container]');
   // Redact internal Docker bridge IPs (172.x.x.x)
   text = text.replace(/\b172\.\d{1,3}\.\d{1,3}\.\d{1,3}\b/g, '[internal-ip]');
   return text;

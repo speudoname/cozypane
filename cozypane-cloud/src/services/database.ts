@@ -158,15 +158,20 @@ export async function getDatabaseInfo(
     // public schema via a cross-database query. Since tenant DBs are on the
     // same Postgres cluster, we can query pg_catalog tables directly.
     let tables: Array<{ name: string; rowCount: number; size: string }> = [];
+    let tenantPool: InstanceType<typeof import('pg').Pool> | undefined;
     try {
       // Connect to the tenant DB directly via a temporary pool
       const { Pool } = await import('pg');
-      const tenantPool = new Pool({
+      tenantPool = new Pool({
         host: 'postgres',
         port: 5432,
         database: name,
         user: 'cozypane', // superuser can read any DB
-        password: process.env.POSTGRES_PASSWORD || 'secret',
+        password: (() => {
+          const pw = process.env.POSTGRES_PASSWORD;
+          if (!pw) throw new Error('POSTGRES_PASSWORD is required');
+          return pw;
+        })(),
         max: 1,
         idleTimeoutMillis: 5000,
       });
@@ -186,9 +191,10 @@ export async function getDatabaseInfo(
         rowCount: parseInt(r.row_count) || 0,
         size: r.size,
       }));
-      await tenantPool.end();
     } catch (err: any) {
       log.warn({ dbName: name, err: err.message }, 'Failed to query tenant DB tables');
+    } finally {
+      await tenantPool?.end();
     }
 
     return {
@@ -226,11 +232,12 @@ export async function getInfrastructureStatus(): Promise<{
     postgres.status = 'unreachable';
   }
 
+  let redisClient: any;
   try {
     // Redis check via the existing getRedis or direct connection
     const ioredis = await import('ioredis');
     const Redis = ioredis.default || ioredis;
-    const redisClient = new (Redis as any)(process.env.REDIS_URL || 'redis://redis:6379/0', {
+    redisClient = new (Redis as any)(process.env.REDIS_URL || 'redis://redis:6379/0', {
       connectTimeout: 3000, lazyConnect: true,
     });
     await redisClient.connect();
@@ -243,9 +250,10 @@ export async function getInfrastructureStatus(): Promise<{
       keys: keysMatch ? parseInt(keysMatch[1]) : 0,
       memory: memMatch ? memMatch[1] : undefined,
     };
-    await redisClient.quit();
   } catch {
     redis.status = 'unreachable';
+  } finally {
+    await redisClient?.quit().catch(() => {});
   }
 
   return { postgres, redis };

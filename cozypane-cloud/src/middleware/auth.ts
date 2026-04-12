@@ -39,11 +39,13 @@ export function verifyToken(token: string): UserPayload {
 }
 
 /**
- * Extract a JWT from the request — checks the `admin_session` HttpOnly
- * cookie first, then the `Authorization: Bearer` header.
+ * Extract a JWT from the request — checks the `__Host-admin_session`
+ * HttpOnly cookie first, then the `Authorization: Bearer` header.
+ * The `__Host-` prefix prevents cookie tossing from sibling subdomains.
  */
 export function extractToken(request: FastifyRequest): string | undefined {
-  const cookieToken = (request.cookies as Record<string, string> | undefined)?.admin_session;
+  const cookies = request.cookies as Record<string, string> | undefined;
+  const cookieToken = cookies?.['__Host-admin_session'];
   if (cookieToken) return cookieToken;
   const authHeader = request.headers.authorization;
   if (authHeader?.startsWith('Bearer ')) return authHeader.slice(7);
@@ -58,7 +60,7 @@ export function extractToken(request: FastifyRequest): string | undefined {
  *
  * Returns true if the request should be rejected.
  */
-function isCsrfViolation(request: FastifyRequest, fromCookie: boolean): boolean {
+export function isCsrfViolation(request: FastifyRequest, fromCookie: boolean): boolean {
   if (!fromCookie) return false; // Bearer-header auth is not vulnerable to CSRF
 
   // WebSocket upgrades are always cross-origin attack vectors
@@ -79,7 +81,7 @@ export async function authenticate(
   reply: FastifyReply,
 ): Promise<void> {
   const token = extractToken(request);
-  const fromCookie = !!(request.cookies as Record<string, string> | undefined)?.admin_session;
+  const fromCookie = !!(request.cookies as Record<string, string> | undefined)?.['__Host-admin_session'];
 
   if (!token) {
     reply.code(401).send({ error: 'Missing or invalid authorization' });

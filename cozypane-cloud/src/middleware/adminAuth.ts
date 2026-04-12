@@ -1,5 +1,5 @@
 import type { FastifyRequest, FastifyReply } from 'fastify';
-import { extractToken, verifyToken } from './auth.js';
+import { extractToken, verifyToken, isCsrfViolation } from './auth.js';
 import { query } from '../db/index.js';
 
 export async function adminAuth(
@@ -7,9 +7,16 @@ export async function adminAuth(
   reply: FastifyReply,
 ): Promise<void> {
   const token = extractToken(request);
+  const fromCookie = !!(request.cookies as Record<string, string> | undefined)?.['__Host-admin_session'];
 
   if (!token) {
     reply.code(401).send({ error: 'Missing admin session — sign in again' });
+    return;
+  }
+
+  // CSRF check — admin routes use cookie auth exclusively, so this is critical.
+  if (isCsrfViolation(request, fromCookie)) {
+    reply.code(403).send({ error: 'Cross-origin request blocked' });
     return;
   }
 

@@ -123,7 +123,7 @@ export function decideFocus(lines: string[]): FocusDecision {
  * Analyze recent terminal output and determine the desired focus mode.
  * Returns 'terminal' for interactive prompts, 'input' for shell prompts, or null if undetermined.
  */
-export type AiAction = 'idle' | 'reading' | 'writing' | 'executing' | 'thinking';
+// AiAction type is declared in types.d.ts (global ambient)
 
 const WRITE_PATTERNS = [
   /\bEdit\(/,
@@ -204,13 +204,7 @@ const LOCAL_URL_RE = /https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::\]):\d
 
 // --- Terminal error classification for dev server observability ---
 
-export interface TerminalError {
-  type: 'typescript' | 'build' | 'runtime' | 'warning' | 'hmr';
-  message: string;
-  file?: string;
-  line?: number;
-  timestamp: number;
-}
+// TerminalError interface is declared in types.d.ts (global ambient)
 
 // TypeScript compiler error: src/App.tsx(42,5): error TS2304: ...
 const TS_ERROR_RE = /^(.*?\.[tj]sx?)\((\d+),\d+\):\s*error\s+TS\d+:\s*(.+)/;

@@ -126,7 +126,8 @@ export function registerGitHandlers() {
   });
 
   ipcMain.handle('git:remoteInfo', async (_event, cwd: string) => {
-    const result = { hasRemote: false, remoteUrl: '', githubAuthed: false, isSSH: false };
+    const result: { hasRemote: boolean; remoteUrl: string; githubAuthed: boolean; isSSH: boolean; error?: string } =
+      { hasRemote: false, remoteUrl: '', githubAuthed: false, isSSH: false };
     try {
       const remoteOut = await gitExecFile(['remote', '-v'], cwd);
       const pushLine = remoteOut.split('\n').find(l => l.includes('origin') && l.includes('(push)'));
@@ -135,7 +136,9 @@ export function registerGitHandlers() {
         result.remoteUrl = pushLine.replace(/^origin\s+/, '').replace(/\s+\(push\)$/, '').trim();
         result.isSSH = result.remoteUrl.startsWith('git@');
       }
-    } catch {}
+    } catch (err: any) {
+      result.error = err.message || 'Failed to read git remote info';
+    }
 
     result.githubAuthed = !!getGithubToken();
     return result;

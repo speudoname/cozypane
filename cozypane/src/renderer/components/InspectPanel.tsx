@@ -84,7 +84,7 @@ export default function InspectPanel({ consoleLogs, networkRequests, devServerSt
                 .filter(l => l.level >= consoleFilter)
                 .slice(-200)
                 .map((log, i) => (
-                  <div key={i} className="inspect-log-entry" style={{ borderLeftColor: LEVEL_COLORS[log.level] }}>
+                  <div key={`${log.timestamp}-${i}`} className="inspect-log-entry" style={{ borderLeftColor: LEVEL_COLORS[log.level] }}>
                     <span className="inspect-log-level" style={{ color: LEVEL_COLORS[log.level] }}>
                       {LEVEL_LABELS[log.level] || 'LOG'}
                     </span>
@@ -112,7 +112,7 @@ export default function InspectPanel({ consoleLogs, networkRequests, devServerSt
             </div>
             <div className="inspect-log-list">
               {networkRequests.slice(-200).map((req, i) => (
-                <div key={i} className={`inspect-request-row ${!req.ok ? 'inspect-request-error' : ''}`}>
+                <div key={`${req.url}-${req.status}-${i}`} className={`inspect-request-row ${!req.ok ? 'inspect-request-error' : ''}`}>
                   <span className="inspect-req-method">{req.method}</span>
                   <span className="inspect-req-url" title={req.url}>
                     {req.url.replace(/^https?:\/\/[^/]+/, '')}
@@ -151,7 +151,7 @@ export default function InspectPanel({ consoleLogs, networkRequests, devServerSt
                 {devServerState.errors.length > 0 && (
                   <div className="inspect-devserver-errors">
                     {devServerState.errors.map((err, i) => (
-                      <div key={i} className="inspect-log-entry" style={{ borderLeftColor: errorTypeColor(err.type) }}>
+                      <div key={`${err.timestamp}-${i}`} className="inspect-log-entry" style={{ borderLeftColor: errorTypeColor(err.type) }}>
                         <span className="inspect-log-level" style={{ color: errorTypeColor(err.type) }}>
                           {err.type.toUpperCase()}
                         </span>

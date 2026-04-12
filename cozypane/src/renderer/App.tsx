@@ -1,10 +1,12 @@
-import React, { useState, useCallback, useRef, useEffect, useMemo } from 'react';
+import React, { useState, useCallback, useEffect, useMemo } from 'react';
 import { useConfirm } from './lib/confirmContext';
-import { usePersistedState } from './lib/usePersistedState';
 import { useTerminalTabs } from './lib/useTerminalTabs';
 import { usePanelLayout } from './lib/usePanelLayout';
 import { useFontSizes } from './lib/useFontSizes';
 import { useKeyboardShortcuts } from './lib/useKeyboardShortcuts';
+import { useDeployState } from './lib/useDeployState';
+import { useFileEditorTabs } from './lib/useFileEditorTabs';
+import { usePreviewState } from './lib/usePreviewState';
 import { Eye, GitBranch, Rocket, Settings2, Cloud, Activity } from 'lucide-react';
 import Sidebar from './components/Sidebar';
 import FilePreview from './components/FilePreview';
@@ -25,21 +27,6 @@ import { enableCozyMode } from './lib/cozyMode';
 import CommandPalette from './components/CommandPalette';
 import type { PaletteAction } from './components/CommandPalette';
 import TerminalTabBar from './components/TerminalTabBar';
-// PreviewError, ConsoleLog, NetworkError, TerminalTab are declared in the
-// global ambient types (src/renderer/types.d.ts) — no explicit import needed.
-import type { AiAction } from './lib/terminalAnalyzer';
-
-interface OpenTab {
-  path: string;
-  name: string;
-  dirty?: boolean;
-}
-
-interface DiffState {
-  filePath: string;
-  before: string;
-  after: string;
-}
 
 export default function App() {
   const confirm = useConfirm();
@@ -60,10 +47,6 @@ export default function App() {
     handleDeployPanelResizeStart,
   } = usePanelLayout();
 
-  // File-editor tab state — which files are open in Monaco.
-  const [openTabs, setOpenTabs] = usePersistedState<OpenTab[]>('openTabs', []);
-  const [activeTab, setActiveTab] = usePersistedState<string | null>('activeTab', null);
-
   const {
     terminalFontSize, setTerminalFontSize,
     editorFontSize, setEditorFontSize,
@@ -73,77 +56,16 @@ export default function App() {
     hoverZoneRef,
   } = useFontSizes();
 
-  // --- Session-only state (not persisted) ---
-  const [previewLocalUrl, setPreviewLocalUrl] = useState<string>('');
-  const [previewLocalUrls, setPreviewLocalUrls] = useState<string[]>([]);
-  const [previewProdUrl, setPreviewProdUrl] = useState<string>('');
-  const [previewInitialErrors, setPreviewInitialErrors] = useState<PreviewError[]>([]);
-  const [previewInitialConsoleLogs, setPreviewInitialConsoleLogs] = useState<ConsoleLog[]>([]);
-  const [previewInitialNetworkErrors, setPreviewInitialNetworkErrors] = useState<NetworkError[]>([]);
-  const [networkRequests, setNetworkRequests] = useState<NetworkRequest[]>([]);
-  const [liveConsoleLogs, setLiveConsoleLogs] = useState<ConsoleLog[]>([]);
-  const [screenshotPath, setScreenshotPath] = useState<string | null>(null);
-  const [screenshotTimestamp, setScreenshotTimestamp] = useState(0);
-  const [diffState, setDiffState] = useState<DiffState | null>(null);
+  // --- Remaining session-only state ---
   const [gitBranch, setGitBranch] = useState('');
   const [paletteOpen, setPaletteOpen] = useState(false);
-  const [deployments, setDeployments] = useState<Deployment[]>([]);
-  const [deployAuth, setDeployAuth] = useState<DeployAuth>({ authenticated: false });
 
-  // --- Auto-preview on dev server detection ---
-  const [autoPreviewDisabled, setAutoPreviewDisabled] = useState(() => {
-    try { return localStorage.getItem('cozyPane:autoPreviewDisabled') === 'true'; } catch { return false; }
-  });
-  const autoPreviewDisabledRef = useRef(autoPreviewDisabled);
-  autoPreviewDisabledRef.current = autoPreviewDisabled;
-  const toggleAutoPreview = useCallback(() => {
-    setAutoPreviewDisabled(prev => {
-      const next = !prev;
-      try { localStorage.setItem('cozyPane:autoPreviewDisabled', String(next)); } catch {}
-      return next;
-    });
-  }, []);
-
-  const [autoPreviewToast, setAutoPreviewToast] = useState<string | null>(null);
-  const autoPreviewToastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const showAutoPreviewToast = useCallback((url: string) => {
-    if (autoPreviewToastTimer.current) clearTimeout(autoPreviewToastTimer.current);
-    setAutoPreviewToast(url);
-    autoPreviewToastTimer.current = setTimeout(() => setAutoPreviewToast(null), 4000);
-  }, []);
-
-  // Load deploy auth + deployments at app level so both DeployTab and DeployManagement share state
-  useEffect(() => {
-    window.cozyPane.deploy.getAuth().then(setDeployAuth).catch(() => {});
-    const cleanup1 = window.cozyPane.deploy.onAuthSuccess(() => {
-      window.cozyPane.deploy.getAuth().then(setDeployAuth).catch(() => {});
-    });
-    const cleanup2 = window.cozyPane.deploy.onProtocolCallback(() => {
-      window.cozyPane.deploy.getAuth().then(setDeployAuth).catch(() => {});
-    });
-    return () => { cleanup1(); cleanup2(); };
-  }, []);
-
-  const loadDeployments = useCallback(() => {
-    if (!deployAuth.authenticated) return;
-    window.cozyPane.deploy.list()
-      .then((list: any) => {
-        setDeployments(Array.isArray(list) ? list : []);
-      })
-      .catch(() => setDeployments([]));
-  }, [deployAuth.authenticated]);
-
-  useEffect(() => { loadDeployments(); }, [loadDeployments]);
-
-  const handleDeployLogin = useCallback(async () => {
-    await window.cozyPane.deploy.login();
-  }, []);
-
-  const handleDeployLogout = useCallback(async () => {
-    await window.cozyPane.deploy.logout();
-    setDeployAuth({ authenticated: false });
-    setDeployments([]);
-  }, []);
+  // --- Deploy state (auth + deployments) ---
+  const {
+    deployAuth, deployments,
+    handleDeployLogin, handleDeployLogout,
+    refreshDeployments: loadDeployments,
+  } = useDeployState();
 
   // Terminal tab state machine + per-tab watcher. Variable names aliased
   // at destructure so existing JSX call sites read naturally.
@@ -169,43 +91,35 @@ export default function App() {
     reorderTabs,
   } = useTerminalTabs({ confirm });
 
-  // Refresh screenshot — triggers via the Preview's auto-capture on navigation.
-  // For manual capture, we set a flag that Preview checks.
-  const screenshotRequestRef = useRef(0);
-  const handleRefreshSnapshot = useCallback(() => {
-    screenshotRequestRef.current = Date.now();
-    // Force a re-render of Preview which will trigger the capture
-    setScreenshotTimestamp(Date.now());
-  }, []);
+  // --- File editor tabs (Monaco) ---
+  const {
+    openTabs, activeTab, setActiveTab,
+    diffState, setDiffState,
+    handleFileSelect, handleDiffClick, handleGitDiffClick,
+    handleCloseTab, handleDirtyChange,
+    closeEditorTabIfActive,
+  } = useFileEditorTabs({ confirm, setRightPanelTab });
 
-  // Debounced inspect data persistence (3s)
-  const inspectWriteTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useEffect(() => {
-    if (networkRequests.length === 0 && liveConsoleLogs.length === 0) return;
-    if (inspectWriteTimer.current) clearTimeout(inspectWriteTimer.current);
-    inspectWriteTimer.current = setTimeout(() => {
-      const devTab = terminalTabsRef.current.find(t => t.isDevServer && t.cwd === cwd);
-      window.cozyPane.preview.writeInspectData({
-        consoleLogs: liveConsoleLogs.slice(-200),
-        networkRequests: networkRequests.slice(-200),
-        devServer: devTab?.devServerState || null,
-        screenshotPath,
-        url: previewLocalUrl || previewProdUrl || null,
-        timestamp: Date.now(),
-      }).catch(() => {});
-    }, 3000);
-    return () => { if (inspectWriteTimer.current) clearTimeout(inspectWriteTimer.current); };
-  }, [networkRequests, liveConsoleLogs, screenshotPath, previewLocalUrl, previewProdUrl, cwd]);
-
-  // Debounced dev server state persistence (2s, matching preview-devtools cadence)
-  const devServerWriteTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const handleDevServerStateChange = useCallback((tabId: string, state: DevServerState) => {
-    updateTab(tabId, { devServerState: state });
-    if (devServerWriteTimer.current) clearTimeout(devServerWriteTimer.current);
-    devServerWriteTimer.current = setTimeout(() => {
-      window.cozyPane.preview.writeDevServerState(state).catch(() => {});
-    }, 2000);
-  }, [updateTab]);
+  // --- Preview / Inspect state ---
+  const {
+    previewLocalUrl, previewLocalUrls, previewProdUrl,
+    previewInitialErrors, previewInitialConsoleLogs, previewInitialNetworkErrors,
+    networkRequests, liveConsoleLogs,
+    screenshotPath, screenshotTimestamp,
+    autoPreviewDisabled, autoPreviewDisabledRef, toggleAutoPreview,
+    autoPreviewToast, setAutoPreviewToast,
+    handleRefreshSnapshot, handleDevServerStateChange,
+    handleLocalUrlDetected, handleLocalUrlsDetected, handleProdUrlDetected,
+    setLiveConsoleLogs, setNetworkRequests,
+    setScreenshotPath, setScreenshotTimestamp,
+  } = usePreviewState({
+    terminalTabsRef,
+    activeTerminalIdRef,
+    activeTerminalId,
+    cwd,
+    updateTab,
+    setPreviewOpen,
+  });
 
   // Persist `cwd` whenever the active terminal's cwd changes. This stays
   // as a manual effect because `cwd` is DERIVED from the active terminal
@@ -216,39 +130,6 @@ export default function App() {
       try { localStorage.setItem('cozyPane:cwd', JSON.stringify(cwd)); } catch {}
     }
   }, [cwd]);
-
-  // Restore preview URLs + console state on tab switch. Also check
-  // companion tabs (same cwd) for URLs — the dev server tab may have
-  // detected a URL while this tab was in the background.
-  useEffect(() => {
-    const newTab = terminalTabsRef.current.find(t => t.id === activeTerminalId);
-    // Check companion tabs (same cwd) for URLs if this tab has none
-    let localUrl = newTab?.previewLocalUrl || '';
-    let localUrls = newTab?.previewLocalUrls || [];
-    let prodUrl = newTab?.previewProdUrl || '';
-    if (!localUrl && newTab?.cwd) {
-      const companion = terminalTabsRef.current.find(
-        t => t.id !== activeTerminalId && t.cwd === newTab.cwd && t.previewLocalUrl
-      );
-      if (companion) {
-        localUrl = companion.previewLocalUrl || '';
-        localUrls = companion.previewLocalUrls || [];
-        prodUrl = companion.previewProdUrl || prodUrl;
-      }
-    }
-    setPreviewLocalUrl(localUrl);
-    setPreviewLocalUrls(localUrls);
-    setPreviewProdUrl(prodUrl);
-    setPreviewInitialErrors(newTab?.previewErrors || []);
-    setPreviewInitialConsoleLogs(newTab?.previewConsoleLogs || []);
-    setPreviewInitialNetworkErrors(newTab?.previewNetworkErrors || []);
-    // Auto-open preview if a URL exists but hasn't auto-opened yet
-    if (localUrl && newTab && !newTab.devServerAutoOpened && !autoPreviewDisabledRef.current) {
-      updateTab(activeTerminalId, { devServerAutoOpened: true });
-      setPreviewOpen(true);
-      showAutoPreviewToast(localUrl);
-    }
-  }, [activeTerminalId, terminalTabsRef]);
 
   // Build the `claude` autoCommand. When cozy mode is on we add --mcp-config pointing
   // at CozyPane's static MCP config so only sessions we spawn see the cozypane tools.
@@ -358,72 +239,10 @@ export default function App() {
     });
   }, [updateTab]);
 
-  const handleFileSelect = useCallback((filePath: string, fileName: string) => {
-    setDiffState(null);
-    setOpenTabs(prev => {
-      if (!prev.find(t => t.path === filePath)) {
-        return [...prev, { path: filePath, name: fileName }];
-      }
-      return prev;
-    });
-    setActiveTab(filePath);
-    setRightPanelTab('preview');
-  }, []);
-
-  const handleDiffClick = useCallback(async (filePath: string) => {
-    const result = await window.cozyPane.watcher.getDiff(filePath);
-    if (result.error || result.before === undefined || result.after === undefined) {
-      const fileName = filePath.split('/').pop() || filePath;
-      handleFileSelect(filePath, fileName);
-      return;
-    }
-    setDiffState({ filePath, before: result.before, after: result.after });
-    setRightPanelTab('preview');
-  }, [handleFileSelect]);
-
-  const handleGitDiffClick = useCallback((filePath: string, before: string, after: string) => {
-    setDiffState({ filePath, before, after });
-    setRightPanelTab('preview');
-  }, []);
-
-  const openTabsRef = useRef(openTabs);
-  openTabsRef.current = openTabs;
-
-  const closeFileTab = useCallback(async (filePath: string): Promise<boolean> => {
-    // Returns true if the tab was actually closed, false if the user
-    // cancelled due to unsaved changes.
-    const tab = openTabsRef.current.find(t => t.path === filePath);
-    if (tab?.dirty) {
-      const ok = await confirm({
-        title: 'Unsaved changes',
-        message: `${tab.name} has unsaved changes. Close without saving?`,
-        confirmLabel: 'Discard',
-        destructive: true,
-      });
-      if (!ok) return false;
-    }
-    const remaining = openTabsRef.current.filter(t => t.path !== filePath);
-    setOpenTabs(remaining);
-    setActiveTab(prev => {
-      if (prev !== filePath) return prev;
-      return remaining.length > 0 ? remaining[remaining.length - 1].path : null;
-    });
-    return true;
-  }, [confirm]);
-
-  const handleCloseTab = useCallback((filePath: string, e: React.MouseEvent) => {
-    e.stopPropagation();
-    void closeFileTab(filePath);
-  }, [closeFileTab]);
-
   // Cmd+W editor-vs-terminal routing (M44): returning `false` from the
   // editor-close callback tells the hook to fall through to terminal-tab
   // close when there's no active editor file.
   const openPalette = useCallback(() => setPaletteOpen(prev => !prev), []);
-  const closeEditorTabIfActive = useCallback((): boolean | void => {
-    if (!activeTab) return false;
-    void closeFileTab(activeTab);
-  }, [activeTab, closeFileTab]);
 
   useKeyboardShortcuts({
     onOpenPalette: openPalette,
@@ -518,12 +337,6 @@ export default function App() {
     });
   }, [addTerminalTab, terminalTabsRef]);
 
-  const handleDirtyChange = useCallback((filePath: string, isDirty: boolean) => {
-    setOpenTabs(prev => prev.map(t =>
-      t.path === filePath ? { ...t, dirty: isDirty } : t
-    ));
-  }, []);
-
   // Monaco container must ALWAYS stay mounted (CLAUDE.md rule) — Monaco
   // spin-up is expensive and visibly flickers. FilePreview is rendered
   // once, permanently; its container is toggled via `display: none` for
@@ -577,18 +390,22 @@ export default function App() {
 
           {/* FilePreview (Monaco) — ALWAYS mounted. Hidden via display:none
               when the diff viewer is active or no files are open. */}
-          <div style={{ display: showEditor ? 'flex' : 'none', flex: 1, minHeight: 0, flexDirection: 'column' }}>
-            <FilePreview filePath={activeTab} onDirtyChange={handleDirtyChange} fontSize={editorFontSize} />
-          </div>
+          <ErrorBoundary panel="Editor">
+            <div style={{ display: showEditor ? 'flex' : 'none', flex: 1, minHeight: 0, flexDirection: 'column' }}>
+              <FilePreview filePath={activeTab} onDirtyChange={handleDirtyChange} fontSize={editorFontSize} />
+            </div>
+          </ErrorBoundary>
 
           {/* Diff viewer — mounted only when a diff is active. DiffViewer
               is less expensive to remount than FilePreview and its content
               (before/after) is diff-specific, so conditional mounting is
               fine here. */}
           {showDiff && diffState && (
-            <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
-              <DiffViewer filePath={diffState.filePath} before={diffState.before} after={diffState.after} fontSize={editorFontSize} />
-            </div>
+            <ErrorBoundary panel="Diff Viewer">
+              <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+                <DiffViewer filePath={diffState.filePath} before={diffState.before} after={diffState.after} fontSize={editorFontSize} />
+              </div>
+            </ErrorBoundary>
           )}
 
           {/* Empty state */}
@@ -811,51 +628,9 @@ export default function App() {
                       onCwdChange={(newCwd) => updateTab(tab.id, { cwd: newCwd })}
                       onActionChange={(action) => updateTab(tab.id, { aiAction: action })}
                       onClaudeRunningChange={(running) => updateTab(tab.id, { claudeRunning: running })}
-                      onLocalUrlDetected={(url) => {
-                        updateTab(tab.id, { previewLocalUrl: url });
-                        // Propagate URL to active tab's preview — works for both
-                        // the active tab itself AND companion dev server tabs
-                        // (which share the same cwd as the active tab).
-                        const activeTab = terminalTabsRef.current.find(t => t.id === activeTerminalIdRef.current);
-                        const isActiveOrCompanion = tab.id === activeTerminalIdRef.current
-                          || (activeTab && tab.cwd === activeTab.cwd);
-                        if (isActiveOrCompanion) {
-                          setPreviewLocalUrl(url);
-                          // Auto-open preview on first dev server detection
-                          const fresh = terminalTabsRef.current.find(t => t.id === tab.id);
-                          if (fresh && !fresh.devServerAutoOpened && !autoPreviewDisabledRef.current) {
-                            updateTab(tab.id, { devServerAutoOpened: true });
-                            // Health-check: wait for server to respond before opening
-                            const check = (attempt: number) => {
-                              fetch(url, { mode: 'no-cors' }).then(() => {
-                                setPreviewOpen(true);
-                                showAutoPreviewToast(url);
-                              }).catch(() => {
-                                if (attempt < 10) setTimeout(() => check(attempt + 1), 800);
-                              });
-                            };
-                            check(0);
-                          }
-                        }
-                      }}
-                      onLocalUrlsDetected={(urls) => {
-                        updateTab(tab.id, { previewLocalUrls: urls });
-                        const activeTab = terminalTabsRef.current.find(t => t.id === activeTerminalIdRef.current);
-                        const isActiveOrCompanion = tab.id === activeTerminalIdRef.current
-                          || (activeTab && tab.cwd === activeTab.cwd);
-                        if (isActiveOrCompanion) {
-                          setPreviewLocalUrls(urls);
-                        }
-                      }}
-                      onProdUrlDetected={(url) => {
-                        updateTab(tab.id, { previewProdUrl: url });
-                        const activeTab = terminalTabsRef.current.find(t => t.id === activeTerminalIdRef.current);
-                        const isActiveOrCompanion = tab.id === activeTerminalIdRef.current
-                          || (activeTab && tab.cwd === activeTab.cwd);
-                        if (isActiveOrCompanion) {
-                          setPreviewProdUrl(url);
-                        }
-                      }}
+                      onLocalUrlDetected={(url) => handleLocalUrlDetected(tab.id, url)}
+                      onLocalUrlsDetected={(urls) => handleLocalUrlsDetected(tab.id, urls)}
+                      onProdUrlDetected={(url) => handleProdUrlDetected(tab.id, url)}
                       onDevServerStateChange={tab.isDevServer
                         ? (state) => handleDevServerStateChange(tab.id, state)
                         : undefined

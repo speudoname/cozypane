@@ -2,11 +2,9 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { createRequire } from 'node:module';
 
-// Framework detection data — shared with cozypane/src/main/preview.ts.
-// Source of truth is shared/framework-data.json; this is a copy kept in
-// sync. When adding frameworks, update the shared file and copy here.
+// Framework detection data — single source of truth in shared/framework-data.json.
 const require = createRequire(import.meta.url);
-const frameworkData = require('./framework-data.json');
+const frameworkData = require('../../../shared/framework-data.json');
 
 export interface ProjectAnalysis {
   type: 'docker' | 'node' | 'python' | 'go' | 'static';

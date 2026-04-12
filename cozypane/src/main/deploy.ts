@@ -3,7 +3,8 @@ import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
 import { encryptString, decryptString } from './crypto';
-import { apiFetch as sharedApiFetch } from './deploy-shared';
+import { apiFetch as sharedApiFetch, API_BASE } from './deploy-shared';
+export { API_BASE } from './deploy-shared';
 import { broadcastAll } from './windows';
 // NOTE: Direct upload deploy path (deploy:start / deploy:detectProject /
 // deploy:get IPC handlers and createTarball/detectProjectType helpers) was
@@ -19,8 +20,6 @@ function sweepExpiredOAuthStates(): void {
     if (expiry < now) pendingOAuthStates.delete(state);
   }
 }
-
-export const API_BASE = process.env.COZYPANE_API_URL || 'https://api.cozypane.com';
 
 interface StoredAuth {
   encryptedToken: string;
@@ -97,7 +96,11 @@ export function registerDeployHandlers() {
     sweepExpiredOAuthStates();
     pendingOAuthStates.set(state, Date.now() + 5 * 60 * 1000); // 5-min expiry
     const oauthUrl = `https://github.com/login/oauth/authorize?client_id=${clientId}&redirect_uri=${redirectUri}&scope=repo,read:user&state=${state}`;
-    await shell.openExternal(oauthUrl);
+    try {
+      await shell.openExternal(oauthUrl);
+    } catch {
+      return { error: 'Could not open browser for authentication' };
+    }
   });
 
   ipcMain.handle('deploy:logout', async () => {

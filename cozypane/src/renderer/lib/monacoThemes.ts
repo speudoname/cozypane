@@ -15,7 +15,7 @@ import * as monaco from 'monaco-editor';
 
 let registered = false;
 
-export function registerCozyThemes(): void {
+function registerCozyThemes(): void {
   if (registered) return;
   registered = true;
 

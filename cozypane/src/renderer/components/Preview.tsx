@@ -2,6 +2,8 @@ import React, { useState, useRef, useCallback, useEffect } from 'react';
 import { ArrowLeft, ArrowRight, Home, RotateCw, Smartphone, Tablet, Monitor, Columns2, Globe, Zap } from 'lucide-react';
 import PreviewConsole from './PreviewConsole';
 import PreviewEmptyState from './PreviewEmptyState';
+import { useStaticServer } from '../lib/useStaticServer';
+import { useWebviewBridge } from '../lib/useWebviewBridge';
 // PreviewError, ConsoleLog, NetworkError are declared in src/renderer/types.d.ts
 
 interface Props {
@@ -63,8 +65,6 @@ export default function Preview({ localUrl, localUrls = [], productionUrl, cwd, 
   const [manualLocalUrl, setManualLocalUrl] = useState('');
   const [selectedLocalUrl, setSelectedLocalUrl] = useState<string | null>(null);
   const [manualUrlInput, setManualUrlInput] = useState('');
-  const [staticUrl, setStaticUrl] = useState<string | null>(null);
-  const [staticError, setStaticError] = useState<string | null>(null);
   const [sendingToClaude, setSendingToClaude] = useState(false);
   const [claudeWarning, setClaudeWarning] = useState(false);
   const [projectInfo, setProjectInfo] = useState<{ type: string | null; devCommand: string | null } | null>(null);
@@ -78,11 +78,12 @@ export default function Preview({ localUrl, localUrls = [], productionUrl, cwd, 
 
   const localWebviewRef = useRef<any>(null);
   const prodWebviewRef = useRef<any>(null);
-  const staticCwdRef = useRef<string>('');
   const devtoolsWriteTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Track the URL we intentionally loaded so we don't re-navigate when webview browses to a sub-path
   const lastLoadedLocalUrlRef = useRef<string | null>(null);
   const lastLoadedProdUrlRef = useRef<string | null>(null);
+
+  const { staticUrl, staticError } = useStaticServer(cwd, localUrl);
 
   // When multiple URLs detected, let user pick; auto-select first frontend port
   const resolvedLocalUrl = selectedLocalUrl && localUrls.includes(selectedLocalUrl)
@@ -152,37 +153,6 @@ export default function Preview({ localUrl, localUrls = [], productionUrl, cwd, 
     }).catch(() => {});
   }, [cwd]);
 
-  useEffect(() => {
-    if (!cwd) return;
-    if (staticCwdRef.current && staticCwdRef.current !== cwd) {
-      window.cozyPane.preview.stopStatic(staticCwdRef.current).catch(() => {});
-      staticCwdRef.current = '';
-      setStaticUrl(null);
-      setStaticError(null);
-    }
-    if (localUrl) return;
-    let cancelled = false;
-    (async () => {
-      try {
-        const projectResult = await window.cozyPane.preview.detectProject(cwd);
-        if (cancelled) return;
-        if (projectResult?.serveStatic) {
-          const result = await window.cozyPane.preview.serveStatic(cwd);
-          if (cancelled) return;
-          if (result.error) {
-            setStaticError(`Could not start static server: ${result.error}`);
-          } else {
-            staticCwdRef.current = cwd;
-            setStaticUrl(`http://localhost:${result.port}`);
-          }
-        }
-      } catch (e) {
-        if (!cancelled) setStaticError(`Could not start static server: ${String(e)}`);
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [cwd, localUrl]);
-
   // Detect project type and suggest port when no dev server is running
   useEffect(() => {
     if (!cwd || effectiveLocalUrl) { setProjectInfo(null); return; }
@@ -223,167 +193,18 @@ export default function Preview({ localUrl, localUrls = [], productionUrl, cwd, 
     };
   }, [consoleLogs, networkErrors, effectiveLocalUrl, effectiveProdUrl]);
 
-  const wireWebview = useCallback((wv: any) => {
-    if (!wv) return;
-
-    const handleConsoleMessage = (e: any) => {
-      const log: ConsoleLog = {
-        level: e.level,
-        message: e.message,
-        timestamp: Date.now(),
-        source: e.sourceId,
-        line: e.line,
-      };
-      setConsoleLogs(prev => [...prev.slice(-99), log]);
-
-      // All-request capture (captures successes too)
-      if (e.message.startsWith('[CozyPreview:request]')) {
-        try {
-          const json = JSON.parse(e.message.slice('[CozyPreview:request]'.length));
-          const netErr: NetworkError = {
-            method: json.method || 'GET', url: json.url || '',
-            status: json.status || 0, statusText: json.statusText || 'Unknown',
-            timestamp: Date.now(),
-          };
-          onNetworkRequestRef.current?.({
-            ...netErr, duration: json.duration || 0, size: json.size,
-            ok: json.ok ?? (json.status >= 200 && json.status < 400),
-          });
-          if (!json.ok && json.status !== 0) {
-            setNetworkErrors(prev => [...prev.slice(-49), netErr]);
-          }
-        } catch {}
-        return;
-      }
-      // Legacy handler for older webview injection (backward compat)
-      if (e.message.startsWith('[CozyPreview:netdata]')) {
-        try {
-          const json = JSON.parse(e.message.slice('[CozyPreview:netdata]'.length));
-          setNetworkErrors(prev => [...prev.slice(-49), {
-            method: json.method || 'GET', url: json.url || '',
-            status: json.status || 0, statusText: json.statusText || 'Unknown',
-            timestamp: Date.now(),
-          }]);
-        } catch {}
-        return;
-      }
-
-      if (e.level >= 2) {
-        setErrors(prev => [...prev.slice(-19), {
-          type: e.message.startsWith('[CozyPreview:network]') ? 'network' : 'console',
-          message: e.message,
-          timestamp: Date.now(),
-          detail: `Line ${e.line} in ${e.sourceId}`,
-        }]);
-      }
-    };
-
-    const handleDidFailLoad = (e: any) => {
-      // -3 = ERR_ABORTED (navigation cancelled, not an error)
-      // -102 = ERR_CONNECTION_REFUSED (fires for stale sub-paths during tab restore before server responds)
-      if (e.errorCode === -3 || e.errorCode === -102) return;
-      setErrors(prev => [...prev.slice(-19), {
-        type: 'load',
-        message: `Page failed to load: ${e.errorDescription}`,
-        timestamp: Date.now(),
-        detail: `Error code: ${e.errorCode}, URL: ${e.validatedURL}`,
-      }]);
-      setLoading(false);
-    };
-
-    const handleDidStartLoading = () => setLoading(true);
-    const handleDidStopLoading = () => setLoading(false);
-
-    const injectNetworkWatcher = () => {
-      wv.executeJavaScript(`
-        (function() {
-          if (window.__cozyPreviewInjected) return;
-          window.__cozyPreviewInjected = true;
-          const origFetch = window.fetch;
-          window.fetch = async function(...args) {
-            const method = (args[1]?.method || 'GET').toUpperCase();
-            const url = typeof args[0] === 'string' ? args[0] : (args[0]?.url || String(args[0]));
-            const start = performance.now();
-            try {
-              const res = await origFetch.apply(this, args);
-              const duration = Math.round(performance.now() - start);
-              const size = parseInt(res.headers.get('content-length') || '0', 10) || undefined;
-              console.error('[CozyPreview:request]' + JSON.stringify({
-                method: method, url: url, status: res.status, statusText: res.statusText,
-                duration: duration, size: size, ok: res.ok
-              }));
-              if (!res.ok) {
-                console.error('[CozyPreview:network] ' + res.status + ' ' + res.statusText + ' - ' + url);
-              }
-              return res;
-            } catch(e) {
-              const duration = Math.round(performance.now() - start);
-              console.error('[CozyPreview:request]' + JSON.stringify({
-                method: method, url: url, status: 0, statusText: e.message,
-                duration: duration, ok: false
-              }));
-              console.error('[CozyPreview:network] Fetch failed: ' + e.message + ' - ' + url);
-              throw e;
-            }
-          };
-          window.addEventListener('error', function(e) {
-            console.error('[CozyPreview:error] ' + e.message + ' at ' + e.filename + ':' + e.lineno);
-          });
-          window.addEventListener('unhandledrejection', function(e) {
-            console.error('[CozyPreview:error] Unhandled promise rejection: ' + (e.reason?.message || e.reason));
-          });
-        })();
-      `).catch(() => {});
-    };
-
-    // Debounced auto-capture screenshot on page navigation (max once per 5s)
-    let screenshotTimer: ReturnType<typeof setTimeout> | null = null;
-    let lastScreenshotTime = 0;
-    const handleDidNavigate = () => {
-      if (screenshotTimer) clearTimeout(screenshotTimer);
-      const elapsed = Date.now() - lastScreenshotTime;
-      const delay = Math.max(1000, 5000 - elapsed); // At least 1s after nav, throttle to 5s
-      screenshotTimer = setTimeout(async () => {
-        lastScreenshotTime = Date.now();
-        try {
-          const nativeImage = await wv.capturePage();
-          const base64 = nativeImage.toPNG().toString('base64');
-          const screenshotFile = await window.cozyPane.preview.captureScreenshot(base64);
-          onScreenshotCapturedRef.current?.(screenshotFile);
-        } catch {}
-      }, delay);
-    };
-
-    wv.addEventListener('console-message', handleConsoleMessage);
-    wv.addEventListener('did-fail-load', handleDidFailLoad);
-    wv.addEventListener('did-start-loading', handleDidStartLoading);
-    wv.addEventListener('did-stop-loading', handleDidStopLoading);
-    wv.addEventListener('dom-ready', injectNetworkWatcher);
-    wv.addEventListener('did-navigate', handleDidNavigate);
-    wv.addEventListener('did-navigate-in-page', handleDidNavigate);
-
-    return () => {
-      wv.removeEventListener('console-message', handleConsoleMessage);
-      wv.removeEventListener('did-fail-load', handleDidFailLoad);
-      wv.removeEventListener('did-navigate', handleDidNavigate);
-      wv.removeEventListener('did-navigate-in-page', handleDidNavigate);
-      wv.removeEventListener('did-start-loading', handleDidStartLoading);
-      wv.removeEventListener('did-stop-loading', handleDidStopLoading);
-      wv.removeEventListener('dom-ready', injectNetworkWatcher);
-    };
-  }, []);
-
-  useEffect(() => {
-    const wv = localWebviewRef.current;
-    if (!wv || !effectiveLocalUrl) return;
-    return wireWebview(wv);
-  }, [effectiveLocalUrl, wireWebview]);
-
-  useEffect(() => {
-    const wv = prodWebviewRef.current;
-    if (!wv || !effectiveProdUrl) return;
-    return wireWebview(wv);
-  }, [effectiveProdUrl, wireWebview]);
+  useWebviewBridge({
+    localWebviewRef,
+    prodWebviewRef,
+    effectiveLocalUrl,
+    effectiveProdUrl,
+    setConsoleLogs,
+    setNetworkErrors,
+    setErrors,
+    setLoading,
+    onNetworkRequestRef,
+    onScreenshotCapturedRef,
+  });
 
   const collectDevToolsData = useCallback(async () => {
     const currentUrl = effectiveLocalUrl || effectiveProdUrl || null;
@@ -525,22 +346,13 @@ export default function Preview({ localUrl, localUrls = [], productionUrl, cwd, 
   const hasDevToolsData = consoleLogs.length > 0 || networkErrors.length > 0 || errors.length > 0;
 
   const renderWebview = (url: string, ref: React.RefObject<any>, label: string) => (
-    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minWidth: 0 }}>
+    <div className="preview-webview-wrapper">
       {viewMode === 'split' && (
-        <div style={{
-          padding: '0.2em 0.5em',
-          fontSize: '0.72em',
-          color: 'var(--text-secondary, #888)',
-          backgroundColor: 'var(--bg-secondary, #161822)',
-          borderBottom: '1px solid var(--border, #2a2b3e)',
-          fontWeight: 600,
-          textTransform: 'uppercase',
-          letterSpacing: '0.05em',
-        }}>
+        <div className="preview-split-label">
           {label}
         </div>
       )}
-      <div style={{ flex: 1, display: 'flex', justifyContent: 'center', backgroundColor: 'var(--bg-primary, #0a0b10)', overflow: 'hidden', position: 'relative' }}>
+      <div className="preview-webview-viewport">
         <webview
           ref={ref}
           src={url}
@@ -624,13 +436,8 @@ export default function Preview({ localUrl, localUrls = [], productionUrl, cwd, 
             <select
               value={effectiveLocalUrl || ''}
               onChange={e => setSelectedLocalUrl(e.target.value)}
-              style={{
-                padding: '0.15em 0.3em', borderRadius: 3,
-                border: '1px solid var(--border, #2a2b3e)',
-                backgroundColor: 'var(--bg-primary, #1a1b2e)',
-                color: 'var(--text-secondary, #aaa)',
-                fontSize: '0.72em', cursor: 'pointer', maxWidth: 180,
-              }}
+              className="preview-url-select"
+              style={{ maxWidth: 180 }}
               title="Switch local URL"
             >
               {localUrls.map(u => (
@@ -642,13 +449,8 @@ export default function Preview({ localUrl, localUrls = [], productionUrl, cwd, 
             <select
               value={selectedDeploymentUrl || ''}
               onChange={e => setSelectedDeploymentUrl(e.target.value)}
-              style={{
-                padding: '0.15em 0.3em', borderRadius: 3,
-                border: '1px solid var(--border, #2a2b3e)',
-                backgroundColor: 'var(--bg-primary, #1a1b2e)',
-                color: 'var(--text-secondary, #aaa)',
-                fontSize: '0.72em', cursor: 'pointer', maxWidth: 140,
-              }}
+              className="preview-url-select"
+              style={{ maxWidth: 140 }}
               title="Switch deployment"
             >
               {matchedDeployments.map(d => (
@@ -710,13 +512,7 @@ export default function Preview({ localUrl, localUrls = [], productionUrl, cwd, 
       </div>
 
       {effectiveLocalUrl && (
-        <div style={{
-          padding: '0.2em 0.6em', fontSize: '0.75em',
-          color: 'var(--text-secondary, #888)',
-          backgroundColor: 'var(--bg-primary, #1a1b2e)',
-          borderBottom: '1px solid var(--border, #2a2b3e)',
-          display: 'flex', alignItems: 'center', gap: '0.4em',
-        }}>
+        <div className="preview-url-bar">
           <span style={{ ...dotStyle('var(--success, #5ce0a8)'), position: 'relative', top: 0 }} />
           <span style={{ fontFamily: 'monospace' }}>{effectiveLocalUrl}</span>
           {staticUrl && <span style={{ fontSize: '0.9em', color: 'var(--text-secondary, #666)' }}>(static)</span>}
@@ -732,7 +528,7 @@ export default function Preview({ localUrl, localUrls = [], productionUrl, cwd, 
                   setSelectedDeploymentUrl(null);
                   if (cwd) window.cozyPane.preview.storeUrl(cwd, { productionUrl: '' }).catch(() => {});
                 }}
-                style={{ ...tinyBtnStyle, padding: '0 3px', color: '#888', fontSize: '0.85em', lineHeight: 1 }}
+                style={{ ...tinyBtnStyle, padding: '0 3px', color: 'var(--text-secondary, #888)', fontSize: '0.85em', lineHeight: 1 }}
               >
                 x
               </button>
@@ -758,11 +554,7 @@ export default function Preview({ localUrl, localUrls = [], productionUrl, cwd, 
       </div>
 
       {claudeWarning && (
-        <div style={{
-          padding: '5px 10px', fontSize: '0.72em', fontWeight: 600,
-          backgroundColor: 'color-mix(in srgb, var(--warning, #e6b800) 13%, transparent)', color: 'var(--warning, #e6b800)',
-          borderTop: '1px solid color-mix(in srgb, var(--warning, #e6b800) 27%, transparent)', textAlign: 'center',
-        }}>
+        <div className="preview-claude-warning">
           Claude is not running in the terminal
         </div>
       )}

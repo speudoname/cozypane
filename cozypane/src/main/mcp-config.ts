@@ -37,7 +37,7 @@ function extractDirPath(): string {
   return path.join(app.getPath('userData'), 'mcp');
 }
 
-export function ensureMcpServerExtracted(): string {
+function ensureMcpServerExtracted(): string {
   if (extractedMcpServerPath) return extractedMcpServerPath;
 
   if (isDev) {

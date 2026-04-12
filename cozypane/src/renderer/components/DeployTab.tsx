@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { isCozyModeEnabled, enableCozyMode, disableCozyMode } from '../lib/cozyMode';
+import { STATUS_COLORS } from '../lib/deployUtils';
 
 interface Props {
   cwd: string;
@@ -10,15 +11,6 @@ interface Props {
   onRefresh: () => void;
   onOpenManagement: () => void;
 }
-
-const STATUS_COLORS: Record<string, string> = {
-  building: 'var(--warning, #e6b800)',
-  running: 'var(--success, #4caf50)',
-  stopped: 'var(--danger, #e74c3c)',
-  error: 'var(--danger, #e74c3c)',
-  failed: 'var(--danger, #e74c3c)',
-  unhealthy: 'var(--warning, #e6b800)',
-};
 
 export default function DeployTab({ cwd, auth, deployments, onLogin, onTerminalCommand, onRefresh, onOpenManagement }: Props) {
   const [cozyMode, setCozyMode] = useState(false);

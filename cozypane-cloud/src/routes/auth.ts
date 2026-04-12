@@ -1,8 +1,8 @@
 import type { FastifyInstance } from 'fastify';
-import { query } from '../db/index.js';
 import { authenticate, signToken } from '../middleware/auth.js';
 import { encryptToken, decryptToken } from '../services/tokenCrypto.js';
 import { DOMAIN } from '../services/serializers.js';
+import { upsertGithubUser, getUserAccessToken, getUserProfile } from '../db/users.js';
 
 interface GitHubTokenResponse {
   access_token: string;
@@ -93,18 +93,7 @@ async function authenticateGithubCode(
   }
 
   // 4. Upsert user row, store the encrypted token
-  const result = await query(
-    `INSERT INTO users (github_id, username, avatar_url, access_token)
-     VALUES ($1, $2, $3, $4)
-     ON CONFLICT (github_id) DO UPDATE SET
-       username = EXCLUDED.username,
-       avatar_url = EXCLUDED.avatar_url,
-       access_token = EXCLUDED.access_token,
-       updated_at = NOW()
-     RETURNING id, github_id, username, avatar_url`,
-    [ghUser.id, ghUser.login, ghUser.avatar_url, encryptedGithubToken],
-  );
-  const user = result.rows[0];
+  const user = await upsertGithubUser(ghUser.id, ghUser.login, ghUser.avatar_url, encryptedGithubToken);
 
   // 5. Sign a cozypane JWT for the session
   const jwtToken = signToken({
@@ -170,12 +159,9 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
     preHandler: authenticate,
     config: { rateLimit: { max: 30, timeWindow: '1 minute' } },
   }, async (request, reply) => {
-    const result = await query(
-      'SELECT access_token FROM users WHERE id = $1',
-      [request.user.id],
-    );
-    if (!result.rows[0]) return reply.code(404).send({ error: 'User not found' });
-    const encrypted = result.rows[0].access_token;
+    const row = await getUserAccessToken(request.user.id);
+    if (!row) return reply.code(404).send({ error: 'User not found' });
+    const encrypted = row.access_token;
     if (!encrypted) return reply.code(404).send({ error: 'No GitHub token stored. Re-authenticate.' });
     try {
       const token = decryptToken(encrypted);
@@ -215,12 +201,13 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
     // H5 — HttpOnly cookie replaces the URL-fragment JWT transport. The
     // admin SPA reads identity from GET /auth/me using this cookie; there's
     // no token in the URL at any point.
-    reply.setCookie('admin_session', result.jwtToken, {
+    // __Host- prefix enforces Secure + Path=/ and prevents Domain attribute,
+    // making this cookie immune to cookie-tossing from deployment subdomains.
+    reply.setCookie('__Host-admin_session', result.jwtToken, {
       path: '/',
       httpOnly: true,
       secure: true,
       sameSite: 'lax',
-      domain: `admin.${domain}`,
       maxAge: 30 * 24 * 60 * 60, // 30 days
     });
     return reply.redirect(`https://admin.${domain}/admin/`);
@@ -231,26 +218,22 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
   // a public endpoint. The initial login flow uses this to kick off an
   // OAuth redirect, so the admin SPA bootstraps without the cookie by
   // embedding the client ID at page-serve time via a static header below.
-  app.get('/auth/admin-client-id', async (_request, reply) => {
+  app.get('/auth/admin-client-id', {
+    config: { rateLimit: { max: 10, timeWindow: '1 minute' } },
+  }, async (_request, reply) => {
     // Unauthenticated access returns only `clientId` (which is semi-public
-    // anyway — GitHub treats it as a public identifier) but no longer
-    // includes any cookie/session hints. Rate-limited so scraping still
-    // costs attackers something.
+    // anyway — GitHub treats it as a public identifier).
     reply.header('Cache-Control', 'private, max-age=60');
     return { clientId: process.env.ADMIN_GITHUB_CLIENT_ID || '' };
   });
 
   app.get('/auth/me', { preHandler: authenticate }, async (request, reply) => {
-    const result = await query(
-      'SELECT id, github_id, username, avatar_url, created_at FROM users WHERE id = $1',
-      [request.user.id],
-    );
+    const user = await getUserProfile(request.user.id);
 
-    if (result.rows.length === 0) {
+    if (!user) {
       return reply.code(404).send({ error: 'User not found' });
     }
 
-    const user = result.rows[0];
     return {
       id: user.id,
       username: user.username,

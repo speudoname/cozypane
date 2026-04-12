@@ -8,6 +8,7 @@ export default function UpdateBanner({ onRunUpdate }: Props) {
   const [info, setInfo] = useState<UpdateInfo | null>(null);
   const [dismissed, setDismissed] = useState(false);
   const [expanded, setExpanded] = useState(false);
+  const [updateError, setUpdateError] = useState<string | null>(null);
 
   useEffect(() => {
     // Check for cached result
@@ -18,12 +19,20 @@ export default function UpdateBanner({ onRunUpdate }: Props) {
     });
 
     // Listen for new check results
-    const cleanup = window.cozyPane.updates.onAvailable((newInfo) => {
+    const cleanupAvailable = window.cozyPane.updates.onAvailable((newInfo) => {
       setInfo(newInfo);
       setDismissed(false);
     });
 
-    return cleanup;
+    // Listen for auto-update errors (network failures, signature mismatches, etc.)
+    const cleanupError = window.cozyPane.updates.onError(({ message }) => {
+      setUpdateError(message);
+    });
+
+    return () => {
+      cleanupAvailable();
+      cleanupError();
+    };
   }, []);
 
   const handleUpdate = useCallback(async (opts: { brew: boolean; claude: boolean }) => {
@@ -42,6 +51,21 @@ export default function UpdateBanner({ onRunUpdate }: Props) {
       }
     });
   }, []);
+
+  if (updateError && !dismissed) {
+    return (
+      <div className="update-banner" style={{ borderLeft: '3px solid var(--danger, #e74c3c)' }}>
+        <div className="update-banner-main">
+          <span className="update-banner-icon">!</span>
+          <span className="update-banner-text">Auto-update failed: {updateError}</span>
+          <div className="update-banner-actions">
+            <button className="btn update-btn-secondary" onClick={handleRecheck}>Retry</button>
+            <button className="btn update-btn-dismiss" onClick={() => { setUpdateError(null); setDismissed(true); }} title="Dismiss">x</button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   if (!info || dismissed) return null;
 

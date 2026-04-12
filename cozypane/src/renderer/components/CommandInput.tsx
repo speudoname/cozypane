@@ -359,7 +359,7 @@ export default function CommandInput({ onSubmit, onRawKey, visible, history, onF
               const name = p.split('/').pop() || p;
               const isImage = isImageFile(name);
               return (
-                <span key={i} className={`attached-chip ${isImage ? 'image' : ''}`} title={p}>
+                <span key={p} className={`attached-chip ${isImage ? 'image' : ''}`} title={p}>
                   <span className="attached-icon">{isImage ? '~' : '#'}</span>
                   <span className="attached-name">{name}</span>
                   <button

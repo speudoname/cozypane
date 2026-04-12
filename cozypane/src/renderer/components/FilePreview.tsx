@@ -250,7 +250,7 @@ export default function FilePreview({ filePath, fontSize = 13, onDirtyChange }: 
       theme: 'cozy-dark',
       automaticLayout: true,
       minimap: { enabled: true },
-      fontSize: 13,
+      fontSize,
       lineNumbers: 'on',
       scrollBeyondLastLine: false,
       wordWrap: 'on',

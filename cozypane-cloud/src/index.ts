@@ -21,6 +21,7 @@ import { cleanupOrphanBuildDirs } from './services/buildCleanup.js';
 import { startPeriodicImagePrune, stopPeriodicImagePrune } from './services/imagePrune.js';
 import { setContainerLogger } from './services/container.js';
 import { setDatabaseLogger } from './services/database.js';
+import { setTraefikLogger } from './services/traefik.js';
 import { DOMAIN } from './services/serializers.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -96,6 +97,7 @@ await connectDb();
 setContainerLogger(app.log);
 setDatabaseLogger(app.log);
 setDeployerLogger(app.log);
+setTraefikLogger(app.log);
 
 // Reconcile stuck 'building' deployments from a previous run. If the API
 // process crashes mid-build (or the host is restarted), rows can be left in

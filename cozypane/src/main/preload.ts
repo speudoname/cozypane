@@ -101,6 +101,16 @@ contextBridge.exposeInMainWorld('cozyPane', {
       ipcRenderer.on('updates:available', listener);
       return () => ipcRenderer.removeListener('updates:available', listener);
     },
+    onStatus: (callback: (info: { status: string; version?: string }) => void) => {
+      const listener = (_event: any, info: any) => callback(info);
+      ipcRenderer.on('updater:status', listener);
+      return () => ipcRenderer.removeListener('updater:status', listener);
+    },
+    onError: (callback: (info: { message: string }) => void) => {
+      const listener = (_event: any, info: any) => callback(info);
+      ipcRenderer.on('updates:error', listener);
+      return () => ipcRenderer.removeListener('updates:error', listener);
+    },
   },
   // Menu event subscriber — restricted to `menu:*` channels. Non-menu
   // channels (deploy:auth-*, github:auth-changed, updater:status) now have

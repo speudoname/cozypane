@@ -1,6 +1,7 @@
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { useConfirm } from '../lib/confirmContext';
 import DomainManager from './DomainManager';
+import { STATUS_COLORS } from '../lib/deployUtils';
 
 interface Props {
   auth: DeployAuth;
@@ -12,15 +13,6 @@ interface Props {
 }
 
 type Tab = 'deployments' | 'databases' | 'infrastructure';
-
-const STATUS_COLORS: Record<string, string> = {
-  building: 'var(--warning, #e6b800)',
-  running: 'var(--success, #4caf50)',
-  stopped: 'var(--danger, #e74c3c)',
-  error: 'var(--danger, #e74c3c)',
-  failed: 'var(--danger, #e74c3c)',
-  unhealthy: 'var(--warning, #e6b800)',
-};
 
 const DB_ICONS: Record<string, string> = {
   postgres: 'PG',

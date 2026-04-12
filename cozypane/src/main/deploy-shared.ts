@@ -7,9 +7,12 @@ import { promisify } from 'util';
 
 const execFileAsync = promisify(execFile);
 
-// Must match the server's APP_NAME_REGEX in routes/deploy.ts.
-// Client-side validation for fast feedback; the server re-validates.
+// Must match the server's APP_NAME_REGEX — single source of truth is
+// shared/constants.ts but TypeScript rootDir prevents direct import.
+// Re-exported here; keep in sync or use a cross-codebase test.
 export const APP_NAME_REGEX = /^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$/;
+
+export const API_BASE = process.env.COZYPANE_API_URL || 'https://api.cozypane.com';
 
 export async function apiFetch(
   apiBase: string,

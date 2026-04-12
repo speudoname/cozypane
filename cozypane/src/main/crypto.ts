@@ -14,7 +14,7 @@ import { safeStorage } from 'electron';
 // version of CozyPane (or a CI build) wrote a base64 fallback, we can
 // still decode it. But we won't WRITE new values that way.
 
-export class UnencryptedCredentialStoreError extends Error {
+class UnencryptedCredentialStoreError extends Error {
   constructor() {
     super(
       'Credential store not available: Electron safeStorage reports no real keyring. ' +

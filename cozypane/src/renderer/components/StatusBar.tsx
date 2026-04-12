@@ -1,5 +1,4 @@
 import React from 'react';
-import type { AiAction } from '../lib/terminalAnalyzer';
 
 interface Props {
   cwd: string;

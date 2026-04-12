@@ -63,6 +63,7 @@ function createPty(sender: WebContents, cwd?: string): { id: string; cwd: string
 
     process.onExit(({ exitCode }: { exitCode: number }) => {
       safeSend(sender, 'terminal:exit', id, exitCode);
+      cwdCache.delete(process.pid);
       ptyMap.delete(id);
     });
 
@@ -103,14 +104,18 @@ async function getCwdForPidUncached(pid: number): Promise<string | null> {
     return fs.promises.readlink(`/proc/${pid}/cwd`).catch(() => null);
   }
 
-  // macOS: find the foreground shell process and get its cwd
+  // macOS: find the foreground shell process and get its cwd.
+  // Use pgrep -P to list only direct children of the PTY pid (instead of
+  // ps -ax which listed ALL system processes — audit H3).
   try {
-    const { stdout: childOut } = await execFileAsync('/bin/ps', ['-o', 'pid=', '-ax', '-o', 'ppid='], { timeout: 3000 });
     const pidStr = String(pid);
-    const childPids = (childOut || '').trim().split('\n')
-      .map(line => line.trim().split(/\s+/))
-      .filter(parts => parts[1] === pidStr)
-      .map(parts => parts[0]);
+    let childPids: string[] = [];
+    try {
+      const { stdout: pgrepOut } = await execFileAsync('/usr/bin/pgrep', ['-P', pidStr], { timeout: 3000 });
+      childPids = (pgrepOut || '').trim().split('\n').filter(Boolean);
+    } catch {
+      // pgrep returns exit code 1 when no children found — not an error
+    }
     const targetPid = childPids.length > 0 ? childPids[childPids.length - 1] : pidStr;
 
     if (!/^\d+$/.test(targetPid)) return null;

@@ -7,6 +7,7 @@ import { createGunzip } from 'node:zlib';
 import tar from 'tar-fs';
 import { query } from '../db/index.js';
 import { getDeployment, countActiveDeployments, checkSubdomainCollision } from '../db/deployments.js';
+import { getUserById } from '../db/users.js';
 import { authenticate } from '../middleware/auth.js';
 import { checkUserRateLimit } from '../middleware/rateLimit.js';
 import { analyzeProject } from '../services/detector.js';
@@ -22,6 +23,9 @@ import { appUrl, serializeDeploymentSummary, serializeDeploymentDetail } from '.
 import { enqueueDeploy } from '../services/deployQueue.js';
 import { idParamSchema, groupParamSchema } from '../services/schemas.js';
 
+// Must match the desktop's APP_NAME_REGEX in deploy-shared.ts.
+// Single source of truth is shared/constants.ts but TypeScript rootDir
+// prevents direct import. Keep in sync.
 const APP_NAME_REGEX = /^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$/;
 
 export async function deployRoutes(app: FastifyInstance): Promise<void> {
@@ -50,6 +54,16 @@ export async function deployRoutes(app: FastifyInstance): Promise<void> {
       return reply.code(400).send({
         error: 'Invalid app name. Use lowercase alphanumeric characters and hyphens (2-64 chars).',
       });
+    }
+
+    if (deployGroup && !APP_NAME_REGEX.test(deployGroup)) {
+      return reply.code(400).send({
+        error: 'Invalid deploy group name. Use lowercase alphanumeric characters and hyphens (2-64 chars).',
+      });
+    }
+
+    if (envJson && envJson.length > 65536) {
+      return reply.code(400).send({ error: 'Environment variables JSON exceeds 64 KB limit.' });
     }
 
     const userId = request.user.id;
@@ -431,9 +445,20 @@ export async function deployRoutes(app: FastifyInstance): Promise<void> {
     },
   );
 
-  // GET /deploy/infrastructure — Postgres + Redis server status
-  app.get('/deploy/infrastructure', { preHandler: authenticate }, async () => {
-    return getInfrastructureStatus();
+  // GET /deploy/infrastructure — Postgres + Redis server status.
+  // Strips internal details (version strings, memory usage) for non-admin
+  // users — only admin dashboard needs the full picture.
+  app.get('/deploy/infrastructure', { preHandler: authenticate }, async (request) => {
+    const status = await getInfrastructureStatus();
+    const user = await getUserById(request.user.id).catch(() => null);
+    const isAdmin = user?.is_admin ?? false;
+    if (!isAdmin) {
+      return {
+        postgres: { status: status.postgres.status, databases: status.postgres.databases },
+        redis: { status: status.redis.status },
+      };
+    }
+    return status;
   });
 }
 

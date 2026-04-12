@@ -8,7 +8,6 @@
 
 import { rmSync, existsSync } from 'node:fs';
 import type { FastifyBaseLogger } from 'fastify';
-import { query } from '../db/index.js';
 import { analyzeProject } from './detector.js';
 import { buildImage } from './builder.js';
 import {
@@ -18,6 +17,12 @@ import {
 } from './container.js';
 import { provisionDatabase } from './database.js';
 import { writeCustomDomainConfig } from './traefik.js';
+import {
+  markPhase, markPreFlightFailed, getExistingContainerId,
+  markBuildFailed, updateBuildLog, updateDbInfo, markDbProvisionFailed,
+  markStartFailed, updateContainerId, markRunning, getVerifiedDomains,
+  markUnhealthy, markRunningFromUnhealthy, getDeploymentStatus, appendBuildError,
+} from '../db/deploymentState.js';
 
 // Delayed health-re-check timers. Tracked so the shutdown sequence in
 // index.ts can cancel them before closing the Postgres pools — an
@@ -29,6 +34,12 @@ const pendingRechecks = new Set<ReturnType<typeof setTimeout>>();
 const DENIED_ENV_KEYS = new Set([
   'LD_PRELOAD', 'LD_LIBRARY_PATH', 'NODE_OPTIONS',
   'PATH', 'HOME', 'HOSTNAME', 'USER',
+  // Proxy vars — prevent routing container traffic through attacker-controlled proxies
+  'HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy',
+  'ALL_PROXY', 'NO_PROXY', 'no_proxy',
+  // TLS vars — prevent disabling certificate verification or injecting CA certs
+  'NODE_TLS_REJECT_UNAUTHORIZED', 'NODE_EXTRA_CA_CERTS',
+  'CURL_CA_BUNDLE', 'SSL_CERT_FILE', 'REQUESTS_CA_BUNDLE',
 ]);
 
 let log: FastifyBaseLogger = console as any;
@@ -46,16 +57,7 @@ export function cancelPendingHealthRechecks(): void {
 
 // -------- Internal helpers --------
 
-async function updatePhase(deploymentId: number, phase: string): Promise<void> {
-  await query(
-    `UPDATE deployments SET deploy_phase = $1, updated_at = NOW() WHERE id = $2`,
-    [phase, deploymentId],
-  ).catch((err) => {
-    log.warn({ deploymentId, phase, err: err.message }, 'updatePhase failed');
-  });
-}
-
-export function sanitizeErrorMessage(msg: string): string {
+function sanitizeErrorMessage(msg: string): string {
   // Strip internal infrastructure details from error messages shown to users.
   return msg
     .replace(/\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b/g, '[internal-ip]')   // IPs
@@ -65,7 +67,7 @@ export function sanitizeErrorMessage(msg: string): string {
     .replace(/password\s*[:=]\s*\S+/gi, 'password=[redacted]');               // Passwords
 }
 
-export function makeErrorDetail(
+function makeErrorDetail(
   phase: string,
   code: string,
   message: string,
@@ -150,26 +152,22 @@ export async function buildAndDeploy(params: BuildAndDeployParams): Promise<void
       `Build context missing at ${extractDir}`,
       'The build data volume was recreated or the upload extract directory was deleted. Please redeploy.',
     );
-    await query(
-      `UPDATE deployments SET status = 'failed', deploy_phase = 'pre_flight', error_detail = $1, updated_at = NOW() WHERE id = $2 AND status = 'building'`,
-      [errorDetail, deploymentId],
-    ).catch(() => {});
+    await markPreFlightFailed(deploymentId, errorDetail).catch(() => {});
     log.error({ extractDir, deploymentId }, 'Build aborted: extractDir missing');
     return;
   }
 
   try {
     // Stop old container if redeploying
-    const existing = await query(
-      'SELECT container_id FROM deployments WHERE id = $1 AND container_id IS NOT NULL',
-      [deploymentId],
-    );
-    if (existing.rows.length > 0 && existing.rows[0].container_id) {
-      await stopContainer(existing.rows[0].container_id).catch(() => {});
+    const existingContainerId = await getExistingContainerId(deploymentId);
+    if (existingContainerId) {
+      await stopContainer(existingContainerId).catch(() => {});
     }
 
     // Phase: building
-    await updatePhase(deploymentId, 'building');
+    await markPhase(deploymentId, 'building').catch((err) => {
+      log.warn({ deploymentId, phase: 'building', err: err.message }, 'markPhase failed');
+    });
     let buildLog = '';
     let imageTag: string;
     try {
@@ -181,16 +179,13 @@ export async function buildAndDeploy(params: BuildAndDeployParams): Promise<void
       buildLog = err.buildLog || buildLog;
       const errInfo = classifyBuildError(err, buildLog);
       const errorDetail = makeErrorDetail('build', errInfo.code, errInfo.message, errInfo.suggestion, buildLog);
-      await query(
-        `UPDATE deployments SET status = 'failed', deploy_phase = 'build', error_detail = $1, build_log = $2, updated_at = NOW() WHERE id = $3`,
-        [errorDetail, buildLog.slice(-50000), deploymentId],
-      ).catch(() => {});
+      await markBuildFailed(deploymentId, errorDetail, buildLog).catch(() => {});
       throw err;
     }
 
     // Store build log
     const trimmedLog = buildLog.length > 50000 ? '...' + buildLog.slice(-50000) : buildLog;
-    await query(`UPDATE deployments SET build_log = $1 WHERE id = $2`, [trimmedLog, deploymentId]).catch(() => {});
+    await updateBuildLog(deploymentId, trimmedLog).catch(() => {});
 
     // Build env vars from the user-supplied JSON blob.
     const env: Record<string, string> = {};
@@ -214,26 +209,24 @@ export async function buildAndDeploy(params: BuildAndDeployParams): Promise<void
 
     // Phase: provisioning_db (if needed)
     if (analysis.needsDatabase) {
-      await updatePhase(deploymentId, 'provisioning_db');
+      await markPhase(deploymentId, 'provisioning_db').catch((err) => {
+        log.warn({ deploymentId, phase: 'provisioning_db', err: err.message }, 'markPhase failed');
+      });
       try {
         const db = await provisionDatabase(userId, appName);
         env.DATABASE_URL = db.connectionString;
-        await query(
-          `UPDATE deployments SET db_name = $1, db_user = $2, db_host = $3 WHERE id = $4`,
-          [db.name, db.user, db.host, deploymentId],
-        );
+        await updateDbInfo(deploymentId, db.name, db.user, db.host);
       } catch (err: any) {
         const errorDetail = makeErrorDetail('provisioning_db', 'DB_PROVISION_FAILED', err.message || 'Database provisioning failed', 'Platform failed to create database. Try redeploying or contact support.');
-        await query(
-          `UPDATE deployments SET status = 'failed', deploy_phase = 'provisioning_db', error_detail = $1, updated_at = NOW() WHERE id = $2`,
-          [errorDetail, deploymentId],
-        ).catch(() => {});
+        await markDbProvisionFailed(deploymentId, errorDetail).catch(() => {});
         throw err;
       }
     }
 
     // Phase: starting
-    await updatePhase(deploymentId, 'starting');
+    await markPhase(deploymentId, 'starting').catch((err) => {
+      log.warn({ deploymentId, phase: 'starting', err: err.message }, 'markPhase failed');
+    });
     try {
       newContainerId = await runContainer(
         imageTag,
@@ -255,38 +248,28 @@ export async function buildAndDeploy(params: BuildAndDeployParams): Promise<void
         ? 'Another deployment is using the same port. Try redeploying.'
         : 'The container failed to start. Check build logs and runtime logs.';
       const errorDetail = makeErrorDetail('starting', code, msg, suggestion);
-      await query(
-        `UPDATE deployments SET status = 'failed', deploy_phase = 'starting', error_detail = $1, updated_at = NOW() WHERE id = $2`,
-        [errorDetail, deploymentId],
-      ).catch(() => {});
+      await markStartFailed(deploymentId, errorDetail).catch(() => {});
       throw err;
     }
 
-    await query(
-      `UPDATE deployments SET container_id = $1 WHERE id = $2`,
-      [newContainerId, deploymentId],
-    ).catch(() => {});
+    await updateContainerId(deploymentId, newContainerId).catch(() => {});
 
     // Phase: health_check
-    await updatePhase(deploymentId, 'health_check');
+    await markPhase(deploymentId, 'health_check').catch((err) => {
+      log.warn({ deploymentId, phase: 'health_check', err: err.message }, 'markPhase failed');
+    });
     const health = await waitForHealthy(newContainerId, analysis.port, 120000);
 
     if (health.healthy) {
-      await query(
-        `UPDATE deployments SET status = 'running', deploy_phase = NULL, updated_at = NOW() WHERE id = $1`,
-        [deploymentId],
-      );
+      await markRunning(deploymentId);
 
       // Regenerate Traefik file provider configs for any verified custom domains.
       // On redeploy the container is recreated — the Docker service name stays
       // the same but Traefik needs the file configs to exist for custom domain
       // routing.
       try {
-        const domainRows = await query(
-          'SELECT domain FROM domains WHERE deployment_id = (SELECT id FROM deployments WHERE user_id = $1 AND app_name = $2) AND verified = TRUE',
-          [userId, appName],
-        );
-        for (const row of domainRows.rows) {
+        const domainRows = await getVerifiedDomains(userId, appName);
+        for (const row of domainRows) {
           writeCustomDomainConfig(subdomain, (row as any).domain, analysis.port);
         }
       } catch { /* non-fatal */ }
@@ -298,10 +281,7 @@ export async function buildAndDeploy(params: BuildAndDeployParams): Promise<void
         : 'The server started but is not responding to HTTP requests. Verify it listens on the correct port.';
       const errorDetail = makeErrorDetail('health_check', errorCode, health.error || 'Health check failed', suggestion, health.logs);
 
-      await query(
-        `UPDATE deployments SET status = 'unhealthy', deploy_phase = 'health_check', error_detail = $1, updated_at = NOW() WHERE id = $2`,
-        [errorDetail, deploymentId],
-      );
+      await markUnhealthy(deploymentId, errorDetail);
 
       // For non-crash cases, schedule a delayed re-check — the server may come
       // up after migrations or slow startup. Don't block the response. The
@@ -316,10 +296,7 @@ export async function buildAndDeploy(params: BuildAndDeployParams): Promise<void
           try {
             const reCheck = await waitForHealthy(reCheckId, reCheckPort, 60000);
             if (reCheck.healthy) {
-              await query(
-                `UPDATE deployments SET status = 'running', deploy_phase = NULL, error_detail = NULL, updated_at = NOW() WHERE id = $1 AND status = 'unhealthy'`,
-                [reCheckDeployId],
-              );
+              await markRunningFromUnhealthy(reCheckDeployId);
             }
           } catch { /* non-fatal background check */ }
         }, 5000);
@@ -330,12 +307,9 @@ export async function buildAndDeploy(params: BuildAndDeployParams): Promise<void
     if (newContainerId) await stopContainer(newContainerId).catch(() => {});
 
     // Only update if not already set by phase-specific error handling above.
-    const current = await query('SELECT status FROM deployments WHERE id = $1', [deploymentId]).catch(() => null);
-    if (current?.rows?.[0]?.status === 'building') {
-      await query(
-        `UPDATE deployments SET status = 'failed', build_log = COALESCE(build_log, '') || $1, updated_at = NOW() WHERE id = $2`,
-        [`\n\nBUILD ERROR: ${err.message}`, deploymentId],
-      ).catch(() => {});
+    const current = await getDeploymentStatus(deploymentId).catch(() => null);
+    if (current?.status === 'building') {
+      await appendBuildError(deploymentId, `\n\nBUILD ERROR: ${err.message}`).catch(() => {});
     }
     log.error(err, `Background build failed for deployment ${deploymentId}`);
   } finally {

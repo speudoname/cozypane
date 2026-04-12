@@ -1,6 +1,7 @@
 import { ipcMain, app } from 'electron';
 import path from 'path';
 import os from 'os';
+import { getMimeType } from './mime';
 import fs from 'fs';
 import { getSlashCommands } from './slash-commands';
 
@@ -150,16 +151,8 @@ export function registerFsHandlers() {
       }
       const buffer = await fs.promises.readFile(filePath);
       const base64 = buffer.toString('base64');
-      const ext = path.extname(filePath).toLowerCase().slice(1);
-      const mimeMap: Record<string, string> = {
-        png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg',
-        gif: 'image/gif', webp: 'image/webp', svg: 'image/svg+xml',
-        ico: 'image/x-icon', bmp: 'image/bmp',
-        mp4: 'video/mp4', webm: 'video/webm', mov: 'video/quicktime',
-        mp3: 'audio/mpeg', wav: 'audio/wav', ogg: 'audio/ogg',
-        pdf: 'application/pdf',
-      };
-      const mime = mimeMap[ext] || 'application/octet-stream';
+      const ext = path.extname(filePath).toLowerCase();
+      const mime = getMimeType(ext);
       return { base64, mime, size: stat.size };
     } catch {
       return { error: 'Could not read file' };

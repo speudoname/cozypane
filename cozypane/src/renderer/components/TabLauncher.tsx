@@ -284,7 +284,7 @@ const inputStyle: React.CSSProperties = {
 };
 
 const errorStyle: React.CSSProperties = {
-  color: '#e74c3c',
+  color: 'var(--danger, #e74c3c)',
   fontSize: '0.78em',
   marginTop: '0.3em',
 };

@@ -263,6 +263,8 @@ declare global {
       getLast: () => Promise<UpdateInfo | null>;
       getCommand: (opts: { brew: boolean; claude: boolean }) => Promise<string>;
       onAvailable: (callback: (info: UpdateInfo) => void) => () => void;
+      onStatus: (callback: (info: { status: string; version?: string }) => void) => () => void;
+      onError: (callback: (info: { message: string }) => void) => () => void;
     };
     onMenuAction: (channel: string, callback: (...args: any[]) => void) => () => void;
     mcp: {

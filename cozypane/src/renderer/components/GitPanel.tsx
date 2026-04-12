@@ -62,8 +62,10 @@ export default function GitPanel({ cwd, onDiffClick, onBranchChange, activityEve
     }
   }, [cwd]);
 
+  const isRefreshingRef = useRef(false);
   const refresh = useCallback(async () => {
-    if (!cwd) return;
+    if (!cwd || isRefreshingRef.current) return;
+    isRefreshingRef.current = true;
     try {
       const repoCheck = await window.cozyPane.git.isRepo(cwd);
       setIsRepo(repoCheck.isRepo);
@@ -93,6 +95,8 @@ export default function GitPanel({ cwd, onDiffClick, onBranchChange, activityEve
       onBranchChange(branchRes.branch || '');
     } catch (err) {
       console.error('[GitPanel] refresh error:', err);
+    } finally {
+      isRefreshingRef.current = false;
     }
     setLoading(false);
   }, [cwd, onBranchChange]);
