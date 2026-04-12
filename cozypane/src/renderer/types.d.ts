@@ -98,6 +98,7 @@ declare global {
     previewErrors?: PreviewError[];
     previewConsoleLogs?: ConsoleLog[];
     previewNetworkErrors?: NetworkError[];
+    devServerAutoOpened?: boolean;
   }
 
   interface CustomDomain {

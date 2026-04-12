@@ -85,6 +85,28 @@ export default function App() {
   const [deployments, setDeployments] = useState<Deployment[]>([]);
   const [deployAuth, setDeployAuth] = useState<DeployAuth>({ authenticated: false });
 
+  // --- Auto-preview on dev server detection ---
+  const [autoPreviewDisabled, setAutoPreviewDisabled] = useState(() => {
+    try { return localStorage.getItem('cozyPane:autoPreviewDisabled') === 'true'; } catch { return false; }
+  });
+  const autoPreviewDisabledRef = useRef(autoPreviewDisabled);
+  autoPreviewDisabledRef.current = autoPreviewDisabled;
+  const toggleAutoPreview = useCallback(() => {
+    setAutoPreviewDisabled(prev => {
+      const next = !prev;
+      try { localStorage.setItem('cozyPane:autoPreviewDisabled', String(next)); } catch {}
+      return next;
+    });
+  }, []);
+
+  const [autoPreviewToast, setAutoPreviewToast] = useState<string | null>(null);
+  const autoPreviewToastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const showAutoPreviewToast = useCallback((url: string) => {
+    if (autoPreviewToastTimer.current) clearTimeout(autoPreviewToastTimer.current);
+    setAutoPreviewToast(url);
+    autoPreviewToastTimer.current = setTimeout(() => setAutoPreviewToast(null), 4000);
+  }, []);
+
   // Load deploy auth + deployments at app level so both DeployTab and DeployManagement share state
   useEffect(() => {
     window.cozyPane.deploy.getAuth().then(setDeployAuth).catch(() => {});
@@ -163,6 +185,12 @@ export default function App() {
     setPreviewInitialErrors(newTab?.previewErrors || []);
     setPreviewInitialConsoleLogs(newTab?.previewConsoleLogs || []);
     setPreviewInitialNetworkErrors(newTab?.previewNetworkErrors || []);
+    // Auto-open preview if this tab has a detected URL but hasn't auto-opened yet
+    if (newTab?.previewLocalUrl && !newTab.devServerAutoOpened && !autoPreviewDisabledRef.current) {
+      updateTab(activeTerminalId, { devServerAutoOpened: true });
+      setPreviewOpen(true);
+      showAutoPreviewToast(newTab.previewLocalUrl);
+    }
   }, [activeTerminalId, terminalTabsRef]);
 
   // Build the `claude` autoCommand. When cozy mode is on we add --mcp-config pointing
@@ -372,6 +400,7 @@ export default function App() {
     { id: 'tab-settings', label: 'Show Settings', category: 'Tab', action: () => setRightPanelTab('settings') },
     { id: 'tab-deploy', label: 'Show Deploy', category: 'Tab', action: () => setRightPanelTab('deploy') },
     { id: 'toggle-preview', label: 'Toggle Preview Panel', category: 'View', action: () => setPreviewOpen(p => !p) },
+    { id: 'toggle-auto-preview', label: `Auto-Preview on Dev Server: ${autoPreviewDisabled ? 'OFF' : 'ON'}`, category: 'View', action: toggleAutoPreview },
     { id: 'git-stage-all', label: 'Stage All Changes', category: 'Git', action: () => { sendTerminalCommand('git add -A'); setRightPanelTab('git'); } },
     { id: 'git-commit', label: 'Open Git to Commit', category: 'Git', action: () => setRightPanelTab('git') },
     { id: 'git-push', label: 'Push', category: 'Git', action: () => { sendTerminalCommand('git push'); setRightPanelTab('git'); } },
@@ -380,7 +409,7 @@ export default function App() {
     { id: 'theme-ocean', label: 'Theme: Ocean', category: 'Theme', action: () => applyTheme('ocean') },
     { id: 'theme-forest', label: 'Theme: Forest', category: 'Theme', action: () => applyTheme('forest') },
     { id: 'theme-light', label: 'Theme: Light', category: 'Theme', action: () => applyTheme('cozy-light') },
-  ], [addTerminalTab, sendTerminalCommand, applyTheme]);
+  ], [addTerminalTab, sendTerminalCommand, applyTheme, autoPreviewDisabled, toggleAutoPreview]);
 
   // Run update command in a new terminal tab
   const handleRunUpdate = useCallback((command: string) => {
@@ -671,6 +700,13 @@ export default function App() {
                         updateTab(tab.id, { previewLocalUrl: url });
                         if (tab.id === activeTerminalIdRef.current) {
                           setPreviewLocalUrl(url);
+                          // Auto-open preview on first dev server detection for active tab
+                          const fresh = terminalTabsRef.current.find(t => t.id === tab.id);
+                          if (fresh && !fresh.devServerAutoOpened && !autoPreviewDisabledRef.current) {
+                            updateTab(tab.id, { devServerAutoOpened: true });
+                            setPreviewOpen(true);
+                            showAutoPreviewToast(url);
+                          }
                         }
                       }}
                       onLocalUrlsDetected={(urls) => {
@@ -800,6 +836,13 @@ export default function App() {
       />
 
       <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} actions={paletteActions} />
+
+      {autoPreviewToast && (
+        <div className="auto-preview-toast" onClick={() => setAutoPreviewToast(null)}>
+          Dev server detected — Preview opened
+          <span className="auto-preview-toast-url">{autoPreviewToast}</span>
+        </div>
+      )}
     </div>
   );
 }

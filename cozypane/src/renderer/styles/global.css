@@ -2580,3 +2580,37 @@ html, body, #root {
 .deploy-mgmt-tab:hover:not(.active) {
   color: var(--text-primary, #e0e0e0);
 }
+
+/* --- Auto-preview toast --- */
+.auto-preview-toast {
+  position: fixed;
+  bottom: 36px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--accent, #7c6fe0);
+  color: #fff;
+  padding: 8px 16px;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 500;
+  z-index: 10000;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  animation: toast-slide-up 0.25s ease-out;
+  white-space: nowrap;
+}
+
+.auto-preview-toast-url {
+  opacity: 0.75;
+  font-weight: 400;
+  font-family: 'SF Mono', 'Cascadia Code', monospace;
+  font-size: 11px;
+}
+
+@keyframes toast-slide-up {
+  from { opacity: 0; transform: translateX(-50%) translateY(12px); }
+  to   { opacity: 1; transform: translateX(-50%) translateY(0); }
+}
