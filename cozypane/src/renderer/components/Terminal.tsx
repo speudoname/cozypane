@@ -354,61 +354,11 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, au
 
       if (idleTimerRef.current) clearTimeout(idleTimerRef.current);
       idleTimerRef.current = setTimeout(() => {
-        // Skip expensive analysis for hidden terminals
-        if (!isVisibleRef.current) return;
-
         const lines = rollingBufferRef.current;
         const joined = lines.join('\n');
 
-        // Unified focus decision (replaces separate autoSwitch + detectChoicePrompt)
-        if (!tuiModeRef.current && Date.now() >= manualUntilRef.current) {
-          const decision = decideFocus(lines);
-          if (decision.target && decision.target !== focusRef.current) {
-            // Don't steal focus from input→terminal if user is mid-typing.
-            // They can click or press Escape to switch when ready.
-            const inputHasText = !!inputTextRef.current;
-            if (decision.target === 'terminal' && focusRef.current === 'input' && inputHasText) {
-              // Skip — user is typing
-            } else {
-              switchFocus(decision.target);
-            }
-          }
-          setIsChoicePrompt(decision.isChoicePrompt);
-        }
-
-        // Detect Claude running from output (covers cases where Claude was launched
-        // outside handleCommandSubmit — e.g., typed directly in terminal, or already running)
-        if (activeProcessRef.current !== 'claude') {
-          const hasClaudePrompt = lines.slice(-5).some(l => /❯\s*$/.test(l.trim()));
-          if (hasClaudePrompt) {
-            activeProcessRef.current = 'claude';
-            setClaudeRunning(true);
-            onClaudeRunningChangeRef.current?.(true);
-          }
-        }
-
-        // Detect Claude exiting (moved from per-chunk to debounce handler)
-        if (activeProcessRef.current === 'claude' && detectClaudeExit(lines)) {
-          activeProcessRef.current = '';
-          setClaudeRunning(false);
-          onClaudeRunningChangeRef.current?.(false);
-          onActionChangeRef.current?.('idle');
-        }
-
-        checkCwd();
-        const action = analyzeAction(joined, activeProcessRef.current === 'claude', true);
-        onActionChangeRef.current?.(action);
-
-        if (activeProcessRef.current === 'claude') {
-          // Detect deployed CozyPane URLs and auto-open preview
-          const deployUrl = detectDeployUrl(joined, true);
-          if (deployUrl && deployUrl !== lastDeployUrlRef.current) {
-            lastDeployUrlRef.current = deployUrl;
-            onProdUrlDetectedRef.current?.(deployUrl);
-          }
-        }
-
-        // Detect localhost dev server URLs (always, not just during Claude)
+        // URL detection runs for ALL terminals (including hidden/background)
+        // so companion dev-server tabs can report URLs to the active tab.
         const localUrls = detectLocalUrls(joined, true);
         const latestUrl = localUrls.length > 0 ? localUrls[localUrls.length - 1] : null;
         if (latestUrl && latestUrl !== lastLocalUrlRef.current) {
@@ -422,6 +372,52 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, au
             onLocalUrlsDetectedRef.current?.(localUrls);
           }
         }
+
+        // Deploy URL detection also runs for all terminals
+        const deployUrl = detectDeployUrl(joined, true);
+        if (deployUrl && deployUrl !== lastDeployUrlRef.current) {
+          lastDeployUrlRef.current = deployUrl;
+          onProdUrlDetectedRef.current?.(deployUrl);
+        }
+
+        // Skip expensive focus/action analysis for hidden terminals
+        if (!isVisibleRef.current) return;
+
+        // Unified focus decision (replaces separate autoSwitch + detectChoicePrompt)
+        if (!tuiModeRef.current && Date.now() >= manualUntilRef.current) {
+          const decision = decideFocus(lines);
+          if (decision.target && decision.target !== focusRef.current) {
+            const inputHasText = !!inputTextRef.current;
+            if (decision.target === 'terminal' && focusRef.current === 'input' && inputHasText) {
+              // Skip — user is typing
+            } else {
+              switchFocus(decision.target);
+            }
+          }
+          setIsChoicePrompt(decision.isChoicePrompt);
+        }
+
+        // Detect Claude running from output
+        if (activeProcessRef.current !== 'claude') {
+          const hasClaudePrompt = lines.slice(-5).some(l => /❯\s*$/.test(l.trim()));
+          if (hasClaudePrompt) {
+            activeProcessRef.current = 'claude';
+            setClaudeRunning(true);
+            onClaudeRunningChangeRef.current?.(true);
+          }
+        }
+
+        // Detect Claude exiting
+        if (activeProcessRef.current === 'claude' && detectClaudeExit(lines)) {
+          activeProcessRef.current = '';
+          setClaudeRunning(false);
+          onClaudeRunningChangeRef.current?.(false);
+          onActionChangeRef.current?.('idle');
+        }
+
+        checkCwd();
+        const action = analyzeAction(joined, activeProcessRef.current === 'claude', true);
+        onActionChangeRef.current?.(action);
       }, 400);
     });
 

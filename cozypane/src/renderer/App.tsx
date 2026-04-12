@@ -174,22 +174,36 @@ export default function App() {
     }
   }, [cwd]);
 
-  // Restore preview URLs + console state on tab switch. The hook already
-  // owns the per-tab activityEvents swap; preview state is tracked in
-  // App.tsx because it's consumed by <Preview>, not the terminal pane.
+  // Restore preview URLs + console state on tab switch. Also check
+  // companion tabs (same cwd) for URLs — the dev server tab may have
+  // detected a URL while this tab was in the background.
   useEffect(() => {
     const newTab = terminalTabsRef.current.find(t => t.id === activeTerminalId);
-    setPreviewLocalUrl(newTab?.previewLocalUrl || '');
-    setPreviewLocalUrls(newTab?.previewLocalUrls || []);
-    setPreviewProdUrl(newTab?.previewProdUrl || '');
+    // Check companion tabs (same cwd) for URLs if this tab has none
+    let localUrl = newTab?.previewLocalUrl || '';
+    let localUrls = newTab?.previewLocalUrls || [];
+    let prodUrl = newTab?.previewProdUrl || '';
+    if (!localUrl && newTab?.cwd) {
+      const companion = terminalTabsRef.current.find(
+        t => t.id !== activeTerminalId && t.cwd === newTab.cwd && t.previewLocalUrl
+      );
+      if (companion) {
+        localUrl = companion.previewLocalUrl || '';
+        localUrls = companion.previewLocalUrls || [];
+        prodUrl = companion.previewProdUrl || prodUrl;
+      }
+    }
+    setPreviewLocalUrl(localUrl);
+    setPreviewLocalUrls(localUrls);
+    setPreviewProdUrl(prodUrl);
     setPreviewInitialErrors(newTab?.previewErrors || []);
     setPreviewInitialConsoleLogs(newTab?.previewConsoleLogs || []);
     setPreviewInitialNetworkErrors(newTab?.previewNetworkErrors || []);
-    // Auto-open preview if this tab has a detected URL but hasn't auto-opened yet
-    if (newTab?.previewLocalUrl && !newTab.devServerAutoOpened && !autoPreviewDisabledRef.current) {
+    // Auto-open preview if a URL exists but hasn't auto-opened yet
+    if (localUrl && newTab && !newTab.devServerAutoOpened && !autoPreviewDisabledRef.current) {
       updateTab(activeTerminalId, { devServerAutoOpened: true });
       setPreviewOpen(true);
-      showAutoPreviewToast(newTab.previewLocalUrl);
+      showAutoPreviewToast(localUrl);
     }
   }, [activeTerminalId, terminalTabsRef]);
 
@@ -205,6 +219,40 @@ export default function App() {
     return `claude --mcp-config "${result.path}" --dangerously-skip-permissions`;
   }, []);
 
+  // Auto-spawn a companion dev server tab if the project has a dev command.
+  // Called after launching the main (Claude) tab for a project.
+  const maybeSpawnDevServer = useCallback(async (projectCwd: string) => {
+    if (autoPreviewDisabledRef.current) return;
+    try {
+      const [info, portResult] = await Promise.all([
+        window.cozyPane.preview.detectProject(projectCwd),
+        window.cozyPane.preview.suggestPort(),
+      ]);
+      if (!info?.devCommand) return;
+      // Don't auto-start for server-only projects (express, fastify, etc.) — no UI to preview
+      if (info.type && /express|fastify|koa|hapi|nest/i.test(info.type)) return;
+      const port = portResult?.port || 3000;
+      const cmd = info.devCommand;
+      const portFlag = cmd.includes('vite') || cmd.includes('next') || cmd.includes('nuxi')
+        ? ` --port ${port}`
+        : cmd.includes('ng serve') ? ` --port ${port}`
+        : '';
+      // Remember which tab is the main (Claude) tab so we can switch back
+      const mainTabId = activeTerminalIdRef.current;
+      addTerminalTab({
+        cwd: projectCwd,
+        customLabel: 'Dev Server',
+        autoCommand: cmd + portFlag,
+        launched: true,
+      });
+      // addTerminalTab makes the new tab active — switch back to the Claude tab
+      // Use requestAnimationFrame to let the state update settle first
+      requestAnimationFrame(() => {
+        switchTerminalTab(mainTabId);
+      });
+    } catch {}
+  }, [addTerminalTab, switchTerminalTab]);
+
   // Launcher handlers — called when user picks an option on the new tab launcher
   const launchOpenProject = useCallback(async (cwd: string, cozyMode: boolean) => {
     if (cozyMode) {
@@ -216,7 +264,9 @@ export default function App() {
       launched: true,
       autoCommand,
     });
-  }, [updateTab, buildClaudeAutoCommand]);
+    // Auto-spawn dev server in a companion tab for web projects
+    maybeSpawnDevServer(cwd);
+  }, [updateTab, buildClaudeAutoCommand, maybeSpawnDevServer]);
 
   const launchCreateProject = useCallback(async (fullPath: string, _projectName: string, cozyMode: boolean) => {
     // L24: check if the directory already exists. Previously `mkdir` would
@@ -252,7 +302,8 @@ export default function App() {
       launched: true,
       autoCommand,
     });
-  }, [updateTab, buildClaudeAutoCommand, confirm]);
+    maybeSpawnDevServer(fullPath);
+  }, [updateTab, buildClaudeAutoCommand, confirm, maybeSpawnDevServer]);
 
   const launchNewTerminal = useCallback(async () => {
     const tab = terminalTabsRef.current.find(t => t.id === activeTerminalIdRef.current);
@@ -698,26 +749,46 @@ export default function App() {
                       onClaudeRunningChange={(running) => updateTab(tab.id, { claudeRunning: running })}
                       onLocalUrlDetected={(url) => {
                         updateTab(tab.id, { previewLocalUrl: url });
-                        if (tab.id === activeTerminalIdRef.current) {
+                        // Propagate URL to active tab's preview — works for both
+                        // the active tab itself AND companion dev server tabs
+                        // (which share the same cwd as the active tab).
+                        const activeTab = terminalTabsRef.current.find(t => t.id === activeTerminalIdRef.current);
+                        const isActiveOrCompanion = tab.id === activeTerminalIdRef.current
+                          || (activeTab && tab.cwd === activeTab.cwd);
+                        if (isActiveOrCompanion) {
                           setPreviewLocalUrl(url);
-                          // Auto-open preview on first dev server detection for active tab
+                          // Auto-open preview on first dev server detection
                           const fresh = terminalTabsRef.current.find(t => t.id === tab.id);
                           if (fresh && !fresh.devServerAutoOpened && !autoPreviewDisabledRef.current) {
                             updateTab(tab.id, { devServerAutoOpened: true });
-                            setPreviewOpen(true);
-                            showAutoPreviewToast(url);
+                            // Health-check: wait for server to respond before opening
+                            const check = (attempt: number) => {
+                              fetch(url, { mode: 'no-cors' }).then(() => {
+                                setPreviewOpen(true);
+                                showAutoPreviewToast(url);
+                              }).catch(() => {
+                                if (attempt < 10) setTimeout(() => check(attempt + 1), 800);
+                              });
+                            };
+                            check(0);
                           }
                         }
                       }}
                       onLocalUrlsDetected={(urls) => {
                         updateTab(tab.id, { previewLocalUrls: urls });
-                        if (tab.id === activeTerminalIdRef.current) {
+                        const activeTab = terminalTabsRef.current.find(t => t.id === activeTerminalIdRef.current);
+                        const isActiveOrCompanion = tab.id === activeTerminalIdRef.current
+                          || (activeTab && tab.cwd === activeTab.cwd);
+                        if (isActiveOrCompanion) {
                           setPreviewLocalUrls(urls);
                         }
                       }}
                       onProdUrlDetected={(url) => {
                         updateTab(tab.id, { previewProdUrl: url });
-                        if (tab.id === activeTerminalIdRef.current) {
+                        const activeTab = terminalTabsRef.current.find(t => t.id === activeTerminalIdRef.current);
+                        const isActiveOrCompanion = tab.id === activeTerminalIdRef.current
+                          || (activeTab && tab.cwd === activeTab.cwd);
+                        if (isActiveOrCompanion) {
                           setPreviewProdUrl(url);
                         }
                       }}
