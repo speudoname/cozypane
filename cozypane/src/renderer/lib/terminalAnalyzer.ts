@@ -199,32 +199,26 @@ export function detectDeployUrl(rollingBuffer: string, preStripped = false): str
  * Catches Vite, Next.js, webpack-dev-server, Django, Flask, Rails, etc.
  * Returns ALL unique detected URLs (normalized), ordered by first appearance.
  */
+// Combined pattern for local URL detection — single regex, compiled once.
+const LOCAL_URL_RE = /https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::\]):\d{2,5}\b[^\s)}\]]*/gi;
+
 export function detectLocalUrls(rollingBuffer: string, preStripped = false): string[] {
   const cleaned = preStripped ? rollingBuffer : stripAnsi(rollingBuffer);
-  const patterns = [
-    /https?:\/\/localhost:\d{2,5}\b[^\s)}\]]*/gi,
-    /https?:\/\/127\.0\.0\.1:\d{2,5}\b[^\s)}\]]*/gi,
-    /https?:\/\/0\.0\.0\.0:\d{2,5}\b[^\s)}\]]*/gi,
-    /https?:\/\/\[::\]:\d{2,5}\b[^\s)}\]]*/gi,
-  ];
 
+  LOCAL_URL_RE.lastIndex = 0; // reset stateful g-flag regex
   const seen = new Set<string>();
   const results: string[] = [];
-  for (const pattern of patterns) {
-    const matches = cleaned.match(pattern);
-    if (matches) {
-      for (const raw of matches) {
-        let url = raw
-          .replace(/\/\/0\.0\.0\.0:/, '//localhost:')
-          .replace(/\/\/127\.0\.0\.1:/, '//localhost:')
-          .replace(/\/\/\[::\]:/, '//localhost:')
-          .replace(/[.,;:!?]+$/, '')  // strip trailing punctuation
-          .replace(/\/+$/, '');
-        if (!seen.has(url)) {
-          seen.add(url);
-          results.push(url);
-        }
-      }
+  let m: RegExpExecArray | null;
+  while ((m = LOCAL_URL_RE.exec(cleaned)) !== null) {
+    let url = m[0]
+      .replace(/\/\/0\.0\.0\.0:/, '//localhost:')
+      .replace(/\/\/127\.0\.0\.1:/, '//localhost:')
+      .replace(/\/\/\[::\]:/, '//localhost:')
+      .replace(/[.,;:!?]+$/, '')  // strip trailing punctuation
+      .replace(/\/+$/, '');
+    if (!seen.has(url)) {
+      seen.add(url);
+      results.push(url);
     }
   }
   return results;

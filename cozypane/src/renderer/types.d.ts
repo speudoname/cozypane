@@ -117,6 +117,10 @@ declare global {
     tier: string;
     url: string;
     hasDatabase?: boolean;
+    databaseType?: 'postgres' | 'redis' | 'mysql' | null;
+    databaseName?: string | null;
+    group?: string | null;
+    framework?: string | null;
     customDomains?: CustomDomain[];
     createdAt: string;
     updatedAt: string;

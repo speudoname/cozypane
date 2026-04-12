@@ -1,9 +1,7 @@
-import Docker from 'dockerode';
 import { existsSync, writeFileSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ProjectAnalysis } from './detector.js';
-
-const docker = new Docker({ socketPath: '/var/run/docker.sock' });
+import { docker } from './container.js';
 
 // --- Dockerfile templates by framework ---
 
@@ -121,55 +119,54 @@ CMD sh -c "${migrationPrefix(analysis)}${startCmd}"
 `;
 }
 
+/** Shared Python Dockerfile builder — all Python frameworks share the same
+ *  base structure, differing only in extra pip packages, extra build steps,
+ *  and the CMD. */
+function pythonDockerfile(
+  analysis: ProjectAnalysis,
+  opts: { extraInstall?: string; extraStep?: string; defaultCmd: string },
+): string {
+  const cmd = analysis.startCommand || opts.defaultCmd;
+  const lines = [
+    'FROM python:3.12-slim',
+    'WORKDIR /app',
+    'COPY requirements.txt* pyproject.toml* ./',
+    'RUN pip install --no-cache-dir -r requirements.txt 2>/dev/null || pip install --no-cache-dir . 2>/dev/null || true',
+  ];
+  if (opts.extraInstall) lines.push(`RUN pip install --no-cache-dir ${opts.extraInstall}`);
+  lines.push('COPY . .');
+  if (opts.extraStep) lines.push(`RUN ${opts.extraStep}`);
+  lines.push(`EXPOSE ${analysis.port}`);
+  lines.push(`CMD sh -c "${migrationPrefix(analysis)}${cmd}"`);
+  return lines.join('\n') + '\n';
+}
+
 function djangoDockerfile(analysis: ProjectAnalysis): string {
-  const startCmd = analysis.startCommand || 'gunicorn app.wsgi:application --bind 0.0.0.0:8000';
-  return `FROM python:3.12-slim
-WORKDIR /app
-COPY requirements.txt* pyproject.toml* ./
-RUN pip install --no-cache-dir -r requirements.txt 2>/dev/null || pip install --no-cache-dir . 2>/dev/null || true
-RUN pip install --no-cache-dir gunicorn
-COPY . .
-RUN python manage.py collectstatic --noinput 2>/dev/null || true
-EXPOSE 8000
-CMD sh -c "${migrationPrefix(analysis)}${startCmd}"
-`;
+  return pythonDockerfile(analysis, {
+    extraInstall: 'gunicorn',
+    extraStep: 'python manage.py collectstatic --noinput 2>/dev/null || true',
+    defaultCmd: 'gunicorn app.wsgi:application --bind 0.0.0.0:8000',
+  });
 }
 
 function fastapiDockerfile(analysis: ProjectAnalysis): string {
-  const startCmd = analysis.startCommand || 'uvicorn main:app --host 0.0.0.0 --port 8000';
-  return `FROM python:3.12-slim
-WORKDIR /app
-COPY requirements.txt* pyproject.toml* ./
-RUN pip install --no-cache-dir -r requirements.txt 2>/dev/null || pip install --no-cache-dir . 2>/dev/null || true
-RUN pip install --no-cache-dir uvicorn
-COPY . .
-EXPOSE 8000
-CMD sh -c "${migrationPrefix(analysis)}${startCmd}"
-`;
+  return pythonDockerfile(analysis, {
+    extraInstall: 'uvicorn',
+    defaultCmd: 'uvicorn main:app --host 0.0.0.0 --port 8000',
+  });
 }
 
 function flaskDockerfile(analysis: ProjectAnalysis): string {
-  const startCmd = analysis.startCommand || 'gunicorn app:app --bind 0.0.0.0:5000';
-  return `FROM python:3.12-slim
-WORKDIR /app
-COPY requirements.txt* pyproject.toml* ./
-RUN pip install --no-cache-dir -r requirements.txt 2>/dev/null || pip install --no-cache-dir . 2>/dev/null || true
-RUN pip install --no-cache-dir gunicorn
-COPY . .
-EXPOSE ${analysis.port}
-CMD sh -c "${migrationPrefix(analysis)}${startCmd}"
-`;
+  return pythonDockerfile(analysis, {
+    extraInstall: 'gunicorn',
+    defaultCmd: 'gunicorn app:app --bind 0.0.0.0:5000',
+  });
 }
 
 function genericPythonDockerfile(analysis: ProjectAnalysis): string {
-  return `FROM python:3.12-slim
-WORKDIR /app
-COPY requirements.txt* pyproject.toml* ./
-RUN pip install --no-cache-dir -r requirements.txt 2>/dev/null || pip install --no-cache-dir . 2>/dev/null || true
-COPY . .
-EXPOSE ${analysis.port}
-CMD ["python", "app.py"]
-`;
+  return pythonDockerfile(analysis, {
+    defaultCmd: 'python app.py',
+  });
 }
 
 function goDockerfile(analysis: ProjectAnalysis): string {
@@ -367,13 +364,20 @@ export async function buildImage(
     );
   });
 
+  let timer: ReturnType<typeof setTimeout>;
   const timeoutPromise = new Promise<never>((_, reject) => {
-    setTimeout(() => reject(new Error('Build timed out after 10 minutes')), BUILD_TIMEOUT_MS);
+    timer = setTimeout(() => reject(new Error('Build timed out after 10 minutes')), BUILD_TIMEOUT_MS);
   });
 
   try {
     await Promise.race([buildPromise, timeoutPromise]);
+    clearTimeout(timer!);
   } catch (err: any) {
+    clearTimeout(timer!);
+    // Kill the Docker build stream so the daemon stops the build and
+    // releases CPU/memory. Without this, timed-out builds continue
+    // consuming host resources indefinitely.
+    try { (stream as any).destroy?.(); } catch {}
     // Attach partial build log to the error so callers can store it
     err.buildLog = buildLines.join('');
     throw err;

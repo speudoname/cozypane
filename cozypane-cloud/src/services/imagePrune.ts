@@ -1,5 +1,5 @@
-import Docker from 'dockerode';
 import type { FastifyBaseLogger } from 'fastify';
+import { docker } from './container.js';
 
 // Periodic Docker image cleanup to keep the host disk from filling up.
 // Removes dangling images (build intermediate layers no longer tagged)
@@ -7,8 +7,6 @@ import type { FastifyBaseLogger } from 'fastify';
 // that are not currently referenced by a container — cleanup.ts on
 // deployment delete handles those, and we don't want to race with a
 // redeploy that's about to reuse the existing tag as a build cache source.
-
-const docker = new Docker({ socketPath: '/var/run/docker.sock' });
 const PRUNE_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
 let pruneInterval: ReturnType<typeof setInterval> | null = null;
 

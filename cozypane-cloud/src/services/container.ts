@@ -1,7 +1,15 @@
 import Docker from 'dockerode';
 import type { WebSocket } from '@fastify/websocket';
+import type { FastifyBaseLogger } from 'fastify';
+import { DOMAIN } from './serializers.js';
 
-const docker = new Docker({ socketPath: '/var/run/docker.sock' });
+export const docker = new Docker({ socketPath: '/var/run/docker.sock' });
+
+let log: FastifyBaseLogger = console as any;
+
+export function setContainerLogger(logger: FastifyBaseLogger): void {
+  log = logger;
+}
 
 const TIER_LIMITS: Record<string, { memory: number; nanoCpus: number }> = {
   small: { memory: 256 * 1024 * 1024, nanoCpus: 500_000_000 },       // 256MB, 0.5 CPU
@@ -26,7 +34,7 @@ export async function ensureNetwork(userId: number): Promise<string> {
         'com.docker.network.bridge.enable_icc': 'true',
       },
     });
-    console.log(`Created network: ${networkName}`);
+    log.info({ networkName }, 'Created user network');
   }
 
   // Connect Traefik to user network so it can route to containers on it.
@@ -42,11 +50,11 @@ export async function ensureNetwork(userId: number): Promise<string> {
       const alreadyConnected = netInfo.Containers && netInfo.Containers[traefikId];
       if (!alreadyConnected) {
         await net.connect({ Container: traefikId });
-        console.log(`Connected Traefik to network: ${networkName}`);
+        log.info({ networkName }, 'Connected Traefik to user network');
       }
     }
   } catch (err) {
-    console.warn(`Could not auto-connect Traefik to ${networkName}:`, err);
+    log.warn({ networkName, err }, 'Could not auto-connect Traefik to user network');
   }
 
   return networkName;
@@ -66,7 +74,7 @@ async function connectToNetwork(containerId: string, networkName: string): Promi
     const info = await container.inspect();
     const connected = !!info.NetworkSettings?.Networks?.[networkName];
     if (!connected) {
-      console.error(`Container ${containerId} not on ${networkName} after connect call`);
+      log.error({ containerId, networkName }, 'Container not on network after connect call');
     }
     return connected;
   } catch (err: any) {
@@ -74,7 +82,7 @@ async function connectToNetwork(containerId: string, networkName: string): Promi
     if (err.statusCode === 403 || err.message?.includes('already exists')) {
       return true;
     }
-    console.error(`Failed to connect ${containerId} to ${networkName}: ${err.message}`);
+    log.error({ containerId, networkName, err: err.message }, 'Failed to connect container to network');
     return false;
   }
 }
@@ -93,7 +101,7 @@ export async function runContainer(
 ): Promise<string> {
   const containerName = `cp-${deployment.subdomain}`;
   const routerName = `cp-${deployment.subdomain}`;
-  const domain = process.env.DOMAIN || 'cozypane.com';
+  const domain = DOMAIN;
   const host = `${deployment.subdomain}.${domain}`;
 
   const userNetwork = await ensureNetwork(userId);
@@ -144,25 +152,23 @@ export async function runContainer(
 
   await container.start();
 
-  // Connect to required networks after start.
-  // traefik-public is MANDATORY — without it Traefik can't discover or route to the container.
+  // Network connections after start:
+  //
+  // SECURITY (C2): Containers are NOT connected to traefik-public. That shared
+  // network allowed cross-tenant reachability — any container could scan and
+  // connect to any other container's internal port. Instead, Traefik discovers
+  // containers via their per-user network (ensureNetwork connects Traefik to
+  // cp-user-N above). This provides full tenant network isolation.
+  //
   // internal is needed for DATABASE_URL with host=postgres.
-  const traefikOk = await connectToNetwork(container.id, 'traefik-public');
-  if (!traefikOk) {
-    // This is fatal — the container will run but be unreachable. Stop it and fail.
-    await container.stop({ t: 2 }).catch(() => {});
-    await container.remove({ force: true }).catch(() => {});
-    throw new Error(`Failed to connect container to traefik-public network. Container ${containerName} was stopped to prevent a ghost deployment.`);
-  }
-
   const INTERNAL_NETWORK = process.env.INTERNAL_NETWORK || 'cozypane-cloud_internal';
   const internalOk = await connectToNetwork(container.id, INTERNAL_NETWORK);
   if (!internalOk) {
     // Non-fatal for apps without databases, but log it
-    console.warn(`Container ${containerName} not connected to ${INTERNAL_NETWORK} — database access may not work`);
+    log.warn({ containerName, network: INTERNAL_NETWORK }, 'Container not connected to internal network — database access may not work');
   }
 
-  console.log(`Started container: ${containerName} on traefik-public + ${INTERNAL_NETWORK}`);
+  log.info({ containerName, networks: [userNetwork, INTERNAL_NETWORK] }, 'Started container');
 
   return container.id;
 }
@@ -178,7 +184,7 @@ export async function stopContainer(containerId: string): Promise<void> {
       // 404 = already gone, 409 = removal already in progress
       if (err.statusCode !== 404 && err.statusCode !== 409) throw err;
     });
-    console.log(`Stopped and removed container: ${containerId}`);
+    log.info({ containerId }, 'Stopped and removed container');
   } catch (err: any) {
     if (err.statusCode !== 404) {
       throw err;
@@ -209,10 +215,10 @@ export async function removeImage(imageTag: string): Promise<void> {
   try {
     const image = docker.getImage(imageTag);
     await image.remove({ force: true });
-    console.log(`Removed image: ${imageTag}`);
+    log.info({ imageTag }, 'Removed image');
   } catch (err: any) {
     if (err.statusCode !== 404) {
-      console.warn(`Failed to remove image ${imageTag}:`, err.message);
+      log.warn({ imageTag, err: err.message }, 'Failed to remove image');
     }
   }
 
@@ -229,7 +235,7 @@ export async function removeImage(imageTag: string): Promise<void> {
         if (tag === imageTag || tag === '<none>:<none>') continue;
         try {
           await docker.getImage(tag).remove({ force: true });
-          console.log(`Removed orphaned image: ${tag}`);
+          log.info({ tag }, 'Removed orphaned image');
         } catch { /* non-fatal */ }
       }
     }
@@ -264,11 +270,11 @@ export async function removeNetworkIfEmpty(userId: number): Promise<void> {
         await net.disconnect({ Container: id, Force: true }).catch(() => {});
       }
       await net.remove();
-      console.log(`Removed empty network: ${networkName}`);
+      log.info({ networkName }, 'Removed empty network');
     }
   } catch (err: any) {
     if (err.statusCode !== 404) {
-      console.warn(`Failed to remove network ${networkName}:`, err.message);
+      log.warn({ networkName, err: err.message }, 'Failed to remove network');
     }
   }
 }
@@ -428,33 +434,17 @@ export async function waitForHealthy(
         };
       }
 
-      // Find a reachable IP — prefer traefik-public (what Traefik uses),
-      // fall back to any available network IP
+      // Find a reachable IP — use any available network IP (containers are
+      // on per-user networks, not traefik-public, since the C2 isolation fix)
       const networks = info.NetworkSettings?.Networks || {};
       let ip: string | undefined;
-      if (networks['traefik-public']?.IPAddress) {
-        ip = networks['traefik-public'].IPAddress;
-      } else {
-        // Use first available network IP
-        for (const net of Object.values(networks) as any[]) {
-          if (net?.IPAddress) { ip = net.IPAddress; break; }
-        }
+      for (const net of Object.values(networks) as any[]) {
+        if (net?.IPAddress) { ip = net.IPAddress; break; }
       }
 
       if (!ip) {
         await new Promise(r => setTimeout(r, pollInterval));
         continue;
-      }
-
-      // Verify Traefik network is attached — if not, the container is unreachable
-      // even if the health check passes on a different network
-      if (!networks['traefik-public']?.IPAddress) {
-        const logs = await getContainerLogs(containerId, 30).catch(() => 'Could not retrieve logs');
-        return {
-          healthy: false,
-          error: 'Container is running but not connected to traefik-public network — it will be unreachable',
-          logs,
-        };
       }
 
       // Try HTTP request on the container's IP

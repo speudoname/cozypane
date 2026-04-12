@@ -163,17 +163,17 @@ async function renderUsers() {
           <tr>
             <td>
               <div style="display:flex;align-items:center;gap:0.5rem">
-                ${u.avatar_url ? `<img src="${u.avatar_url}" width="24" height="24" style="border-radius:50%">` : ''}
+                ${u.avatarUrl ? `<img src="${u.avatarUrl}" width="24" height="24" style="border-radius:50%">` : ''}
                 <a href="#/users/${u.id}" class="user-link">${u.username}</a>
               </div>
             </td>
-            <td>${u.deployment_count}</td>
-            <td>${u.running_count}</td>
-            <td>${u.is_admin ? 'Yes' : '-'}</td>
-            <td>${formatDate(u.created_at)}</td>
+            <td>${u.deploymentCount}</td>
+            <td>${u.runningCount}</td>
+            <td>${u.isAdmin ? 'Yes' : '-'}</td>
+            <td>${formatDate(u.createdAt)}</td>
             <td>
               <div class="btn-group">
-                <button class="btn btn-sm" onclick="toggleAdmin(${u.id}, ${!u.is_admin})">${u.is_admin ? 'Revoke Admin' : 'Make Admin'}</button>
+                <button class="btn btn-sm" onclick="toggleAdmin(${u.id}, ${!u.isAdmin})">${u.isAdmin ? 'Revoke Admin' : 'Make Admin'}</button>
                 <button class="btn btn-sm btn-danger" onclick="deleteUser(${u.id}, '${u.username}')">Delete</button>
               </div>
             </td>
@@ -198,16 +198,16 @@ async function renderUserDetail(id) {
   html($('content'), `
     <a href="#/users" class="back-link">&larr; Back to Users</a>
     <div class="detail-header">
-      ${user.avatar_url ? `<img src="${user.avatar_url}">` : ''}
+      ${user.avatarUrl ? `<img src="${user.avatarUrl}">` : ''}
       <div>
         <h2>${user.username}</h2>
-        ${user.is_admin ? '<span class="badge badge-running">admin</span>' : ''}
+        ${user.isAdmin ? '<span class="badge badge-running">admin</span>' : ''}
       </div>
     </div>
     <div class="detail-meta">
-      <div class="item"><div class="label">GitHub ID</div>${user.github_id}</div>
-      <div class="item"><div class="label">Joined</div>${formatDate(user.created_at)}</div>
-      <div class="item"><div class="label">Updated</div>${formatDate(user.updated_at)}</div>
+      <div class="item"><div class="label">GitHub ID</div>${user.githubId}</div>
+      <div class="item"><div class="label">Joined</div>${formatDate(user.createdAt)}</div>
+      <div class="item"><div class="label">Updated</div>${formatDate(user.updatedAt)}</div>
       <div class="item"><div class="label">Deployments</div>${user.deployments.length}</div>
     </div>
     <h3>Deployments</h3>
@@ -216,11 +216,11 @@ async function renderUserDetail(id) {
       <tbody>
         ${user.deployments.map(d => `
           <tr>
-            <td><a href="#/deployments/${d.id}" class="user-link">${d.app_name}</a></td>
+            <td><a href="#/deployments/${d.id}" class="user-link">${d.appName}</a></td>
             <td>${badge(d.status)}</td>
-            <td>${d.project_type || '-'}</td>
+            <td>${d.projectType || '-'}</td>
             <td>${d.tier}</td>
-            <td>${formatDate(d.updated_at)}</td>
+            <td>${formatDate(d.updatedAt)}</td>
           </tr>
         `).join('')}
         ${user.deployments.length === 0 ? '<tr><td colspan="5" style="color:#666">No deployments</td></tr>' : ''}
@@ -254,24 +254,24 @@ async function renderDeployments() {
       <tbody>
         ${data.deployments.map(d => `
           <tr>
-            <td><a href="#/deployments/${d.id}" class="user-link">${d.app_name}</a></td>
+            <td><a href="#/deployments/${d.id}" class="user-link">${d.appName}</a></td>
             <td>
               <div style="display:flex;align-items:center;gap:0.4rem">
-                ${d.avatar_url ? `<img src="${d.avatar_url}" width="20" height="20" style="border-radius:50%">` : ''}
+                ${d.avatarUrl ? `<img src="${d.avatarUrl}" width="20" height="20" style="border-radius:50%">` : ''}
                 ${d.username}
               </div>
             </td>
             <td>${badge(d.status)}</td>
-            <td>${d.project_type || '-'}</td>
+            <td>${d.projectType || '-'}</td>
             <td>${d.tier}</td>
-            <td>${d.db_name ? `<span class="badge badge-running" style="background:#3b82f622;color:#3b82f6">PG</span>` : '-'}</td>
+            <td>${d.dbName ? `<span class="badge badge-running" style="background:#3b82f622;color:#3b82f6">PG</span>` : '-'}</td>
             <td>${d.status === 'running' ? `<a href="${d.url}" target="_blank" class="url-link">${d.subdomain}</a>` : '-'}</td>
-            <td>${formatDate(d.updated_at)}</td>
+            <td>${formatDate(d.updatedAt)}</td>
             <td>
               <div class="btn-group">
                 ${d.status === 'running' ? `<button class="btn btn-sm" onclick="stopDep(${d.id})">Stop</button>` : ''}
-                ${d.container_id ? `<button class="btn btn-sm" onclick="restartDep(${d.id})">Restart</button>` : ''}
-                <button class="btn btn-sm btn-danger" onclick="deleteDep(${d.id}, '${d.app_name}')">Delete</button>
+                ${d.containerId ? `<button class="btn btn-sm" onclick="restartDep(${d.id})">Restart</button>` : ''}
+                <button class="btn btn-sm btn-danger" onclick="deleteDep(${d.id}, '${d.appName}')">Delete</button>
               </div>
             </td>
           </tr>
@@ -296,29 +296,29 @@ async function renderDeploymentDetail(id) {
     <a href="#/deployments" class="back-link">&larr; Back to Deployments</a>
     <div class="detail-header">
       <div>
-        <h2>${d.app_name} ${badge(d.status)}</h2>
+        <h2>${d.appName} ${badge(d.status)}</h2>
         <div style="font-size:0.85rem;color:#888;margin-top:0.3rem">by ${d.username}</div>
       </div>
     </div>
     <div class="detail-meta">
       <div class="item"><div class="label">Subdomain</div>${d.subdomain}</div>
-      <div class="item"><div class="label">Type</div>${d.project_type || '-'}</div>
+      <div class="item"><div class="label">Type</div>${d.projectType || '-'}</div>
       <div class="item"><div class="label">Tier</div>${d.tier}</div>
       <div class="item"><div class="label">Port</div>${d.port}</div>
-      <div class="item"><div class="label">Container</div><span style="font-family:monospace;font-size:0.8rem">${d.container_id ? d.container_id.slice(0, 12) : 'none'}</span></div>
-      ${d.db_name ? `
-        <div class="item"><div class="label">Database</div><span style="font-family:monospace;font-size:0.8rem">${d.db_name}</span></div>
-        <div class="item"><div class="label">DB User</div><span style="font-family:monospace;font-size:0.8rem">${d.db_user || '-'}</span></div>
+      <div class="item"><div class="label">Container</div><span style="font-family:monospace;font-size:0.8rem">${d.containerId ? d.containerId.slice(0, 12) : 'none'}</span></div>
+      ${d.dbName ? `
+        <div class="item"><div class="label">Database</div><span style="font-family:monospace;font-size:0.8rem">${d.dbName}</span></div>
+        <div class="item"><div class="label">DB User</div><span style="font-family:monospace;font-size:0.8rem">${d.dbUser || '-'}</span></div>
       ` : ''}
-      <div class="item"><div class="label">Created</div>${formatDate(d.created_at)}</div>
-      <div class="item"><div class="label">Updated</div>${formatDate(d.updated_at)}</div>
+      <div class="item"><div class="label">Created</div>${formatDate(d.createdAt)}</div>
+      <div class="item"><div class="label">Updated</div>${formatDate(d.updatedAt)}</div>
       ${d.status === 'running' ? `<div class="item"><div class="label">URL</div><a href="${d.url}" target="_blank" class="url-link">${d.url}</a></div>` : ''}
     </div>
     <div class="btn-group" style="margin-bottom:1.5rem">
       ${d.status === 'running' ? `<button class="btn" onclick="stopDep(${d.id}).then(()=>renderDeploymentDetail(${d.id}))">Stop</button>` : ''}
-      ${d.container_id ? `<button class="btn" onclick="restartDep(${d.id}).then(()=>renderDeploymentDetail(${d.id}))">Restart</button>` : ''}
+      ${d.containerId ? `<button class="btn" onclick="restartDep(${d.id}).then(()=>renderDeploymentDetail(${d.id}))">Restart</button>` : ''}
       <button class="btn" onclick="loadLogs(${d.id})">Load Logs</button>
-      <button class="btn btn-danger" onclick="deleteDep(${d.id}, '${d.app_name}')">Delete</button>
+      <button class="btn btn-danger" onclick="deleteDep(${d.id}, '${d.appName}')">Delete</button>
     </div>
     <div id="logs-container"></div>
   `);

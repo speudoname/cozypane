@@ -1,5 +1,12 @@
 import { randomBytes } from 'node:crypto';
+import type { FastifyBaseLogger } from 'fastify';
 import { platformPool } from '../db/index.js';
+
+let log: FastifyBaseLogger = console as any;
+
+export function setDatabaseLogger(logger: FastifyBaseLogger): void {
+  log = logger;
+}
 
 // Long-lived platform pool — previously this module created a fresh
 // pg.Pool on every provision/drop call and immediately end()ed it, paying
@@ -95,7 +102,7 @@ export async function provisionDatabase(
 
   const connectionString = `postgresql://${user}:${password}@${host}:${port}/${name}`;
 
-  console.log(`Provisioned database: ${name} for user ${user}`);
+  log.info({ dbName: name, dbUser: user }, 'Provisioned database');
 
   return { name, user, password, host, port, connectionString };
 }
@@ -121,7 +128,7 @@ export async function dropDatabase(
   await platformPool.query(`DROP DATABASE IF EXISTS "${name}"`);
   await platformPool.query(`DROP ROLE IF EXISTS "${user}"`);
 
-  console.log(`Dropped database: ${name} and user: ${user}`);
+  log.info({ dbName: name, dbUser: user }, 'Dropped database');
 }
 
 /**

@@ -7,6 +7,7 @@
 // know the deployment state machine.
 
 import { rmSync, existsSync } from 'node:fs';
+import type { FastifyBaseLogger } from 'fastify';
 import { query } from '../db/index.js';
 import { analyzeProject } from './detector.js';
 import { buildImage } from './builder.js';
@@ -23,6 +24,19 @@ import { writeCustomDomainConfig } from './traefik.js';
 // un-cancelled timer would fire against a closed pool and silently error.
 const pendingRechecks = new Set<ReturnType<typeof setTimeout>>();
 
+// Env var names that could enable container-escape vectors via LD_PRELOAD
+// or NODE_OPTIONS injection. Users can set these in their Dockerfile instead.
+const DENIED_ENV_KEYS = new Set([
+  'LD_PRELOAD', 'LD_LIBRARY_PATH', 'NODE_OPTIONS',
+  'PATH', 'HOME', 'HOSTNAME', 'USER',
+]);
+
+let log: FastifyBaseLogger = console as any;
+
+export function setDeployerLogger(logger: FastifyBaseLogger): void {
+  log = logger;
+}
+
 export function cancelPendingHealthRechecks(): void {
   for (const handle of pendingRechecks) {
     clearTimeout(handle);
@@ -36,7 +50,9 @@ async function updatePhase(deploymentId: number, phase: string): Promise<void> {
   await query(
     `UPDATE deployments SET deploy_phase = $1, updated_at = NOW() WHERE id = $2`,
     [phase, deploymentId],
-  ).catch(() => {});
+  ).catch((err) => {
+    log.warn({ deploymentId, phase, err: err.message }, 'updatePhase failed');
+  });
 }
 
 export function sanitizeErrorMessage(msg: string): string {
@@ -176,17 +192,24 @@ export async function buildAndDeploy(params: BuildAndDeployParams): Promise<void
     const trimmedLog = buildLog.length > 50000 ? '...' + buildLog.slice(-50000) : buildLog;
     await query(`UPDATE deployments SET build_log = $1 WHERE id = $2`, [trimmedLog, deploymentId]).catch(() => {});
 
-    // Build env vars from the user-supplied JSON blob
+    // Build env vars from the user-supplied JSON blob.
     const env: Record<string, string> = {};
     if (envJson) {
       try {
         const parsed = JSON.parse(envJson);
         if (typeof parsed === 'object' && parsed !== null) {
           for (const [k, v] of Object.entries(parsed)) {
-            if (typeof v === 'string') env[k] = v;
+            if (typeof v !== 'string') continue;
+            if (DENIED_ENV_KEYS.has(k)) {
+              log.warn({ deploymentId, key: k }, 'Rejected dangerous env key');
+              continue;
+            }
+            env[k] = v;
           }
         }
-      } catch { /* ignore */ }
+      } catch (e: any) {
+        log.warn({ deploymentId, err: e.message }, 'Failed to parse env JSON');
+      }
     }
 
     // Phase: provisioning_db (if needed)

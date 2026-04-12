@@ -6,7 +6,7 @@ import { getBuildDataDir } from '../services/buildDataDir.js';
 import { createGunzip } from 'node:zlib';
 import tar from 'tar-fs';
 import { query } from '../db/index.js';
-import { getDeployment } from '../db/deployments.js';
+import { getDeployment, countActiveDeployments, checkSubdomainCollision } from '../db/deployments.js';
 import { authenticate } from '../middleware/auth.js';
 import { checkUserRateLimit } from '../middleware/rateLimit.js';
 import { analyzeProject } from '../services/detector.js';
@@ -19,6 +19,7 @@ import {
 import { cleanupDeployment } from '../services/cleanup.js';
 import { appUrl, serializeDeploymentSummary, serializeDeploymentDetail } from '../services/serializers.js';
 import { enqueueDeploy } from '../services/deployQueue.js';
+import { idParamSchema, groupParamSchema } from '../services/schemas.js';
 
 const APP_NAME_REGEX = /^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$/;
 
@@ -51,8 +52,10 @@ export async function deployRoutes(app: FastifyInstance): Promise<void> {
     }
 
     const userId = request.user.id;
-    const username = request.user.username;
-    const subdomain = `${appName}-${username}`;
+    // Sanitize username for subdomain/Traefik Host rule — defense in depth
+    // against injection via auth providers that allow special characters.
+    const safeUsername = request.user.username.toLowerCase().replace(/[^a-z0-9-]/g, '');
+    const subdomain = `${appName}-${safeUsername}`;
 
     // M18 — detect subdomain collision with another user's deployment BEFORE
     // we try to write. The UNIQUE(subdomain) constraint would otherwise
@@ -60,11 +63,7 @@ export async function deployRoutes(app: FastifyInstance): Promise<void> {
     // message. Collision is theoretical (would require e.g. user A's
     // "app-oldusername" equals user B's "A-oldapp") but low-probability
     // is not zero, and a 500 is a bad experience for what's a name clash.
-    const collisionCheck = await query(
-      'SELECT user_id FROM deployments WHERE subdomain = $1',
-      [subdomain],
-    );
-    if (collisionCheck.rowCount && collisionCheck.rows[0].user_id !== userId) {
+    if (await checkSubdomainCollision(subdomain, userId)) {
       return reply.code(409).send({
         error: `Subdomain "${subdomain}" is taken by another user. Choose a different app name.`,
       });
@@ -116,11 +115,7 @@ export async function deployRoutes(app: FastifyInstance): Promise<void> {
     }
 
     // Check per-user deployment limit
-    const countResult = await query(
-      `SELECT COUNT(*) AS cnt FROM deployments WHERE user_id = $1 AND status NOT IN ('failed') AND app_name != $2`,
-      [userId, appName],
-    );
-    if (parseInt(countResult.rows[0].cnt, 10) >= 10) {
+    if (await countActiveDeployments(userId, appName) >= 10) {
       rmSync(tempDir, { recursive: true, force: true });
       return reply.code(400).send({ error: 'Deployment limit reached (max 10 active deployments)' });
     }
@@ -199,7 +194,7 @@ export async function deployRoutes(app: FastifyInstance): Promise<void> {
   // GET /deploy/:id — deployment detail
   app.get<{ Params: { id: string } }>(
     '/deploy/:id',
-    { preHandler: authenticate },
+    { preHandler: authenticate, schema: idParamSchema },
     async (request, reply) => {
       const result = await query(
         `SELECT d.*, array_agg(json_build_object('domain', dm.domain, 'verified', dm.verified))
@@ -228,7 +223,7 @@ export async function deployRoutes(app: FastifyInstance): Promise<void> {
   // GET /deploy/:id/logs — container logs + build logs
   app.get<{ Params: { id: string }; Querystring: { tail?: string; type?: string } }>(
     '/deploy/:id/logs',
-    { preHandler: authenticate },
+    { preHandler: authenticate, schema: idParamSchema },
     async (request, reply) => {
       const deployment = await getDeployment(request.params.id, request.user.id);
       if (!deployment) {
@@ -252,7 +247,7 @@ export async function deployRoutes(app: FastifyInstance): Promise<void> {
   // DELETE /deploy/:id — stop and remove
   app.delete<{ Params: { id: string } }>(
     '/deploy/:id',
-    { preHandler: authenticate },
+    { preHandler: authenticate, schema: idParamSchema },
     async (request, reply) => {
       const deployment = await getDeployment(request.params.id, request.user.id);
       if (!deployment) {
@@ -278,7 +273,7 @@ export async function deployRoutes(app: FastifyInstance): Promise<void> {
   // WebSocket /deploy/:id/logs/stream — live log streaming
   app.get<{ Params: { id: string } }>(
     '/deploy/:id/logs/stream',
-    { websocket: true, preHandler: authenticate },
+    { websocket: true, preHandler: authenticate, schema: idParamSchema },
     async (socket, request) => {
       const deployment = await getDeployment(request.params.id, request.user.id);
       if (!deployment?.container_id) {
@@ -292,7 +287,7 @@ export async function deployRoutes(app: FastifyInstance): Promise<void> {
   // POST /deploy/:id/redeploy — restart container
   app.post<{ Params: { id: string } }>(
     '/deploy/:id/redeploy',
-    { preHandler: authenticate },
+    { preHandler: authenticate, schema: idParamSchema },
     async (request, reply) => {
       // 10 restarts per minute per user — prevents abuse of Docker API calls.
       if (!checkUserRateLimit(request.user.id, 'redeploy', 10, 60_000)) {
@@ -336,7 +331,7 @@ export async function deployRoutes(app: FastifyInstance): Promise<void> {
   // WebSocket /deploy/:id/exec — interactive shell
   app.get<{ Params: { id: string } }>(
     '/deploy/:id/exec',
-    { websocket: true, preHandler: authenticate },
+    { websocket: true, preHandler: authenticate, schema: idParamSchema },
     async (socket, request) => {
       const deployment = await getDeployment(request.params.id, request.user.id);
       if (!deployment?.container_id) {
@@ -350,13 +345,14 @@ export async function deployRoutes(app: FastifyInstance): Promise<void> {
   // GET /deploy/group/:group — list all deployments in a group
   app.get<{ Params: { group: string } }>(
     '/deploy/group/:group',
-    { preHandler: authenticate },
+    { preHandler: authenticate, schema: groupParamSchema },
     async (request) => {
       const result = await query(
         `SELECT id, app_name, subdomain, status, project_type, tier, port, container_id,
                 db_name, deploy_group, framework, deploy_phase, error_detail,
                 detected_port, detected_database, created_at, updated_at
-         FROM deployments WHERE user_id = $1 AND deploy_group = $2 ORDER BY app_name`,
+         FROM deployments WHERE user_id = $1 AND deploy_group = $2 ORDER BY app_name
+         LIMIT 100`,
         [request.user.id, request.params.group],
       );
 
@@ -370,28 +366,35 @@ export async function deployRoutes(app: FastifyInstance): Promise<void> {
   // DELETE /deploy/group/:group — delete all deployments in a group
   app.delete<{ Params: { group: string } }>(
     '/deploy/group/:group',
-    { preHandler: authenticate },
+    { preHandler: authenticate, schema: groupParamSchema },
     async (request) => {
       const result = await query(
-        'SELECT * FROM deployments WHERE user_id = $1 AND deploy_group = $2',
+        'SELECT * FROM deployments WHERE user_id = $1 AND deploy_group = $2 LIMIT 100',
         [request.user.id, request.params.group],
       );
 
-      // Run the full cleanup for each deployment in the group. Image tag +
-      // per-user network are deferred until the last row so we don't flap the
-      // network; removeNetworkIfEmpty runs once at the end.
+      // Run cleanup for all deployments in parallel. Network cleanup is
+      // deferred to a single pass after all containers are stopped.
+      const cleanupResults = await Promise.allSettled(
+        result.rows.map((deployment) =>
+          cleanupDeployment(
+            {
+              user_id: request.user.id,
+              app_name: deployment.app_name,
+              container_id: deployment.container_id,
+              db_name: deployment.db_name,
+            },
+            { cleanNetwork: false },
+          ),
+        ),
+      );
       const allWarnings: string[] = [];
-      for (const deployment of result.rows) {
-        const { warnings } = await cleanupDeployment(
-          {
-            user_id: request.user.id,
-            app_name: deployment.app_name,
-            container_id: deployment.container_id,
-            db_name: deployment.db_name,
-          },
-          { cleanNetwork: false },
-        );
-        if (warnings.length) allWarnings.push(...warnings);
+      for (const r of cleanupResults) {
+        if (r.status === 'fulfilled' && r.value.warnings.length) {
+          allWarnings.push(...r.value.warnings);
+        } else if (r.status === 'rejected') {
+          allWarnings.push(String(r.reason));
+        }
       }
       // One network-cleanup pass at the end for the whole group
       try {

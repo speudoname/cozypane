@@ -1,5 +1,7 @@
 import React, { useState, useRef, useCallback, useEffect } from 'react';
 import { ArrowLeft, ArrowRight, Home, RotateCw, Smartphone, Tablet, Monitor, Columns2, Globe, Zap } from 'lucide-react';
+import PreviewConsole from './PreviewConsole';
+import PreviewEmptyState from './PreviewEmptyState';
 // PreviewError, ConsoleLog, NetworkError are declared in src/renderer/types.d.ts
 
 interface Props {
@@ -482,7 +484,7 @@ export default function Preview({ localUrl, localUrls = [], productionUrl, cwd, 
           {label}
         </div>
       )}
-      <div style={{ flex: 1, display: 'flex', justifyContent: 'center', backgroundColor: '#0a0b10', overflow: 'hidden', position: 'relative' }}>
+      <div style={{ flex: 1, display: 'flex', justifyContent: 'center', backgroundColor: 'var(--bg-primary, #0a0b10)', overflow: 'hidden', position: 'relative' }}>
         <webview
           ref={ref}
           src={url}
@@ -520,85 +522,30 @@ export default function Preview({ localUrl, localUrls = [], productionUrl, cwd, 
     setTimeout(() => setStartingDev(false), 5000);
   }, [projectInfo, suggestedPort, cwd, onSendToTerminal]);
 
+  const handleManualUrlSubmit = useCallback(() => {
+    const url = manualUrlInput.trim();
+    if (!url) return;
+    if (viewMode === 'production') {
+      setStoredProdUrl(url);
+      if (cwd) window.cozyPane.preview.storeUrl(cwd, { productionUrl: url }).catch(() => {});
+    } else {
+      setManualLocalUrl(url);
+    }
+    setManualUrlInput('');
+  }, [manualUrlInput, viewMode, cwd]);
+
   const renderEmptyState = () => (
-    <div style={{
-      display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
-      height: '100%', color: 'var(--text-secondary, #888)', gap: '1em', padding: '2em',
-    }}>
-      {staticError && (
-        <div style={{
-          fontSize: '0.82em', color: 'var(--danger, #f06c7e)', textAlign: 'center', maxWidth: 380,
-          background: 'rgba(240, 108, 126, 0.1)', padding: '0.6em 1em', borderRadius: 6,
-        }}>
-          {staticError}
-        </div>
-      )}
-      {viewMode === 'production' ? (
-        <>
-          <div style={{ fontSize: '1.1em', color: 'var(--text-primary, #e0e0e0)', textAlign: 'center' }}>
-            No production URL
-          </div>
-          <div style={{ fontSize: '0.82em', color: 'var(--text-secondary, #888)', textAlign: 'center', maxWidth: 380 }}>
-            Deploy your project to see the production preview, or enter a URL below.
-          </div>
-        </>
-      ) : (
-        <>
-          <div style={{ fontSize: '1.1em', color: 'var(--text-primary, #e0e0e0)', textAlign: 'center' }}>
-            No dev server running
-          </div>
-          {projectInfo?.devCommand ? (
-            <>
-              <div style={{ fontSize: '0.82em', color: 'var(--text-secondary, #888)', textAlign: 'center', maxWidth: 380 }}>
-                Detected <span style={{ color: 'var(--accent, #7c6fe0)', fontWeight: 600 }}>{projectInfo.type}</span> project
-                {suggestedPort ? <> — port <span style={{ color: 'var(--text-primary, #e0e0e0)', fontWeight: 600 }}>{suggestedPort}</span> is available</> : null}
-              </div>
-              <button
-                onClick={startDevServer}
-                disabled={startingDev}
-                style={{
-                  padding: '10px 24px', borderRadius: 8, border: 'none',
-                  backgroundColor: 'var(--accent, #7c6fe0)', color: '#fff',
-                  fontSize: '0.9em', fontWeight: 600, cursor: startingDev ? 'wait' : 'pointer',
-                  opacity: startingDev ? 0.7 : 1, marginTop: '0.3em',
-                }}
-              >
-                {startingDev ? 'Starting...' : `Start Dev Server`}
-              </button>
-              <div style={{ fontSize: '0.72em', color: 'var(--text-muted, #666)', fontFamily: 'var(--font-mono)' }}>
-                {projectInfo.devCommand}{suggestedPort ? ` (port ${suggestedPort})` : ''}
-              </div>
-            </>
-          ) : (
-            <div style={{ fontSize: '0.82em', color: 'var(--text-secondary, #888)', textAlign: 'center', maxWidth: 380 }}>
-              Run your dev server in the terminal — preview will auto-connect when it starts.
-            </div>
-          )}
-        </>
-      )}
-      <div style={{ display: 'flex', gap: '0.3em', width: '100%', maxWidth: 400, marginTop: '0.5em' }}>
-        <input
-          type="text"
-          value={manualUrlInput}
-          onChange={e => setManualUrlInput(e.target.value)}
-          onKeyDown={e => {
-            if (e.key === 'Enter' && manualUrlInput.trim()) {
-              const url = manualUrlInput.trim();
-              if (viewMode === 'production') {
-                setStoredProdUrl(url);
-                if (cwd) window.cozyPane.preview.storeUrl(cwd, { productionUrl: url }).catch(() => {});
-              } else {
-                setManualLocalUrl(url);
-              }
-              setManualUrlInput('');
-            }
-          }}
-          placeholder={viewMode === 'production' ? 'https://yourapp.com' : 'http://localhost:3000'}
-          spellCheck={false}
-          style={urlInputStyle}
-        />
-      </div>
-    </div>
+    <PreviewEmptyState
+      viewMode={viewMode}
+      staticError={staticError}
+      projectInfo={projectInfo}
+      suggestedPort={suggestedPort}
+      startingDev={startingDev}
+      onStartDevServer={startDevServer}
+      manualUrlInput={manualUrlInput}
+      onManualUrlInputChange={setManualUrlInput}
+      onManualUrlSubmit={handleManualUrlSubmit}
+    />
   );
 
   const showLocal = viewMode === 'local' || viewMode === 'split';
@@ -611,11 +558,11 @@ export default function Preview({ localUrl, localUrls = [], productionUrl, cwd, 
         <div style={{ display: 'flex', gap: '0.15em' }}>
           <button onClick={() => setViewMode('local')} style={{ ...modeBtnStyle, ...(viewMode === 'local' ? modeActiveStyle : {}) }}>
             <Zap size={12} /> Local
-            {effectiveLocalUrl && <span style={dotStyle('#5ce0a8')} />}
+            {effectiveLocalUrl && <span style={dotStyle('var(--success, #5ce0a8)')} />}
           </button>
           <button onClick={() => setViewMode('production')} style={{ ...modeBtnStyle, ...(viewMode === 'production' ? modeActiveStyle : {}) }}>
             <Globe size={12} /> Prod
-            {effectiveProdUrl && <span style={dotStyle('#5cb8f0')} />}
+            {effectiveProdUrl && <span style={dotStyle('var(--info, #5cb8f0)')} />}
           </button>
           {localUrls.length > 1 && (
             <select
@@ -714,13 +661,13 @@ export default function Preview({ localUrl, localUrls = [], productionUrl, cwd, 
           borderBottom: '1px solid var(--border, #2a2b3e)',
           display: 'flex', alignItems: 'center', gap: '0.4em',
         }}>
-          <span style={{ ...dotStyle('#5ce0a8'), position: 'relative', top: 0 }} />
+          <span style={{ ...dotStyle('var(--success, #5ce0a8)'), position: 'relative', top: 0 }} />
           <span style={{ fontFamily: 'monospace' }}>{effectiveLocalUrl}</span>
           {staticUrl && <span style={{ fontSize: '0.9em', color: 'var(--text-secondary, #666)' }}>(static)</span>}
           {effectiveProdUrl && (
             <>
               <span style={{ margin: '0 0.3em', color: 'var(--border, #3a3b4e)' }}>|</span>
-              <span style={{ ...dotStyle('#5cb8f0'), position: 'relative', top: 0 }} />
+              <span style={{ ...dotStyle('var(--info, #5cb8f0)'), position: 'relative', top: 0 }} />
               <span style={{ fontFamily: 'monospace' }}>{effectiveProdUrl}</span>
               <button
                 title="Clear production URL"
@@ -757,132 +704,25 @@ export default function Preview({ localUrl, localUrls = [], productionUrl, cwd, 
       {claudeWarning && (
         <div style={{
           padding: '5px 10px', fontSize: '0.72em', fontWeight: 600,
-          backgroundColor: '#e6b80022', color: '#e6b800',
-          borderTop: '1px solid #e6b80044', textAlign: 'center',
+          backgroundColor: 'color-mix(in srgb, var(--warning, #e6b800) 13%, transparent)', color: 'var(--warning, #e6b800)',
+          borderTop: '1px solid color-mix(in srgb, var(--warning, #e6b800) 27%, transparent)', textAlign: 'center',
         }}>
           Claude is not running in the terminal
         </div>
       )}
 
-      <div style={{ borderTop: '1px solid var(--border, #2a2b3e)', backgroundColor: 'var(--bg-secondary, #161822)' }}>
-        <div
-          onClick={() => setDrawerOpen(v => !v)}
-          style={{
-            display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-            padding: '0.3em 0.6em', cursor: 'pointer', userSelect: 'none',
-          }}
-        >
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.4em' }}>
-            <span style={{ fontSize: '0.78em', color: 'var(--text-secondary, #888)' }}>
-              {drawerOpen ? '\u25BC' : '\u25B6'} Console
-            </span>
-            {errors.length > 0 && (
-              <span style={{
-                fontSize: '0.7em', padding: '0 5px', borderRadius: 8,
-                backgroundColor: '#e74c3c33', color: '#e74c3c', fontWeight: 600,
-              }}>
-                {errors.length} error{errors.length !== 1 ? 's' : ''}
-              </span>
-            )}
-            {consoleLogs.length > 0 && errors.length === 0 && (
-              <span style={{
-                fontSize: '0.7em', padding: '0 5px', borderRadius: 8,
-                backgroundColor: 'var(--border, #2a2b3e)', color: 'var(--text-secondary, #888)', fontWeight: 600,
-              }}>
-                {consoleLogs.length}
-              </span>
-            )}
-          </div>
-          <div style={{ display: 'flex', gap: '0.3em' }}>
-            {errors.length > 0 && (
-              <button
-                onClick={(e) => { e.stopPropagation(); sendDevToolsToClaude(); }}
-                style={{ ...tinyBtnStyle, color: 'var(--accent, #7c6fe0)', fontWeight: 600 }}
-              >
-                Fix with Claude
-              </button>
-            )}
-            {(errors.length > 0 || consoleLogs.length > 0) && (
-              <button
-                onClick={(e) => { e.stopPropagation(); setErrors([]); setConsoleLogs([]); setNetworkErrors([]); }}
-                style={tinyBtnStyle}
-              >
-                Clear
-              </button>
-            )}
-          </div>
-        </div>
-
-        {drawerOpen && (
-          <div style={{ display: 'flex', flexDirection: 'column', maxHeight: 240 }}>
-            {/* Tab bar */}
-            <div style={{ display: 'flex', gap: '0.2em', padding: '0.2em 0.6em 0', borderBottom: '1px solid var(--border, #1e1f32)' }}>
-              {(['errors', 'all'] as const).map(tab => (
-                <button
-                  key={tab}
-                  onClick={() => setConsoleTab(tab)}
-                  style={{
-                    padding: '0.15em 0.5em', fontSize: '0.72em', cursor: 'pointer', border: 'none',
-                    borderBottom: consoleTab === tab ? '2px solid var(--accent, #7c6fe0)' : '2px solid transparent',
-                    backgroundColor: 'transparent',
-                    color: consoleTab === tab ? 'var(--text-primary, #e0e0e0)' : 'var(--text-secondary, #888)',
-                    fontWeight: consoleTab === tab ? 600 : 400,
-                  }}
-                >
-                  {tab === 'errors' ? `Errors (${errors.length})` : `All (${consoleLogs.length})`}
-                </button>
-              ))}
-            </div>
-            <div style={{ flex: 1, overflowY: 'auto', padding: '0.2em 0.6em 0.4em' }}>
-              {consoleTab === 'errors' ? (
-                errors.length === 0 ? (
-                  <div style={{ fontSize: '0.78em', color: 'var(--text-secondary, #666)', padding: '0.5em 0' }}>No errors</div>
-                ) : (
-                  errors.map((err, i) => (
-                    <div key={i} style={{ padding: '0.25em 0', borderBottom: '1px solid var(--border, #1e1f32)', fontSize: '0.75em' }}>
-                      <div style={{ display: 'flex', gap: '0.4em', alignItems: 'baseline' }}>
-                        <span style={{ color: err.type === 'network' ? '#e6b800' : '#e74c3c', fontWeight: 600, fontSize: '0.9em', textTransform: 'uppercase', flexShrink: 0 }}>
-                          {err.type}
-                        </span>
-                        <span style={{ color: 'var(--text-primary, #e0e0e0)', fontFamily: 'monospace', wordBreak: 'break-all' }}>
-                          {err.message}
-                        </span>
-                      </div>
-                      {err.detail && (
-                        <div style={{ color: 'var(--text-secondary, #666)', fontSize: '0.9em', marginTop: '0.1em' }}>{err.detail}</div>
-                      )}
-                    </div>
-                  ))
-                )
-              ) : (
-                consoleLogs.length === 0 ? (
-                  <div style={{ fontSize: '0.78em', color: 'var(--text-secondary, #666)', padding: '0.5em 0' }}>No console output</div>
-                ) : (
-                  consoleLogs.map((log, i) => {
-                    const levelColor = log.level === 3 ? '#e74c3c' : log.level === 2 ? '#e6b800' : log.level === 1 ? '#4fc3f7' : 'var(--text-secondary, #888)';
-                    const levelLabel = ['verbose', 'info', 'warn', 'error'][log.level] ?? 'log';
-                    return (
-                      <div key={i} style={{ padding: '0.2em 0', borderBottom: '1px solid var(--border, #1e1f32)', fontSize: '0.74em', display: 'flex', gap: '0.4em', alignItems: 'baseline' }}>
-                        <span style={{ color: levelColor, fontWeight: 600, fontSize: '0.85em', textTransform: 'uppercase', flexShrink: 0, minWidth: '2.5em' }}>
-                          {levelLabel}
-                        </span>
-                        <span style={{ color: 'var(--text-primary, #ccc)', fontFamily: 'monospace', wordBreak: 'break-all', flex: 1 }}>
-                          {log.message}
-                        </span>
-                        {log.source && (
-                          <span style={{ color: 'var(--text-secondary, #555)', fontSize: '0.85em', flexShrink: 0 }}>
-                            {log.source.split('/').pop()}{log.line ? `:${log.line}` : ''}
-                          </span>
-                        )}
-                      </div>
-                    );
-                  })
-                )
-              )}
-            </div>
-          </div>
-        )}
-      </div>
+      <PreviewConsole
+        errors={errors}
+        consoleLogs={consoleLogs}
+        networkErrors={networkErrors}
+        drawerOpen={drawerOpen}
+        onToggleDrawer={() => setDrawerOpen(v => !v)}
+        consoleTab={consoleTab}
+        onTabChange={setConsoleTab}
+        onClear={() => { setErrors([]); setConsoleLogs([]); setNetworkErrors([]); }}
+        onFixWithClaude={sendDevToolsToClaude}
+        sendingToClaude={sendingToClaude}
+      />
     </div>
   );
 }
@@ -924,14 +764,6 @@ const dotStyle = (color: string): React.CSSProperties => ({
   display: 'inline-block', width: 6, height: 6,
   borderRadius: '50%', backgroundColor: color, flexShrink: 0,
 });
-
-const urlInputStyle: React.CSSProperties = {
-  flex: 1, padding: '0.3em 0.6em', borderRadius: 4,
-  border: '1px solid var(--border, #2a2b3e)',
-  backgroundColor: 'var(--bg-primary, #1a1b2e)',
-  color: 'var(--text-primary, #e0e0e0)',
-  fontSize: '0.82em', fontFamily: 'inherit', outline: 'none',
-};
 
 const tinyBtnStyle: React.CSSProperties = {
   padding: '2px 8px', borderRadius: 3,

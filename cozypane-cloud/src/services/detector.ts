@@ -1,5 +1,11 @@
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
+import { createRequire } from 'node:module';
+
+// Shared framework detection data — single source of truth for both
+// the cloud build detector and the desktop preview panel.
+const require = createRequire(import.meta.url);
+const frameworkData = require('../../../shared/framework-data.json');
 
 export interface ProjectAnalysis {
   type: 'docker' | 'node' | 'python' | 'go' | 'static';
@@ -112,76 +118,35 @@ function analyzeNodeProject(dir: string, analysis: ProjectAnalysis): void {
 
   const deps = { ...pkg.dependencies, ...pkg.devDependencies };
 
-  // Detect framework.
-  //
-  // NOTE: `cozypane/src/main/preview.ts` has a parallel framework detector
-  // for choosing the local dev command. If you add a framework here you
-  // should also add it there (and vice versa). The two lists currently
-  // overlap but aren't identical — see audit finding M39.
-  if (deps.next) {
-    analysis.framework = 'nextjs';
-    analysis.port = 3000;
-    analysis.recommendedTier = 'medium';
-    analysis.nextjsNeedsStandalone = checkNextjsStandalone(dir);
-  } else if (deps.nuxt) {
-    analysis.framework = 'nuxt';
-    analysis.port = 3000;
-    analysis.recommendedTier = 'medium';
-  } else if (deps['@angular/core']) {
-    // Angular builds to static files via `ng build`, served by nginx.
-    analysis.framework = 'angular';
-    analysis.port = 8080;
-  } else if (deps.vite && !deps.express && !deps.fastify && !deps.hono && !deps['@nestjs/core']) {
-    // Vite with no server framework = SPA (svelte/vue/react via vite all land here).
-    analysis.framework = 'vite';
-    analysis.port = 8080;
-  } else if (deps['react-scripts']) {
-    // Create React App — static SPA after `npm run build`.
-    analysis.framework = 'cra';
-    analysis.port = 8080;
-  } else if (deps.express) {
-    analysis.framework = 'express';
-    analysis.port = 3000;
-  } else if (deps.fastify) {
-    analysis.framework = 'fastify';
-    analysis.port = 3000;
-  } else if (deps.hono || deps['@hono/node-server']) {
-    analysis.framework = 'hono';
-    analysis.port = 3000;
-  } else if (deps['@nestjs/core']) {
-    analysis.framework = 'nestjs';
-    analysis.port = 3000;
+  // Detect framework from shared data (shared/framework-data.json).
+  // Single source of truth for both cloud detector and desktop preview.
+  for (const [name, info] of Object.entries(frameworkData.frameworks) as [string, any][]) {
+    const allDeps = [info.dep, ...(info.altDeps || [])];
+    const hasFramework = allDeps.some((d: string) => d in deps);
+    if (!hasFramework) continue;
+    if (info.excludeIfPresent?.some((d: string) => d in deps)) continue;
+    analysis.framework = name;
+    analysis.port = info.port;
+    if (info.tier) analysis.recommendedTier = info.tier;
+    // Next.js-specific standalone check
+    if (name === 'nextjs') {
+      analysis.nextjsNeedsStandalone = checkNextjsStandalone(dir);
+    }
+    break;
   }
 
-  // Detect ORM / database
-  if (deps.prisma || deps['@prisma/client']) {
-    analysis.orm = 'prisma';
-    analysis.needsDatabase = true;
-    analysis.migrationCommand = 'npx prisma migrate deploy';
-  } else if (deps['drizzle-orm']) {
-    analysis.orm = 'drizzle';
-    analysis.needsDatabase = true;
-    analysis.migrationCommand = 'npx drizzle-kit migrate';
-  } else if (deps.knex) {
-    analysis.orm = 'knex';
-    analysis.needsDatabase = true;
-    analysis.migrationCommand = 'npx knex migrate:latest';
-  } else if (deps.sequelize) {
-    analysis.orm = 'sequelize';
-    analysis.needsDatabase = true;
-    analysis.migrationCommand = 'npx sequelize-cli db:migrate';
-  } else if (deps.typeorm) {
-    analysis.orm = 'typeorm';
-    analysis.needsDatabase = true;
-    analysis.migrationCommand = 'npx typeorm migration:run -d dist/data-source.js';
-  } else if (deps.pg || deps.postgres || deps['pg-promise']) {
-    analysis.needsDatabase = true;
-  } else if (deps.mongoose || deps.mysql2 || deps['better-sqlite3']) {
-    // Mark the deployment as needing a database even though we only
-    // provision postgres today. The user either brings their own DB URL
-    // (via env vars) or the deploy fails loudly — either way, we know
-    // the app expects persistence. Syncs with preview.ts DB_DEPS list.
-    analysis.needsDatabase = true;
+  // Detect ORM / database from shared data
+  for (const [ormName, ormInfo] of Object.entries(frameworkData.orms) as [string, any][]) {
+    if (ormInfo.deps.some((d: string) => d in deps)) {
+      analysis.orm = ormName;
+      analysis.needsDatabase = true;
+      analysis.migrationCommand = ormInfo.migrationCommand;
+      break;
+    }
+  }
+  // Check for raw DB drivers if no ORM matched
+  if (!analysis.needsDatabase) {
+    analysis.needsDatabase = frameworkData.dbDeps.some((d: string) => d in deps);
   }
 
   // Package manager

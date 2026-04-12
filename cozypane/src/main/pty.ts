@@ -19,7 +19,7 @@ let getDeployEnv: () => Record<string, string> = () => ({});
 
 // Per-PTY CWD cache to avoid spawning ps+lsof every 400ms
 const cwdCache = new Map<number, { cwd: string | null; ts: number }>();
-const CWD_CACHE_TTL = 2000; // 2 seconds
+const CWD_CACHE_TTL = 5000; // 5 seconds — reduces subprocess churn from ps+lsof
 
 function getShell(): string {
   if (process.platform === 'win32') {

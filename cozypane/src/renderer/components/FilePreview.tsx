@@ -78,6 +78,16 @@ function MediaPreview({ filePath, fileType }: MediaPreviewProps) {
     setFileInfo(null);
     setZoom(1);
 
+    // For video/audio/PDF, use cozypane-media:// protocol to stream the file
+    // directly instead of base64-encoding it over IPC (which consumes ~1.33x
+    // the file size in renderer heap). Images use base64 since they're small.
+    const useProtocol = fileType === 'video' || fileType === 'audio' || fileType === 'pdf';
+    if (useProtocol) {
+      setDataUrl(`cozypane-media://${encodeURIComponent(filePath)}`);
+      setLoading(false);
+      return;
+    }
+
     window.cozyPane.fs.readBinary(filePath).then(result => {
       if (result.error) {
         setError(result.error);
@@ -87,7 +97,7 @@ function MediaPreview({ filePath, fileType }: MediaPreviewProps) {
       }
       setLoading(false);
     }).catch(() => { setLoading(false); setError('Could not load file'); });
-  }, [filePath]);
+  }, [filePath, fileType]);
 
   if (loading) {
     return <div className="media-preview-center">Loading...</div>;

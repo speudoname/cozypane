@@ -1,25 +1,12 @@
 import type { FastifyRequest, FastifyReply } from 'fastify';
-import { verifyToken } from './auth.js';
+import { extractToken, verifyToken } from './auth.js';
 import { query } from '../db/index.js';
 
 export async function adminAuth(
   request: FastifyRequest,
   reply: FastifyReply,
 ): Promise<void> {
-  // Accept JWT from either the admin_session cookie (preferred, set by
-  // /auth/admin-callback) or the legacy Authorization: Bearer header.
-  // Cookie path is used by the admin SPA since Wave 3; the header path
-  // remains for compatibility with any existing admin tools / tests.
-  let token: string | undefined;
-  const cookieToken = (request.cookies as Record<string, string> | undefined)?.admin_session;
-  if (cookieToken) {
-    token = cookieToken;
-  } else {
-    const authHeader = request.headers.authorization;
-    if (authHeader?.startsWith('Bearer ')) {
-      token = authHeader.slice(7);
-    }
-  }
+  const token = extractToken(request);
 
   if (!token) {
     reply.code(401).send({ error: 'Missing admin session — sign in again' });

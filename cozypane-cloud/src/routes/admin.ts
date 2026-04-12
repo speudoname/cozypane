@@ -3,6 +3,9 @@ import { query } from '../db/index.js';
 import { adminAuth } from '../middleware/adminAuth.js';
 import { stopContainer, restartContainer, getContainerLogs } from '../services/container.js';
 import { cleanupDeployment } from '../services/cleanup.js';
+import { checkUserRateLimit } from '../middleware/rateLimit.js';
+import { DOMAIN, appUrl, serializeDeploymentSummary, serializeDeploymentDetail } from '../services/serializers.js';
+import { idParamSchema } from '../services/schemas.js';
 
 export async function adminRoutes(app: FastifyInstance): Promise<void> {
   // All routes require admin auth
@@ -40,34 +43,47 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
       let where = '';
       const params: any[] = [];
       if (search) {
-        params.push(`%${search}%`);
+        // Escape LIKE metacharacters to prevent pattern injection
+        const escaped = search.replace(/[%_]/g, '\\$&');
+        params.push(`%${escaped}%`);
         where = `WHERE u.username ILIKE $${params.length}`;
       }
 
-      const countResult = await query(
-        `SELECT COUNT(*) FROM users u ${where}`,
-        params,
-      );
+      const [countResult, result] = await Promise.all([
+        query(`SELECT COUNT(*) FROM users u ${where}`, params),
+        query(
+          `SELECT u.id, u.username, u.avatar_url, u.github_id, u.is_admin, u.created_at, u.updated_at,
+                  COUNT(d.id) as deployment_count,
+                  COUNT(d.id) FILTER (WHERE d.status = 'running') as running_count
+           FROM users u
+           LEFT JOIN deployments d ON d.user_id = u.id
+           ${where}
+           GROUP BY u.id
+           ORDER BY u.created_at DESC
+           LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+          [...params, limit, offset],
+        ),
+      ]);
       const total = parseInt(countResult.rows[0].count);
 
-      const result = await query(
-        `SELECT u.id, u.username, u.avatar_url, u.github_id, u.is_admin, u.created_at, u.updated_at,
-                COUNT(d.id) as deployment_count,
-                COUNT(d.id) FILTER (WHERE d.status = 'running') as running_count
-         FROM users u
-         LEFT JOIN deployments d ON d.user_id = u.id
-         ${where}
-         GROUP BY u.id
-         ORDER BY u.created_at DESC
-         LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
-        [...params, limit, offset],
-      );
-
-      return { users: result.rows, total, page, limit };
+      return {
+        users: result.rows.map((u: any) => ({
+          id: u.id,
+          username: u.username,
+          avatarUrl: u.avatar_url,
+          githubId: u.github_id,
+          isAdmin: u.is_admin,
+          createdAt: u.created_at,
+          updatedAt: u.updated_at,
+          deploymentCount: parseInt(u.deployment_count),
+          runningCount: parseInt(u.running_count),
+        })),
+        total, page, limit,
+      };
     },
   );
 
-  app.get<{ Params: { id: string } }>('/admin/users/:id', async (request, reply) => {
+  app.get<{ Params: { id: string } }>('/admin/users/:id', { schema: idParamSchema }, async (request, reply) => {
     const result = await query(
       `SELECT id, username, avatar_url, github_id, is_admin, created_at, updated_at
        FROM users WHERE id = $1`,
@@ -81,7 +97,17 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
       [request.params.id],
     );
 
-    return { ...result.rows[0], deployments: deployments.rows };
+    const user = result.rows[0];
+    return {
+      id: user.id,
+      username: user.username,
+      avatarUrl: user.avatar_url,
+      githubId: user.github_id,
+      isAdmin: user.is_admin,
+      createdAt: user.created_at,
+      updatedAt: user.updated_at,
+      deployments: deployments.rows.map((d: any) => serializeDeploymentSummary(d)),
+    };
   });
 
   app.put<{ Params: { id: string }; Body: { is_admin: boolean } }>(
@@ -99,6 +125,9 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
       },
     },
     async (request, reply) => {
+      if (parseInt(request.params.id, 10) === request.user.id) {
+        return reply.code(400).send({ error: 'Cannot modify your own admin status' });
+      }
       const { is_admin } = request.body;
       const result = await query(
         `UPDATE users SET is_admin = $1, updated_at = NOW() WHERE id = $2 RETURNING id, username, is_admin`,
@@ -109,9 +138,15 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
     },
   );
 
-  app.delete<{ Params: { id: string } }>('/admin/users/:id', async (request, reply) => {
+  app.delete<{ Params: { id: string } }>('/admin/users/:id', { schema: idParamSchema }, async (request, reply) => {
+    if (!checkUserRateLimit(request.user.id, 'admin-delete', 5, 60_000)) {
+      return reply.code(429).send({ error: 'Rate limit exceeded for destructive operations' });
+    }
     const userId = parseInt(request.params.id, 10);
     if (Number.isNaN(userId)) return reply.code(400).send({ error: 'Invalid user id' });
+    if (userId === request.user.id) {
+      return reply.code(400).send({ error: 'Cannot delete your own account' });
+    }
     const errors: string[] = [];
 
     // Get all deployments for cleanup
@@ -162,41 +197,30 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
 
       const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
 
-      const countResult = await query(`SELECT COUNT(*) FROM deployments d ${where}`, params);
+      const [countResult, result] = await Promise.all([
+        query(`SELECT COUNT(*) FROM deployments d ${where}`, params),
+        query(
+          `SELECT d.id, d.app_name, d.subdomain, d.status, d.project_type, d.tier, d.port,
+                  d.container_id, d.db_name, d.db_user, d.db_host,
+                  d.created_at, d.updated_at,
+                  u.username, u.avatar_url
+           FROM deployments d
+           JOIN users u ON u.id = d.user_id
+           ${where}
+           ORDER BY d.updated_at DESC
+           LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+          [...params, limit, offset],
+        ),
+      ]);
       const total = parseInt(countResult.rows[0].count);
 
-      const domain = process.env.DOMAIN || 'cozypane.com';
-      const result = await query(
-        `SELECT d.id, d.app_name, d.subdomain, d.status, d.project_type, d.tier, d.port,
-                d.container_id, d.db_name, d.db_user, d.db_host,
-                d.created_at, d.updated_at,
-                u.username, u.avatar_url
-         FROM deployments d
-         JOIN users u ON u.id = d.user_id
-         ${where}
-         ORDER BY d.updated_at DESC
-         LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
-        [...params, limit, offset],
-      );
-
-      // Whitelist fields — do NOT spread `...r` which leaks internal column
-      // names (db_user, db_host, db_name) and potential secrets in build_log.
       return {
         deployments: result.rows.map(r => ({
-          id: r.id,
-          appName: r.app_name,
-          subdomain: r.subdomain,
-          status: r.status,
-          projectType: r.project_type,
-          tier: r.tier,
-          port: r.port,
-          hasContainer: !!r.container_id,
-          hasDatabase: !!r.db_name,
-          createdAt: r.created_at,
-          updatedAt: r.updated_at,
+          ...serializeDeploymentSummary(r),
+          containerId: r.container_id || null,
+          dbName: r.db_name || null,
           username: r.username,
           avatarUrl: r.avatar_url,
-          url: `https://${r.subdomain}.${domain}`,
         })),
         total,
         page,
@@ -205,8 +229,7 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
     },
   );
 
-  app.get<{ Params: { id: string } }>('/admin/deployments/:id', async (request, reply) => {
-    const domain = process.env.DOMAIN || 'cozypane.com';
+  app.get<{ Params: { id: string } }>('/admin/deployments/:id', { schema: idParamSchema }, async (request, reply) => {
     // Explicit column list rather than `d.*` — admin deployment detail was
     // previously leaking build_log (which may contain secrets) and raw
     // db_user/db_host values via `...row` spread.
@@ -223,31 +246,18 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
     if (!result.rows[0]) return reply.code(404).send({ error: 'Deployment not found' });
     const row = result.rows[0];
     return {
-      id: row.id,
-      appName: row.app_name,
-      subdomain: row.subdomain,
-      status: row.status,
-      projectType: row.project_type,
-      tier: row.tier,
-      port: row.port,
-      hasContainer: !!row.container_id,
-      hasDatabase: !!row.db_name,
-      deployGroup: row.deploy_group,
-      framework: row.framework,
-      deployPhase: row.deploy_phase,
-      detectedPort: row.detected_port,
-      detectedDatabase: row.detected_database,
-      errorDetail: row.error_detail,
-      createdAt: row.created_at,
-      updatedAt: row.updated_at,
+      ...serializeDeploymentDetail(row),
+      // Admin-only fields: raw identifiers needed by the admin SPA
+      containerId: row.container_id,
+      dbName: row.db_name,
+      dbHost: row.db_host,
       userId: row.user_id,
       username: row.username,
       avatarUrl: row.avatar_url,
-      url: `https://${row.subdomain}.${domain}`,
     };
   });
 
-  app.post<{ Params: { id: string } }>('/admin/deployments/:id/stop', async (request, reply) => {
+  app.post<{ Params: { id: string } }>('/admin/deployments/:id/stop', { schema: idParamSchema }, async (request, reply) => {
     const result = await query('SELECT container_id FROM deployments WHERE id = $1', [request.params.id]);
     if (!result.rows[0]) return reply.code(404).send({ error: 'Deployment not found' });
     if (result.rows[0].container_id) {
@@ -261,17 +271,21 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
     return { ok: true };
   });
 
-  app.post<{ Params: { id: string } }>('/admin/deployments/:id/restart', async (request, reply) => {
+  app.post<{ Params: { id: string } }>('/admin/deployments/:id/restart', { schema: idParamSchema }, async (request, reply) => {
     const result = await query('SELECT container_id FROM deployments WHERE id = $1', [request.params.id]);
     if (!result.rows[0]) return reply.code(404).send({ error: 'Deployment not found' });
     if (!result.rows[0].container_id) return reply.code(400).send({ error: 'No container to restart' });
 
-    await restartContainer(result.rows[0].container_id);
+    try {
+      await restartContainer(result.rows[0].container_id);
+    } catch (err: any) {
+      return reply.code(500).send({ error: `Failed to restart container: ${err.message}` });
+    }
     await query(`UPDATE deployments SET status = 'running', updated_at = NOW() WHERE id = $1`, [request.params.id]);
     return { ok: true };
   });
 
-  app.delete<{ Params: { id: string } }>('/admin/deployments/:id', async (request, reply) => {
+  app.delete<{ Params: { id: string } }>('/admin/deployments/:id', { schema: idParamSchema }, async (request, reply) => {
     const result = await query(
       'SELECT d.id, d.container_id, d.app_name, d.db_name, d.user_id, u.username FROM deployments d JOIN users u ON u.id = d.user_id WHERE d.id = $1',
       [request.params.id],
@@ -305,6 +319,7 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
 
   app.get<{ Params: { id: string }; Querystring: { tail?: string } }>(
     '/admin/deployments/:id/logs',
+    { schema: idParamSchema },
     async (request, reply) => {
       const result = await query('SELECT container_id FROM deployments WHERE id = $1', [request.params.id]);
       if (!result.rows[0]) return reply.code(404).send({ error: 'Deployment not found' });

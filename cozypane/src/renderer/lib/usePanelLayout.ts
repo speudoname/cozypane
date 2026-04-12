@@ -23,13 +23,19 @@ export interface UsePanelLayoutReturn {
   setRightPanelTab: Dispatch<SetStateAction<RightPanelTab>>;
   previewOpen: boolean;
   setPreviewOpen: Dispatch<SetStateAction<boolean>>;
+  deployPanelOpen: boolean;
+  setDeployPanelOpen: Dispatch<SetStateAction<boolean>>;
+  deployPanelWidth: number;
+  setDeployPanelWidth: Dispatch<SetStateAction<number>>;
   isResizing: boolean;
   isResizingPreview: boolean;
+  isResizingDeployPanel: boolean;
   togglePanels: () => void;
   toggleLayout: () => void;
   handlePanelResizeStart: (e: React.MouseEvent) => void;
   handleSplitResizeStart: (e: React.MouseEvent) => void;
   handlePreviewResizeStart: (e: React.MouseEvent) => void;
+  handleDeployPanelResizeStart: (e: React.MouseEvent) => void;
 }
 
 export function usePanelLayout(): UsePanelLayoutReturn {
@@ -37,6 +43,7 @@ export function usePanelLayout(): UsePanelLayoutReturn {
   // slices below gate their save-through-to-localStorage on them.
   const [isResizing, setIsResizing] = useState(false);
   const [isResizingPreview, setIsResizingPreview] = useState(false);
+  const [isResizingDeployPanel, setIsResizingDeployPanel] = useState(false);
 
   const [panelsOpen, setPanelsOpen] = usePersistedState('panelsOpen', true);
   const [layoutMode, setLayoutMode] = usePersistedState<LayoutMode>('layoutMode', 'two-col');
@@ -49,6 +56,10 @@ export function usePanelLayout(): UsePanelLayoutReturn {
   const [sidebarRatio, setSidebarRatio] = usePersistedState('sidebarRatio', 0.35);
   const [rightPanelTab, setRightPanelTab] = usePersistedState<RightPanelTab>('rightPanelTab', 'preview');
   const [previewOpen, setPreviewOpen] = usePersistedState('previewOpen', false);
+  const [deployPanelOpen, setDeployPanelOpen] = usePersistedState('deployPanelOpen', false);
+  const [deployPanelWidth, setDeployPanelWidth] = usePersistedState('deployPanelWidth', 420, {
+    skipSave: () => isResizingDeployPanel,
+  });
 
   // Sanitize stale values from older builds.
   useEffect(() => {
@@ -95,6 +106,18 @@ export function usePanelLayout(): UsePanelLayoutReturn {
     },
   });
 
+  const handleDeployPanelResizeStart = useDragResize({
+    onStart: () => setIsResizingDeployPanel(true),
+    onEnd: () => setIsResizingDeployPanel(false),
+    getStartValue: () => deployPanelWidth,
+    onMove: (e, ctx) => {
+      const delta = ctx.startX - e.clientX;
+      setDeployPanelWidth(
+        Math.max(300, Math.min(ctx.startWidth + delta, window.innerWidth * 0.5)),
+      );
+    },
+  });
+
   const togglePanels = useCallback(() => {
     setPanelsOpen((prev) => !prev);
   }, [setPanelsOpen]);
@@ -118,12 +141,18 @@ export function usePanelLayout(): UsePanelLayoutReturn {
     setRightPanelTab,
     previewOpen,
     setPreviewOpen,
+    deployPanelOpen,
+    setDeployPanelOpen,
+    deployPanelWidth,
+    setDeployPanelWidth,
     isResizing,
     isResizingPreview,
+    isResizingDeployPanel,
     togglePanels,
     toggleLayout,
     handlePanelResizeStart,
     handleSplitResizeStart,
     handlePreviewResizeStart,
+    handleDeployPanelResizeStart,
   };
 }

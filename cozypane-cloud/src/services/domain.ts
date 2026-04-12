@@ -5,8 +5,7 @@
 // server. Do NOT add an HTTP-based fallback without a challenge token.
 
 import dns from 'node:dns/promises';
-
-const BASE_DOMAIN = process.env.DOMAIN || 'cozypane.com';
+import { DOMAIN as BASE_DOMAIN } from './serializers.js';
 
 export interface DomainVerificationResult {
   verified: boolean;
@@ -18,40 +17,29 @@ export async function verifyDomain(
   domain: string,
   expectedCname: string,
 ): Promise<DomainVerificationResult> {
+  // SECURITY: Only CNAME matching is used. A previous revision also checked
+  // A-record IP overlap, but shared CDN IPs (e.g. Cloudflare) meant an
+  // attacker could claim any domain on the same CDN. Do NOT re-add
+  // A-record or HTTP-based fallbacks without a challenge token (e.g. TXT).
   try {
     const cnameRecords = await dns.resolve(domain, 'CNAME');
     const match = cnameRecords.some(
       (r: string) => r.toLowerCase().replace(/\.$/, '') === expectedCname.toLowerCase(),
     );
     if (match) return { verified: true, error: null };
-  } catch {
-    // Apex domains can't have real CNAMEs; providers like Cloudflare
-    // flatten them to A records at resolve time. Fall through.
-  }
-
-  try {
-    const [customIps, targetIps] = await Promise.all([
-      dns.resolve(domain, 'A').catch(() => [] as string[]),
-      dns.resolve(expectedCname, 'A').catch(() => [] as string[]),
-    ]);
-
-    if (customIps.length > 0 && targetIps.length > 0) {
-      const match = customIps.some((ip: string) => targetIps.includes(ip));
-      if (match) return { verified: true, error: null };
-    }
-
-    if (customIps.length === 0) {
-      return {
-        verified: false,
-        error: 'No DNS records found. DNS changes can take a few minutes to propagate.',
-      };
-    }
 
     return {
       verified: false,
-      error: 'Domain resolves but could not reach the server. Check your DNS configuration.',
+      error: `CNAME record found but does not match. Expected: ${expectedCname}. Set a CNAME record pointing your domain to ${expectedCname}.`,
     };
   } catch (err: any) {
+    // NXDOMAIN, NODATA, or timeout — no CNAME record exists
+    if (err?.code === 'ENODATA' || err?.code === 'ENOTFOUND') {
+      return {
+        verified: false,
+        error: `No CNAME record found. Add a CNAME record for "${domain}" pointing to "${expectedCname}". DNS changes can take a few minutes to propagate.`,
+      };
+    }
     return {
       verified: false,
       error: `DNS lookup failed: ${err?.message || 'unknown error'}`,

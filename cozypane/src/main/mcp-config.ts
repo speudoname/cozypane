@@ -13,6 +13,24 @@ import { getToken, getGithubToken, API_BASE } from './deploy';
 let extractedMcpServerPath: string | null = null;
 let cozypaneMcpConfigPath: string | null = null;
 
+/**
+ * Wipe token-containing config file on app quit. Tokens are re-written
+ * on next launch from safeStorage. This limits the window during which
+ * the plaintext GitHub `repo` token sits on disk — from "always" to
+ * "only while the app is running."
+ */
+export function wipeMcpConfig(): void {
+  if (!cozypaneMcpConfigPath) return;
+  try {
+    if (fs.existsSync(cozypaneMcpConfigPath)) {
+      // Overwrite with empty config before deleting to prevent recovery
+      fs.writeFileSync(cozypaneMcpConfigPath, '{}', { mode: 0o600 });
+      fs.unlinkSync(cozypaneMcpConfigPath);
+    }
+  } catch { /* best-effort */ }
+  cozypaneMcpConfigPath = null;
+}
+
 const isDev = !app.isPackaged;
 
 function extractDirPath(): string {
@@ -88,9 +106,4 @@ export function ensureCozypaneMcpConfig(): string {
 
   cozypaneMcpConfigPath = configPath;
   return configPath;
-}
-
-/** Path the most recently generated config was written to, or null if never. */
-export function lastCozypaneMcpConfigPath(): string | null {
-  return cozypaneMcpConfigPath;
 }

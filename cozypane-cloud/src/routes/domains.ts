@@ -5,14 +5,17 @@ import { authenticate } from '../middleware/auth.js';
 import { checkUserRateLimit } from '../middleware/rateLimit.js';
 import { verifyDomain, isValidDomainName, buildExpectedCname } from '../services/domain.js';
 import { writeCustomDomainConfig, removeCustomDomainConfig } from '../services/traefik.js';
+import { idParams, idParamSchema, idDomainIdParamSchema } from '../services/schemas.js';
 
 export async function domainRoutes(app: FastifyInstance): Promise<void> {
+
   // POST /deploy/:id/domains — add a custom domain
   app.post<{ Params: { id: string }; Body: { domain: string } }>(
     '/deploy/:id/domains',
     {
       preHandler: authenticate,
       schema: {
+        params: idParams,
         body: {
           type: 'object',
           required: ['domain'],
@@ -39,10 +42,21 @@ export async function domainRoutes(app: FastifyInstance): Promise<void> {
         return reply.code(400).send({ error: 'Invalid domain name' });
       }
 
-      // Check domain isn't already taken
-      const existing = await query('SELECT id FROM domains WHERE domain = $1', [domainName]);
+      // Check domain isn't already taken. Allow re-claiming unverified
+      // domains older than 48h to prevent indefinite domain squatting.
+      const existing = await query(
+        'SELECT id, verified, created_at FROM domains WHERE domain = $1',
+        [domainName],
+      );
       if (existing.rows.length > 0) {
-        return reply.code(409).send({ error: 'Domain already in use' });
+        const row = existing.rows[0];
+        const ageMs = Date.now() - new Date(row.created_at).getTime();
+        const STALE_MS = 48 * 60 * 60 * 1000; // 48 hours
+        if (row.verified || ageMs < STALE_MS) {
+          return reply.code(409).send({ error: 'Domain already in use' });
+        }
+        // Stale unverified claim — delete it so this user can re-claim
+        await query('DELETE FROM domains WHERE id = $1', [row.id]);
       }
 
       const result = await query(
@@ -70,7 +84,7 @@ export async function domainRoutes(app: FastifyInstance): Promise<void> {
   // POST /deploy/:id/domains/:domainId/verify — verify DNS and activate
   app.post<{ Params: { id: string; domainId: string } }>(
     '/deploy/:id/domains/:domainId/verify',
-    { preHandler: authenticate },
+    { preHandler: authenticate, schema: idDomainIdParamSchema },
     async (request, reply) => {
       // 10 verifications per minute per user. Verification performs DNS +
       // outbound HTTP, making it the most abuse-prone endpoint.
@@ -115,7 +129,7 @@ export async function domainRoutes(app: FastifyInstance): Promise<void> {
   // DELETE /deploy/:id/domains/:domainId — remove a custom domain
   app.delete<{ Params: { id: string; domainId: string } }>(
     '/deploy/:id/domains/:domainId',
-    { preHandler: authenticate },
+    { preHandler: authenticate, schema: idDomainIdParamSchema },
     async (request, reply) => {
       const deployment = await getDeployment(request.params.id, request.user.id);
       if (!deployment) {
@@ -141,7 +155,7 @@ export async function domainRoutes(app: FastifyInstance): Promise<void> {
   // GET /deploy/:id/domains — list domains for a deployment
   app.get<{ Params: { id: string } }>(
     '/deploy/:id/domains',
-    { preHandler: authenticate },
+    { preHandler: authenticate, schema: idParamSchema },
     async (request, reply) => {
       const deployment = await getDeployment(request.params.id, request.user.id);
       if (!deployment) {

@@ -10,12 +10,12 @@
 //
 // Any change to the wire shape happens here, exactly once.
 
-const DEFAULT_DOMAIN = 'cozypane.com';
+/** Base domain, resolved once from env. Shared across the cloud codebase. */
+export const DOMAIN = process.env.DOMAIN || 'cozypane.com';
 
 /** Canonical deployment URL: `https://<subdomain>.<DOMAIN>`. */
 export function appUrl(subdomain: string): string {
-  const domain = process.env.DOMAIN || DEFAULT_DOMAIN;
-  return `https://${subdomain}.${domain}`;
+  return `https://${subdomain}.${DOMAIN}`;
 }
 
 export interface DeploymentRow {
@@ -55,6 +55,8 @@ export function serializeDeploymentSummary(row: DeploymentRow): Record<string, u
     port: row.port,
     hasContainer: !!row.container_id,
     hasDatabase: !!row.db_name,
+    databaseType: row.db_name ? 'postgres' : null,
+    databaseName: row.db_name || null,
     group: row.deploy_group || null,
     framework: row.framework || null,
     phase: row.deploy_phase || null,

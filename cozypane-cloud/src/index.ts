@@ -16,9 +16,12 @@ import { deployRoutes } from './routes/deploy.js';
 import { domainRoutes } from './routes/domains.js';
 import { adminRoutes } from './routes/admin.js';
 import { startDeployWorker, drainAndClose as drainDeployQueue } from './services/deployQueue.js';
-import { cancelPendingHealthRechecks } from './services/deployer.js';
+import { cancelPendingHealthRechecks, setDeployerLogger } from './services/deployer.js';
 import { cleanupOrphanBuildDirs } from './services/buildCleanup.js';
 import { startPeriodicImagePrune, stopPeriodicImagePrune } from './services/imagePrune.js';
+import { setContainerLogger } from './services/container.js';
+import { setDatabaseLogger } from './services/database.js';
+import { DOMAIN } from './services/serializers.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -40,9 +43,9 @@ const app = Fastify({
 const allowedOrigins = isDev
   ? [/localhost/]
   : [
-      `https://admin.${process.env.DOMAIN || 'cozypane.com'}`,
-      `https://${process.env.DOMAIN || 'cozypane.com'}`,
-      `https://www.${process.env.DOMAIN || 'cozypane.com'}`,
+      `https://admin.${DOMAIN}`,
+      `https://${DOMAIN}`,
+      `https://www.${DOMAIN}`,
     ];
 await app.register(cors, {
   origin: allowedOrigins,
@@ -87,6 +90,12 @@ async function connectDb(retries = 5, delay = 3000): Promise<void> {
 }
 
 await connectDb();
+
+// Initialize service loggers so they use pino (structured JSON in prod)
+// instead of console.log. Must run after Fastify is created.
+setContainerLogger(app.log);
+setDatabaseLogger(app.log);
+setDeployerLogger(app.log);
 
 // Reconcile stuck 'building' deployments from a previous run. If the API
 // process crashes mid-build (or the host is restarted), rows can be left in

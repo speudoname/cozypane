@@ -7,6 +7,8 @@ import { promisify } from 'util';
 
 const execFileAsync = promisify(execFile);
 
+// Must match the server's APP_NAME_REGEX in routes/deploy.ts.
+// Client-side validation for fast feedback; the server re-validates.
 export const APP_NAME_REGEX = /^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$/;
 
 export async function apiFetch(

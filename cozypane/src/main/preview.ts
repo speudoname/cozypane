@@ -128,10 +128,11 @@ function savePreviewUrls(data: Record<string, any>) {
 
 // --- Project detection (for static HTML serving) ---
 
-// NOTE: `cozypane-cloud/src/services/detector.ts` has a parallel
-// framework detector for choosing the build-time Dockerfile template.
-// Keep the framework list + DB_DEPS list here in sync with that file —
-// see audit finding M39. When adding a framework, update both places.
+// Framework detection data is shared with cozypane-cloud/src/services/detector.ts.
+// Single source of truth: shared/framework-data.json. Adding a framework? Update
+// the JSON file — both codebases read from it.
+import frameworkData from '../../../shared/framework-data.json';
+
 function detectProjectInfo(cwd: string): { type: string | null; devCommand: string | null; productionUrl: string | null; serveStatic: boolean; needsDatabase: boolean } {
   let type: string | null = null;
   let devCommand: string | null = null;
@@ -146,18 +147,27 @@ function detectProjectInfo(cwd: string): { type: string | null; devCommand: stri
       const scripts = pkg.scripts || {};
       const deps = { ...pkg.dependencies, ...pkg.devDependencies };
 
-      if (deps['next']) { type = 'nextjs'; devCommand = scripts.dev ? 'npm run dev' : 'npx next dev'; }
-      else if (deps['vite']) { type = 'vite'; devCommand = scripts.dev ? 'npm run dev' : 'npx vite'; }
-      else if (deps['react-scripts']) { type = 'cra'; devCommand = 'npm start'; }
-      else if (deps['@angular/core']) { type = 'angular'; devCommand = 'ng serve'; }
-      else if (deps['vue']) { type = 'vue'; devCommand = scripts.dev ? 'npm run dev' : 'npx vite'; }
-      else if (deps['svelte'] || deps['@sveltejs/kit']) { type = 'svelte'; devCommand = scripts.dev ? 'npm run dev' : 'npx vite'; }
-      else if (deps['nuxt'] || deps['nuxt3']) { type = 'nuxt'; devCommand = scripts.dev ? 'npm run dev' : 'npx nuxi dev'; }
-      else if (scripts.dev) { type = 'node'; devCommand = 'npm run dev'; }
-      else if (scripts.start) { type = 'node'; devCommand = 'npm start'; }
+      // Match framework from shared data — order matters (next before vite)
+      for (const [name, info] of Object.entries(frameworkData.frameworks) as [string, any][]) {
+        const allDeps = [info.dep, ...(info.altDeps || [])];
+        const hasFramework = allDeps.some((d: string) => d in deps);
+        if (!hasFramework) continue;
+        // Skip vite if backend framework is present
+        if (info.excludeIfPresent?.some((d: string) => d in deps)) continue;
+        type = name;
+        devCommand = info.devCommand
+          ? (scripts.dev ? info.devCommand : (info.devFallback || info.devCommand))
+          : null;
+        break;
+      }
 
-      const DB_DEPS = ['pg', 'mysql2', 'prisma', '@prisma/client', 'mongoose', 'sequelize', 'typeorm', 'knex', 'drizzle-orm', 'better-sqlite3'];
-      needsDatabase = DB_DEPS.some(d => d in deps);
+      // Fallback for node projects without a known framework
+      if (!type) {
+        if (scripts.dev) { type = 'node'; devCommand = 'npm run dev'; }
+        else if (scripts.start) { type = 'node'; devCommand = 'npm start'; }
+      }
+
+      needsDatabase = frameworkData.dbDeps.some(d => d in deps);
       if (pkg.homepage) productionUrl = pkg.homepage;
     } catch {}
   }

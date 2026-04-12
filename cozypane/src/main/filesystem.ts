@@ -66,21 +66,6 @@ export function addAllowedRoot(rootPath: string): void {
   } catch { /* ignore */ }
 }
 
-/**
- * Remove a root from the allowlist (e.g. when the user closes a project tab).
- */
-export function removeAllowedRoot(rootPath: string): void {
-  if (!rootPath) return;
-  try {
-    allowedRoots.delete(path.resolve(rootPath));
-  } catch { /* ignore */ }
-}
-
-/** Snapshot of currently allowed roots — used by other modules (e.g. watcher). */
-export function getAllowedRoots(): string[] {
-  return Array.from(allowedRoots);
-}
-
 /** True if `filePath` is allowed under the current fence. Does NOT throw. */
 export function isPathAllowed(filePath: string): boolean {
   try {
@@ -126,12 +111,14 @@ export function registerFsHandlers() {
           return a.name.localeCompare(b.name);
         });
     } catch (err: any) {
-      // Return [] to keep the caller's array-based contract, but log to the
-      // main process so developers can distinguish permission denied /
-      // missing-dir / other errors during debugging. Previously these all
-      // collapsed into a silent empty directory.
-      console.error('[CozyPane] fs:readdir failed', dirPath, err?.code || err?.message || err);
-      return [];
+      const code = err?.code || 'UNKNOWN';
+      console.error('[CozyPane] fs:readdir failed', dirPath, code, err?.message);
+      // Return an empty array with an `_error` property so the renderer
+      // can distinguish "empty directory" from "access denied" or "not found"
+      // while preserving the array-based IPC contract.
+      const result: any[] = [];
+      (result as any)._error = code === 'EACCES' ? 'Access denied' : code === 'ENOENT' ? 'Directory not found' : `Error: ${code}`;
+      return result;
     }
   });
 

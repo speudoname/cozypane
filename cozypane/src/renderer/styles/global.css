@@ -1354,7 +1354,7 @@ html, body, #root {
 .settings-key-badge {
   font-size: 10px;
   color: var(--success);
-  background: rgba(92, 224, 168, 0.1);
+  background: color-mix(in srgb, var(--success) 10%, transparent);
   padding: 1px 6px;
   border-radius: 8px;
 }
@@ -1414,12 +1414,12 @@ html, body, #root {
 
 .settings-message.success {
   color: var(--success);
-  background: rgba(92, 224, 168, 0.1);
+  background: color-mix(in srgb, var(--success) 10%, transparent);
 }
 
 .settings-message.error {
   color: var(--danger);
-  background: rgba(240, 108, 126, 0.1);
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
 }
 
 /* ============================================
@@ -1486,7 +1486,7 @@ html, body, #root {
   padding: 6px 14px;
   font-size: 11px;
   color: var(--danger);
-  background: rgba(240, 108, 126, 0.1);
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
   border-bottom: 1px solid var(--danger);
   cursor: pointer;
 }
@@ -1729,9 +1729,9 @@ html, body, #root {
 
 .git-revert-btn {
   width: 100%;
-  background: rgba(240, 108, 126, 0.08);
+  background: color-mix(in srgb, var(--danger) 8%, transparent);
   color: var(--danger);
-  border: 1px solid rgba(240, 108, 126, 0.3);
+  border: 1px solid color-mix(in srgb, var(--danger) 30%, transparent);
   padding: 6px 12px;
   border-radius: var(--radius-sm);
   font-size: 11px;
@@ -1741,7 +1741,7 @@ html, body, #root {
 }
 
 .git-revert-btn:hover {
-  background: rgba(240, 108, 126, 0.15);
+  background: color-mix(in srgb, var(--danger) 15%, transparent);
 }
 
 .git-revert-confirm {
@@ -2254,8 +2254,8 @@ html, body, #root {
 
 /* ── Update Banner ── */
 .update-banner {
-  background: rgba(92, 224, 168, 0.08);
-  border-bottom: 1px solid rgba(92, 224, 168, 0.2);
+  background: color-mix(in srgb, var(--success) 8%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--success) 20%, transparent);
   padding: 6px 16px;
   font-size: 12px;
   color: var(--text);
@@ -2286,9 +2286,9 @@ html, body, #root {
 }
 
 .update-btn {
-  background: rgba(92, 224, 168, 0.15);
+  background: color-mix(in srgb, var(--success) 15%, transparent);
   color: var(--success);
-  border: 1px solid rgba(92, 224, 168, 0.3);
+  border: 1px solid color-mix(in srgb, var(--success) 30%, transparent);
   padding: 2px 10px;
   border-radius: 4px;
   font-size: 11px;
@@ -2296,7 +2296,7 @@ html, body, #root {
 }
 
 .update-btn:hover {
-  background: rgba(92, 224, 168, 0.25);
+  background: color-mix(in srgb, var(--success) 25%, transparent);
 }
 
 .update-btn-secondary {
@@ -2331,7 +2331,7 @@ html, body, #root {
 .update-banner-details {
   margin-top: 6px;
   padding-top: 6px;
-  border-top: 1px solid rgba(92, 224, 168, 0.1);
+  border-top: 1px solid color-mix(in srgb, var(--success) 10%, transparent);
   display: flex;
   flex-direction: column;
   gap: 3px;
@@ -2361,9 +2361,9 @@ html, body, #root {
 }
 
 .update-btn-sm {
-  background: rgba(92, 224, 168, 0.1);
+  background: color-mix(in srgb, var(--success) 10%, transparent);
   color: var(--success);
-  border: 1px solid rgba(92, 224, 168, 0.2);
+  border: 1px solid color-mix(in srgb, var(--success) 20%, transparent);
   padding: 1px 8px;
   border-radius: 3px;
   font-size: 10px;
@@ -2371,7 +2371,7 @@ html, body, #root {
 }
 
 .update-btn-sm:hover {
-  background: rgba(92, 224, 168, 0.2);
+  background: color-mix(in srgb, var(--success) 20%, transparent);
 }
 
 /* ============================================
@@ -2453,4 +2453,130 @@ html, body, #root {
 
 .confirm-dialog-btn.destructive:hover {
   filter: brightness(1.1);
+}
+
+/* ── Deploy Panel ─────────────────────────────────────────────── */
+
+.deploy-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+}
+
+.deploy-center {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+}
+
+.deploy-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.5em 0.75em;
+  border-bottom: 1px solid var(--border, #2a2b3e);
+}
+
+.deploy-section {
+  padding: 0.75em;
+  border-bottom: 1px solid var(--border, #2a2b3e);
+}
+
+.deploy-btn-primary {
+  padding: 0.5em 1em;
+  border-radius: 6px;
+  border: none;
+  background-color: var(--accent, #7c6fe0);
+  color: #fff;
+  font-size: 0.88em;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.deploy-btn-small {
+  padding: 0.25em 0.6em;
+  border-radius: 4px;
+  border: 1px solid var(--border, #2a2b3e);
+  background-color: transparent;
+  color: var(--text-secondary, #aaa);
+  font-size: 0.8em;
+  cursor: pointer;
+}
+
+.deploy-btn-tiny {
+  padding: 2px 8px;
+  border-radius: 3px;
+  border: 1px solid var(--border, #2a2b3e);
+  background-color: transparent;
+  color: var(--text-secondary, #aaa);
+  font-size: 0.78em;
+  cursor: pointer;
+}
+
+.deploy-card {
+  padding: 0.6em;
+  margin-bottom: 0.5em;
+  border-radius: 6px;
+  border: 1px solid var(--border, #2a2b3e);
+  background-color: var(--bg-secondary, #1e1f32);
+}
+
+.deploy-log-box {
+  margin-top: 0.4em;
+  padding: 0.5em;
+  border-radius: 4px;
+  background-color: var(--bg-primary, #1a1b2e);
+  color: var(--text-secondary, #aaa);
+  font-size: 0.78em;
+  font-family: monospace;
+  max-height: 200px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+/* ── Deploy Management Panel (global) ── */
+.deploy-mgmt {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+  background-color: var(--bg-primary, #1a1b2e);
+}
+
+.deploy-mgmt-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.5em 0.75em;
+  border-bottom: 1px solid var(--border, #2a2b3e);
+}
+
+.deploy-mgmt-tabs {
+  display: flex;
+  border-bottom: 1px solid var(--border, #2a2b3e);
+  padding: 0 0.5em;
+}
+
+.deploy-mgmt-tab {
+  padding: 0.4em 0.8em;
+  font-size: 0.82em;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary, #888);
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  font-weight: 500;
+}
+
+.deploy-mgmt-tab.active {
+  color: var(--text-primary, #e0e0e0);
+  border-bottom-color: var(--accent, #7c6fe0);
+  font-weight: 600;
+}
+
+.deploy-mgmt-tab:hover:not(.active) {
+  color: var(--text-primary, #e0e0e0);
 }

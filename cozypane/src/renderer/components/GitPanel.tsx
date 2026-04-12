@@ -122,7 +122,7 @@ export default function GitPanel({ cwd, onDiffClick, onBranchChange, activityEve
     if (activityEvents.length === prevEventCountRef.current) return;
     prevEventCountRef.current = activityEvents.length;
     if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current);
-    refreshTimerRef.current = setTimeout(refresh, 1000);
+    refreshTimerRef.current = setTimeout(refresh, 3000);
     return () => { if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current); };
   }, [activityEvents.length, refresh]);
 

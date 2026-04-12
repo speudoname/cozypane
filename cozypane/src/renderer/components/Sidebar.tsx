@@ -87,20 +87,44 @@ export default function Sidebar({ isOpen, onToggle, onFileSelect, onDiffClick, a
   const [inlineInput, setInlineInput] = useState<InlineInput | null>(null);
   const inlineInputRef = useRef<HTMLInputElement>(null);
 
+  const [readdirError, setReaddirError] = useState<string | null>(null);
+
   // Load root tree when cwd changes
   useEffect(() => {
     if (!cwd) return;
-    window.cozyPane.fs.readdir(cwd).then(entries => {
-      setTree(entries.map(entry => ({
+    setReaddirError(null);
+    window.cozyPane.fs.readdir(cwd).then((entries: any) => {
+      if ((entries as any)._error) {
+        setReaddirError((entries as any)._error);
+      }
+      setTree(entries.map((entry: any) => ({
         ...entry, depth: 0, expanded: false, children: null,
       })));
     }).catch(() => {});
   }, [cwd]);
 
-  // Update tree in-place when watcher events arrive from App
+  // Debounce tree updates from watcher events — during heavy file activity
+  // (npm install, AI writing files) dozens of events arrive per second.
+  // Batching with a 150ms debounce prevents per-event full-tree cloning.
+  const pendingEventsRef = useRef<FileChangeEvent[]>([]);
+  const treeUpdateTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   useEffect(() => {
     if (!lastWatcherEvent || !cwd) return;
-    const event = lastWatcherEvent;
+    pendingEventsRef.current.push(lastWatcherEvent);
+    if (treeUpdateTimerRef.current) clearTimeout(treeUpdateTimerRef.current);
+    treeUpdateTimerRef.current = setTimeout(() => {
+      const events = pendingEventsRef.current;
+      pendingEventsRef.current = [];
+      for (const event of events) {
+        applyWatcherEvent(event);
+      }
+    }, 150);
+    return () => { if (treeUpdateTimerRef.current) clearTimeout(treeUpdateTimerRef.current); };
+  }, [lastWatcherEvent, cwd]);
+
+  const applyWatcherEvent = useCallback((event: FileChangeEvent) => {
+    if (!cwd) return;
 
     const relativePath = event.path.startsWith(cwd) ? event.path.slice(cwd.length + 1) : null;
     if (!relativePath) return;
@@ -145,7 +169,7 @@ export default function Sidebar({ isOpen, onToggle, onFileSelect, onDiffClick, a
       }
     }
     // 'modify' doesn't change tree structure — just the color indicator via changedFiles
-  }, [lastWatcherEvent, cwd]);
+  }, [cwd]);
 
   // Focus inline input after it mounts
   useEffect(() => {
@@ -313,6 +337,11 @@ export default function Sidebar({ isOpen, onToggle, onFileSelect, onDiffClick, a
         </div>
       </div>
       <div className="file-tree">
+        {readdirError && tree.length === 0 && (
+          <div style={{ padding: '1em', fontSize: '0.82em', color: 'var(--text-secondary, #888)', textAlign: 'center' }}>
+            {readdirError}
+          </div>
+        )}
         {flatNodes.map(node => {
           const changeType = changedFiles?.get(node.path);
           const changeColor = getChangeColor(changeType);

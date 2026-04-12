@@ -5,7 +5,7 @@ import { useTerminalTabs } from './lib/useTerminalTabs';
 import { usePanelLayout } from './lib/usePanelLayout';
 import { useFontSizes } from './lib/useFontSizes';
 import { useKeyboardShortcuts } from './lib/useKeyboardShortcuts';
-import { Eye, GitBranch, Rocket, Settings2 } from 'lucide-react';
+import { Eye, GitBranch, Rocket, Settings2, Cloud } from 'lucide-react';
 import Sidebar from './components/Sidebar';
 import FilePreview from './components/FilePreview';
 import Terminal from './components/Terminal';
@@ -13,7 +13,8 @@ import StatusBar from './components/StatusBar';
 import DiffViewer from './components/DiffViewer';
 import Settings from './components/Settings';
 import GitPanel from './components/GitPanel';
-import DeployPanel from './components/DeployPanel';
+import DeployTab from './components/DeployTab';
+import DeployManagement from './components/DeployManagement';
 import Preview from './components/Preview';
 import ErrorBoundary from './components/ErrorBoundary';
 import TabLauncher from './components/TabLauncher';
@@ -50,9 +51,12 @@ export default function App() {
     sidebarRatio,
     rightPanelTab, setRightPanelTab,
     previewOpen, setPreviewOpen,
-    isResizing, isResizingPreview,
+    deployPanelOpen, setDeployPanelOpen,
+    deployPanelWidth,
+    isResizing, isResizingPreview, isResizingDeployPanel,
     togglePanels, toggleLayout,
     handlePanelResizeStart, handleSplitResizeStart, handlePreviewResizeStart,
+    handleDeployPanelResizeStart,
   } = usePanelLayout();
 
   // File-editor tab state — which files are open in Monaco.
@@ -79,6 +83,40 @@ export default function App() {
   const [gitBranch, setGitBranch] = useState('');
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [deployments, setDeployments] = useState<Deployment[]>([]);
+  const [deployAuth, setDeployAuth] = useState<DeployAuth>({ authenticated: false });
+
+  // Load deploy auth + deployments at app level so both DeployTab and DeployManagement share state
+  useEffect(() => {
+    window.cozyPane.deploy.getAuth().then(setDeployAuth).catch(() => {});
+    const cleanup1 = window.cozyPane.deploy.onAuthSuccess(() => {
+      window.cozyPane.deploy.getAuth().then(setDeployAuth).catch(() => {});
+    });
+    const cleanup2 = window.cozyPane.deploy.onProtocolCallback(() => {
+      window.cozyPane.deploy.getAuth().then(setDeployAuth).catch(() => {});
+    });
+    return () => { cleanup1(); cleanup2(); };
+  }, []);
+
+  const loadDeployments = useCallback(() => {
+    if (!deployAuth.authenticated) return;
+    window.cozyPane.deploy.list()
+      .then((list: any) => {
+        setDeployments(Array.isArray(list) ? list : []);
+      })
+      .catch(() => setDeployments([]));
+  }, [deployAuth.authenticated]);
+
+  useEffect(() => { loadDeployments(); }, [loadDeployments]);
+
+  const handleDeployLogin = useCallback(async () => {
+    await window.cozyPane.deploy.login();
+  }, []);
+
+  const handleDeployLogout = useCallback(async () => {
+    await window.cozyPane.deploy.logout();
+    setDeployAuth({ authenticated: false });
+    setDeployments([]);
+  }, []);
 
   // Terminal tab state machine + per-tab watcher. Variable names aliased
   // at destructure so existing JSX call sites read naturally.
@@ -455,7 +493,15 @@ export default function App() {
         )}
         {rightPanelTab === 'deploy' && (
           <ErrorBoundary panel="Deploy">
-            <DeployPanel cwd={cwd} onTerminalCommand={sendTerminalCommand} onDeploymentsLoaded={setDeployments} />
+            <DeployTab
+              cwd={cwd}
+              auth={deployAuth}
+              deployments={deployments}
+              onLogin={handleDeployLogin}
+              onTerminalCommand={sendTerminalCommand}
+              onRefresh={loadDeployments}
+              onOpenManagement={() => setDeployPanelOpen(true)}
+            />
           </ErrorBoundary>
         )}
       </>
@@ -523,6 +569,14 @@ export default function App() {
             {panelsOpen ? '>' : '<'}
           </button>
           <button
+            className={`btn titlebar-btn ${deployPanelOpen ? 'titlebar-btn-active' : ''}`}
+            onClick={() => setDeployPanelOpen(p => !p)}
+            title="Toggle deploy management"
+            aria-label="Toggle deploy management"
+          >
+            <Cloud size={14} />
+          </button>
+          <button
             className={`btn titlebar-btn ${previewOpen ? 'titlebar-btn-active' : ''}`}
             onClick={() => setPreviewOpen(p => !p)}
             title="Toggle preview"
@@ -542,7 +596,7 @@ export default function App() {
 
       <div className="main-content">
         {/* Overlay prevents webview from stealing mouse events during resize */}
-        {(isResizing || isResizingPreview) && (
+        {(isResizing || isResizingPreview || isResizingDeployPanel) && (
           <div style={{ position: 'fixed', inset: 0, zIndex: 9999, cursor: 'col-resize' }} />
         )}
         <div className={`terminal-pane ${splitTerminalId ? 'split' : ''}`}
@@ -680,6 +734,28 @@ export default function App() {
                 </div>
               </>
             )}
+          </>
+        )}
+
+        {/* Deploy Management Panel — global, between right panel and preview */}
+        {deployPanelOpen && (
+          <>
+            <div
+              className={`resize-handle ${isResizingDeployPanel ? 'active' : ''}`}
+              onMouseDown={handleDeployPanelResizeStart}
+            />
+            <div className="right-panel preview-panel" style={{ width: deployPanelWidth }}>
+              <ErrorBoundary panel="Deploy Management">
+                <DeployManagement
+                  auth={deployAuth}
+                  deployments={deployments}
+                  onLogin={handleDeployLogin}
+                  onLogout={handleDeployLogout}
+                  onRefresh={loadDeployments}
+                  onTerminalCommand={sendTerminalCommand}
+                />
+              </ErrorBoundary>
+            </div>
           </>
         )}
 

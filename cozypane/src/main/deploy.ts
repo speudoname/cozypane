@@ -91,7 +91,7 @@ function apiFetch(endpoint: string, options: RequestInit & { timeoutMs?: number 
 
 export function registerDeployHandlers() {
   ipcMain.handle('deploy:login', async () => {
-    const clientId = 'Ov23liUojbnQSvCY9Eq9';
+    const clientId = process.env.COZYPANE_GITHUB_CLIENT_ID || 'Ov23liUojbnQSvCY9Eq9';
     const redirectUri = encodeURIComponent('cozypane://auth/callback');
     const state = crypto.randomUUID();
     sweepExpiredOAuthStates();

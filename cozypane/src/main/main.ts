@@ -1,11 +1,11 @@
-import { app, BrowserWindow, dialog, ipcMain, clipboard } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, clipboard, net, protocol } from 'electron';
 import path from 'path';
 import fs from 'fs';
 import os from 'os';
 import { autoUpdater } from 'electron-updater';
 
 import { registerPtyHandlers, killAllPtys, hasActivePtys, cleanupForSender } from './pty';
-import { registerFsHandlers, addAllowedRoot } from './filesystem';
+import { registerFsHandlers, addAllowedRoot, isPathAllowed } from './filesystem';
 import { registerWatcherHandlers, closeWatcher } from './watcher';
 import { registerSettingsHandlers } from './settings';
 import { registerGitHandlers } from './git';
@@ -13,8 +13,14 @@ import { registerDeployHandlers, processProtocolUrl, getGithubToken, writeAskpas
 import { registerPreviewHandlers } from './preview';
 import { registerUpdateCheckerHandlers, startPeriodicCheck, stopPeriodicCheck } from './update-checker';
 import { buildMenu } from './menu';
-import { ensureCozypaneMcpConfig } from './mcp-config';
+import { ensureCozypaneMcpConfig, wipeMcpConfig } from './mcp-config';
 import { registerPrimaryWindow, getPrimaryWindow, broadcastAll } from './windows';
+
+// Register cozypane-media:// scheme for serving local media files to the
+// renderer without base64-encoding them over IPC. Must be called before app.ready.
+protocol.registerSchemesAsPrivileged([
+  { scheme: 'cozypane-media', privileges: { standard: false, supportFetchAPI: true, stream: true } },
+]);
 
 // Global error handlers
 process.on('uncaughtException', (err) => {
@@ -351,6 +357,17 @@ app.whenReady().then(() => {
     app.setAsDefaultProtocolClient('cozypane');
   }
 
+  // Register cozypane-media:// protocol handler — serves local media files
+  // directly to <img>/<video>/<audio> tags without base64 encoding over IPC.
+  // Path must be in the security fence (isPathAllowed).
+  protocol.handle('cozypane-media', (request) => {
+    const filePath = decodeURIComponent(request.url.slice('cozypane-media://'.length));
+    if (!isPathAllowed(filePath)) {
+      return new Response('Forbidden', { status: 403 });
+    }
+    return net.fetch(`file://${filePath}`);
+  });
+
   buildMenu();
   createWindow();
   setupAutoUpdater();
@@ -403,6 +420,7 @@ app.on('before-quit', (e) => {
     closeWatcher();
     stopPeriodicCheck();
     cleanupClipboardTempFiles();
+    wipeMcpConfig();
   }
 });
 

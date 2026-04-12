@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { query } from '../db/index.js';
 import { authenticate, signToken } from '../middleware/auth.js';
 import { encryptToken, decryptToken } from '../services/tokenCrypto.js';
+import { DOMAIN } from '../services/serializers.js';
 
 interface GitHubTokenResponse {
   access_token: string;
@@ -48,27 +49,39 @@ async function authenticateGithubCode(
   log: FastifyInstance['log'],
 ): Promise<GithubExchangeResult> {
   // 1. Exchange code for access token
-  const tokenRes = await fetch('https://github.com/login/oauth/access_token', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-    body: JSON.stringify({ client_id: clientId, client_secret: clientSecret, code }),
-    signal: AbortSignal.timeout(15000),
-  });
-  const tokenData = (await tokenRes.json()) as GitHubTokenResponse & { error?: string };
+  let tokenData: GitHubTokenResponse & { error?: string };
+  try {
+    const tokenRes = await fetch('https://github.com/login/oauth/access_token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify({ client_id: clientId, client_secret: clientSecret, code }),
+      signal: AbortSignal.timeout(15000),
+    });
+    tokenData = (await tokenRes.json()) as GitHubTokenResponse & { error?: string };
+  } catch (err: any) {
+    log.warn({ err }, 'GitHub OAuth token exchange failed (network error)');
+    return { kind: 'oauth_failed', detail: 'GitHub is temporarily unreachable. Try again.' };
+  }
   if (tokenData.error) {
     return { kind: 'oauth_failed', detail: tokenData.error };
   }
 
   // 2. Fetch the GitHub user profile
-  const userRes = await fetch('https://api.github.com/user', {
-    headers: {
-      Authorization: `Bearer ${tokenData.access_token}`,
-      Accept: 'application/json',
-    },
-    signal: AbortSignal.timeout(15000),
-  });
-  if (!userRes.ok) return { kind: 'github_failed' };
-  const ghUser = (await userRes.json()) as GitHubUser;
+  let ghUser: GitHubUser;
+  try {
+    const userRes = await fetch('https://api.github.com/user', {
+      headers: {
+        Authorization: `Bearer ${tokenData.access_token}`,
+        Accept: 'application/json',
+      },
+      signal: AbortSignal.timeout(15000),
+    });
+    if (!userRes.ok) return { kind: 'github_failed' };
+    ghUser = (await userRes.json()) as GitHubUser;
+  } catch (err: any) {
+    log.warn({ err }, 'GitHub user profile fetch failed (network error)');
+    return { kind: 'github_failed' };
+  }
 
   // 3. Encrypt the GitHub token for at-rest storage
   let encryptedGithubToken: string;
@@ -178,7 +191,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
   // app credentials and the error transport (redirect vs JSON) differ.
   app.get<{ Querystring: { code?: string } }>('/auth/admin-callback', async (request, reply) => {
     const code = request.query.code;
-    const domain = process.env.DOMAIN || 'cozypane.com';
+    const domain = DOMAIN;
     if (!code) {
       return reply.redirect(`https://admin.${domain}/admin/`);
     }
@@ -227,14 +240,14 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
     return { clientId: process.env.ADMIN_GITHUB_CLIENT_ID || '' };
   });
 
-  app.get('/auth/me', { preHandler: authenticate }, async (request) => {
+  app.get('/auth/me', { preHandler: authenticate }, async (request, reply) => {
     const result = await query(
       'SELECT id, github_id, username, avatar_url, created_at FROM users WHERE id = $1',
       [request.user.id],
     );
 
     if (result.rows.length === 0) {
-      throw { statusCode: 404, message: 'User not found' };
+      return reply.code(404).send({ error: 'User not found' });
     }
 
     const user = result.rows[0];

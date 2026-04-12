@@ -135,9 +135,9 @@ export default function Settings() {
         </div>
 
         <div className="settings-section">
-          <div className="settings-section-title">AI Summaries</div>
+          <div className="settings-section-title">AI Commit Messages</div>
           <p className="settings-description">
-            Connect your own LLM API key to get plain English summaries of what Claude changed in your codebase.
+            Connect your own LLM API key to generate commit messages in the Git panel.
           </p>
         </div>
 
