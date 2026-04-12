@@ -2598,28 +2598,6 @@ html, body, #root {
   flex-shrink: 0;
 }
 
-.inspect-tabs {
-  display: flex;
-  gap: 0;
-}
-
-.inspect-tab {
-  background: none;
-  border: none;
-  color: var(--text-muted, #666);
-  cursor: pointer;
-  padding: 6px 12px;
-  font-size: 11px;
-  border-bottom: 2px solid transparent;
-  white-space: nowrap;
-}
-
-.inspect-tab:hover { color: var(--text-secondary, #aaa); }
-.inspect-tab.active {
-  color: var(--text-primary, #e0e0e0);
-  border-bottom-color: var(--accent, #7c6fe0);
-}
-
 .inspect-url {
   margin-left: auto;
   padding: 0 10px;

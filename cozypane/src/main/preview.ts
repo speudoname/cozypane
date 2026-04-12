@@ -4,6 +4,36 @@ import http from 'http';
 import fs from 'fs';
 import path from 'path';
 
+// --- Shared truncation + write helper ---
+
+const MAX_FIELD_CHARS = 64 * 1024;
+const MAX_TOTAL_CHARS = 256 * 1024;
+
+function truncateData(value: any): any {
+  if (typeof value === 'string') {
+    return value.length > MAX_FIELD_CHARS
+      ? value.slice(0, MAX_FIELD_CHARS) + '\n...[truncated by CozyPane]'
+      : value;
+  }
+  if (Array.isArray(value)) return value.slice(0, 200).map(truncateData);
+  if (value && typeof value === 'object') {
+    const out: Record<string, any> = {};
+    for (const [k, v] of Object.entries(value)) out[k] = truncateData(v);
+    return out;
+  }
+  return value;
+}
+
+function writeTruncatedJson(filename: string, data: any): void {
+  const capped = truncateData(data);
+  let serialized = JSON.stringify(capped, null, 2);
+  if (serialized.length > MAX_TOTAL_CHARS) {
+    serialized = serialized.slice(0, MAX_TOTAL_CHARS) + '\n...[truncated by CozyPane]\n}';
+  }
+  const filePath = path.join(app.getPath('userData'), filename);
+  fs.writeFileSync(filePath, serialized, { mode: 0o600 });
+}
+
 // --- Static file server ---
 
 const staticServers = new Map<string, { server: http.Server; port: number }>();
@@ -221,34 +251,7 @@ export function registerPreviewHandlers() {
 
   ipcMain.handle('preview:writeDevToolsData', async (_event, data: any) => {
     try {
-      // M2: the devtools blob flows from the webview (possibly attacker-
-      // controlled) → disk → MCP server → Claude's context. Cap individual
-      // fields so a hostile page can't fill the disk or stuff a giant
-      // prompt-injection payload into Claude's input. 256 KB total is way
-      // more than legitimate console+network data ever needs.
-      const MAX_FIELD_CHARS = 64 * 1024;
-      const MAX_TOTAL_CHARS = 256 * 1024;
-      const truncate = (value: any): any => {
-        if (typeof value === 'string') {
-          return value.length > MAX_FIELD_CHARS
-            ? value.slice(0, MAX_FIELD_CHARS) + '\n...[truncated by CozyPane]'
-            : value;
-        }
-        if (Array.isArray(value)) return value.slice(0, 200).map(truncate);
-        if (value && typeof value === 'object') {
-          const out: Record<string, any> = {};
-          for (const [k, v] of Object.entries(value)) out[k] = truncate(v);
-          return out;
-        }
-        return value;
-      };
-      const capped = truncate(data);
-      let serialized = JSON.stringify(capped, null, 2);
-      if (serialized.length > MAX_TOTAL_CHARS) {
-        serialized = serialized.slice(0, MAX_TOTAL_CHARS) + '\n...[truncated by CozyPane]\n}';
-      }
-      const filePath = path.join(app.getPath('userData'), 'preview-devtools.json');
-      fs.writeFileSync(filePath, serialized, { mode: 0o600 });
+      writeTruncatedJson('preview-devtools.json', data);
     } catch (err: any) {
       return { error: err.message || 'Failed to write devtools data' };
     }
@@ -299,29 +302,7 @@ export function registerPreviewHandlers() {
 
   ipcMain.handle('preview:writeInspectData', async (_event, data: any) => {
     try {
-      const MAX_FIELD_CHARS = 64 * 1024;
-      const MAX_TOTAL_CHARS = 256 * 1024;
-      const truncate = (value: any): any => {
-        if (typeof value === 'string') {
-          return value.length > MAX_FIELD_CHARS
-            ? value.slice(0, MAX_FIELD_CHARS) + '\n...[truncated by CozyPane]'
-            : value;
-        }
-        if (Array.isArray(value)) return value.slice(0, 200).map(truncate);
-        if (value && typeof value === 'object') {
-          const out: Record<string, any> = {};
-          for (const [k, v] of Object.entries(value)) out[k] = truncate(v);
-          return out;
-        }
-        return value;
-      };
-      const capped = truncate(data);
-      let serialized = JSON.stringify(capped, null, 2);
-      if (serialized.length > MAX_TOTAL_CHARS) {
-        serialized = serialized.slice(0, MAX_TOTAL_CHARS) + '\n...[truncated by CozyPane]\n}';
-      }
-      const filePath = path.join(app.getPath('userData'), 'inspect-data.json');
-      fs.writeFileSync(filePath, serialized, { mode: 0o600 });
+      writeTruncatedJson('inspect-data.json', data);
     } catch (err: any) {
       return { error: err.message || 'Failed to write inspect data' };
     }
@@ -329,30 +310,7 @@ export function registerPreviewHandlers() {
 
   ipcMain.handle('preview:writeDevServerState', async (_event, data: any) => {
     try {
-      // Same truncation guards as writeDevToolsData but for trusted terminal output.
-      const MAX_FIELD_CHARS = 64 * 1024;
-      const MAX_TOTAL_CHARS = 256 * 1024;
-      const truncate = (value: any): any => {
-        if (typeof value === 'string') {
-          return value.length > MAX_FIELD_CHARS
-            ? value.slice(0, MAX_FIELD_CHARS) + '\n...[truncated by CozyPane]'
-            : value;
-        }
-        if (Array.isArray(value)) return value.slice(0, 200).map(truncate);
-        if (value && typeof value === 'object') {
-          const out: Record<string, any> = {};
-          for (const [k, v] of Object.entries(value)) out[k] = truncate(v);
-          return out;
-        }
-        return value;
-      };
-      const capped = truncate(data);
-      let serialized = JSON.stringify(capped, null, 2);
-      if (serialized.length > MAX_TOTAL_CHARS) {
-        serialized = serialized.slice(0, MAX_TOTAL_CHARS) + '\n...[truncated by CozyPane]\n}';
-      }
-      const filePath = path.join(app.getPath('userData'), 'dev-server-state.json');
-      fs.writeFileSync(filePath, serialized, { mode: 0o600 });
+      writeTruncatedJson('dev-server-state.json', data);
     } catch (err: any) {
       return { error: err.message || 'Failed to write dev server state' };
     }

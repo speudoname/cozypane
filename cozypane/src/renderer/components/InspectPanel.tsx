@@ -8,6 +8,7 @@ interface Props {
   devServerState?: DevServerState;
   previewUrl: string | null;
   screenshotPath: string | null;
+  screenshotTimestamp?: number;
   onRefreshSnapshot: () => void;
 }
 
@@ -37,18 +38,18 @@ function errorTypeColor(type: string): string {
   }
 }
 
-export default function InspectPanel({ consoleLogs, networkRequests, devServerState, previewUrl, screenshotPath, onRefreshSnapshot }: Props) {
+export default function InspectPanel({ consoleLogs, networkRequests, devServerState, previewUrl, screenshotPath, screenshotTimestamp = 0, onRefreshSnapshot }: Props) {
   const [activeTab, setActiveTab] = useState<InspectTab>('console');
   const [consoleFilter, setConsoleFilter] = useState<number>(0); // min level
 
   return (
     <div className="inspect-panel">
       <div className="inspect-header">
-        <div className="inspect-tabs">
+        <div className="panel-tab-bar" style={{ borderBottom: 'none' }}>
           {(['console', 'network', 'devserver', 'snapshot'] as InspectTab[]).map(tab => (
             <button
               key={tab}
-              className={`inspect-tab ${activeTab === tab ? 'active' : ''}`}
+              className={`panel-tab ${activeTab === tab ? 'active' : ''}`}
               onClick={() => setActiveTab(tab)}
             >
               {tab === 'console' && `Console (${consoleLogs.length})`}
@@ -185,7 +186,7 @@ export default function InspectPanel({ consoleLogs, networkRequests, devServerSt
             {screenshotPath ? (
               <div className="inspect-snapshot-view">
                 <img
-                  src={`file://${screenshotPath}?t=${Date.now()}`}
+                  src={`file://${screenshotPath}?t=${screenshotTimestamp}`}
                   alt="Preview screenshot"
                   className="inspect-screenshot-img"
                 />

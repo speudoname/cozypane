@@ -81,7 +81,9 @@ export default function App() {
   const [previewInitialConsoleLogs, setPreviewInitialConsoleLogs] = useState<ConsoleLog[]>([]);
   const [previewInitialNetworkErrors, setPreviewInitialNetworkErrors] = useState<NetworkError[]>([]);
   const [networkRequests, setNetworkRequests] = useState<NetworkRequest[]>([]);
+  const [liveConsoleLogs, setLiveConsoleLogs] = useState<ConsoleLog[]>([]);
   const [screenshotPath, setScreenshotPath] = useState<string | null>(null);
+  const [screenshotTimestamp, setScreenshotTimestamp] = useState(0);
   const [diffState, setDiffState] = useState<DiffState | null>(null);
   const [gitBranch, setGitBranch] = useState('');
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -167,21 +169,24 @@ export default function App() {
     reorderTabs,
   } = useTerminalTabs({ confirm });
 
-  // Refresh screenshot on demand (for Inspect panel)
-  const handleRefreshSnapshot = useCallback(async () => {
-    // Trigger a screenshot capture in Preview via a custom event
-    window.dispatchEvent(new CustomEvent('cozyPane:captureScreenshot'));
+  // Refresh screenshot — triggers via the Preview's auto-capture on navigation.
+  // For manual capture, we set a flag that Preview checks.
+  const screenshotRequestRef = useRef(0);
+  const handleRefreshSnapshot = useCallback(() => {
+    screenshotRequestRef.current = Date.now();
+    // Force a re-render of Preview which will trigger the capture
+    setScreenshotTimestamp(Date.now());
   }, []);
 
   // Debounced inspect data persistence (3s)
   const inspectWriteTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
-    if (networkRequests.length === 0 && previewInitialConsoleLogs.length === 0) return;
+    if (networkRequests.length === 0 && liveConsoleLogs.length === 0) return;
     if (inspectWriteTimer.current) clearTimeout(inspectWriteTimer.current);
     inspectWriteTimer.current = setTimeout(() => {
       const devTab = terminalTabsRef.current.find(t => t.isDevServer && t.cwd === cwd);
       window.cozyPane.preview.writeInspectData({
-        consoleLogs: previewInitialConsoleLogs.slice(-200),
+        consoleLogs: liveConsoleLogs.slice(-200),
         networkRequests: networkRequests.slice(-200),
         devServer: devTab?.devServerState || null,
         screenshotPath,
@@ -190,7 +195,7 @@ export default function App() {
       }).catch(() => {});
     }, 3000);
     return () => { if (inspectWriteTimer.current) clearTimeout(inspectWriteTimer.current); };
-  }, [networkRequests, previewInitialConsoleLogs, screenshotPath, previewLocalUrl, previewProdUrl, cwd]);
+  }, [networkRequests, liveConsoleLogs, screenshotPath, previewLocalUrl, previewProdUrl, cwd]);
 
   // Debounced dev server state persistence (2s, matching preview-devtools cadence)
   const devServerWriteTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -627,11 +632,12 @@ export default function App() {
         {rightPanelTab === 'inspect' && (
           <ErrorBoundary panel="Inspect">
             <InspectPanel
-              consoleLogs={previewInitialConsoleLogs}
+              consoleLogs={liveConsoleLogs}
               networkRequests={networkRequests}
               devServerState={terminalTabsRef.current.find(t => t.isDevServer && t.cwd === cwd)?.devServerState}
               previewUrl={previewLocalUrl || previewProdUrl || null}
               screenshotPath={screenshotPath}
+              screenshotTimestamp={screenshotTimestamp}
               onRefreshSnapshot={handleRefreshSnapshot}
             />
           </ErrorBoundary>
@@ -951,11 +957,12 @@ export default function App() {
                   initialNetworkErrors={previewInitialNetworkErrors}
                   onConsoleUpdate={(errors, consoleLogs, networkErrors) => {
                     updateTab(activeTerminalId, { previewErrors: errors, previewConsoleLogs: consoleLogs, previewNetworkErrors: networkErrors });
+                    setLiveConsoleLogs(consoleLogs);
                   }}
                   onNetworkRequest={(req) => {
                     setNetworkRequests(prev => [...prev.slice(-199), req]);
                   }}
-                  onScreenshotCaptured={(path) => setScreenshotPath(path)}
+                  onScreenshotCaptured={(path) => { setScreenshotPath(path); setScreenshotTimestamp(Date.now()); }}
                 />
               </ErrorBoundary>
             </div>

@@ -236,41 +236,32 @@ export default function Preview({ localUrl, localUrls = [], productionUrl, cwd, 
       };
       setConsoleLogs(prev => [...prev.slice(-99), log]);
 
-      // All-request capture (new: captures successes too)
+      // All-request capture (captures successes too)
       if (e.message.startsWith('[CozyPreview:request]')) {
         try {
           const json = JSON.parse(e.message.slice('[CozyPreview:request]'.length));
-          onNetworkRequestRef.current?.({
-            method: json.method || 'GET',
-            url: json.url || '',
-            status: json.status || 0,
-            statusText: json.statusText || '',
-            duration: json.duration || 0,
-            size: json.size,
+          const netErr: NetworkError = {
+            method: json.method || 'GET', url: json.url || '',
+            status: json.status || 0, statusText: json.statusText || 'Unknown',
             timestamp: Date.now(),
+          };
+          onNetworkRequestRef.current?.({
+            ...netErr, duration: json.duration || 0, size: json.size,
             ok: json.ok ?? (json.status >= 200 && json.status < 400),
           });
-          // Also track failures in the legacy networkErrors for backward compat
           if (!json.ok && json.status !== 0) {
-            setNetworkErrors(prev => [...prev.slice(-49), {
-              method: json.method || 'GET',
-              url: json.url || '',
-              status: json.status || 0,
-              statusText: json.statusText || 'Unknown',
-              timestamp: Date.now(),
-            }]);
+            setNetworkErrors(prev => [...prev.slice(-49), netErr]);
           }
         } catch {}
         return;
       }
+      // Legacy handler for older webview injection (backward compat)
       if (e.message.startsWith('[CozyPreview:netdata]')) {
         try {
           const json = JSON.parse(e.message.slice('[CozyPreview:netdata]'.length));
           setNetworkErrors(prev => [...prev.slice(-49), {
-            method: json.method || 'GET',
-            url: json.url || '',
-            status: json.status || 0,
-            statusText: json.statusText || 'Unknown',
+            method: json.method || 'GET', url: json.url || '',
+            status: json.status || 0, statusText: json.statusText || 'Unknown',
             timestamp: Date.now(),
           }]);
         } catch {}
@@ -345,16 +336,22 @@ export default function Preview({ localUrl, localUrls = [], productionUrl, cwd, 
       `).catch(() => {});
     };
 
-    // Auto-capture screenshot on page navigation for Inspect panel
+    // Debounced auto-capture screenshot on page navigation (max once per 5s)
+    let screenshotTimer: ReturnType<typeof setTimeout> | null = null;
+    let lastScreenshotTime = 0;
     const handleDidNavigate = () => {
-      setTimeout(async () => {
+      if (screenshotTimer) clearTimeout(screenshotTimer);
+      const elapsed = Date.now() - lastScreenshotTime;
+      const delay = Math.max(1000, 5000 - elapsed); // At least 1s after nav, throttle to 5s
+      screenshotTimer = setTimeout(async () => {
+        lastScreenshotTime = Date.now();
         try {
           const nativeImage = await wv.capturePage();
           const base64 = nativeImage.toPNG().toString('base64');
-          const path = await window.cozyPane.preview.captureScreenshot(base64);
-          onScreenshotCapturedRef.current?.(path);
+          const screenshotFile = await window.cozyPane.preview.captureScreenshot(base64);
+          onScreenshotCapturedRef.current?.(screenshotFile);
         } catch {}
-      }, 1000); // Wait 1s for page to render
+      }, delay);
     };
 
     wv.addEventListener('console-message', handleConsoleMessage);
