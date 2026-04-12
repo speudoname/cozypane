@@ -128,10 +128,9 @@ function savePreviewUrls(data: Record<string, any>) {
 
 // --- Project detection (for static HTML serving) ---
 
-// Framework detection data is shared with cozypane-cloud/src/services/detector.ts.
-// Single source of truth: shared/framework-data.json. Adding a framework? Update
-// the JSON file — both codebases read from it.
-import frameworkData from '../../../shared/framework-data.json';
+// Framework detection data — shared with cozypane-cloud/src/services/detector.ts.
+// Source of truth is shared/framework-data.json; this is a copy kept in sync.
+import frameworkData from './framework-data.json';
 
 function detectProjectInfo(cwd: string): { type: string | null; devCommand: string | null; productionUrl: string | null; serveStatic: boolean; needsDatabase: boolean } {
   let type: string | null = null;
