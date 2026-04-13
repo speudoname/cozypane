@@ -710,39 +710,38 @@ export default function App() {
           </>
         )}
 
-        {/* Preview Panel — independent, rightmost column */}
-        {previewOpen && (
-          <>
-            <div
-              className={`resize-handle ${isResizingPreview ? 'active' : ''}`}
-              onMouseDown={handlePreviewResizeStart}
+        {/* Preview Panel — always mounted, hidden via display:none.
+            Webview elements crash Chromium if destroyed while event
+            listeners are still attached (same pattern as Monaco). */}
+        <div
+          className={`resize-handle ${isResizingPreview ? 'active' : ''}`}
+          onMouseDown={handlePreviewResizeStart}
+          style={{ display: previewOpen ? undefined : 'none' }}
+        />
+        <div className="right-panel preview-panel" style={{ width: previewWidth, display: previewOpen ? undefined : 'none' }}>
+          <ErrorBoundary panel="Preview">
+            <Preview
+              localUrl={previewLocalUrl}
+              localUrls={previewLocalUrls}
+              productionUrl={previewProdUrl}
+              cwd={cwd}
+              onSendToTerminal={sendTerminalCommand}
+              deployments={deployments}
+              claudeRunning={isClaudeRunning}
+              initialErrors={previewInitialErrors}
+              initialConsoleLogs={previewInitialConsoleLogs}
+              initialNetworkErrors={previewInitialNetworkErrors}
+              onConsoleUpdate={(errors, consoleLogs, networkErrors) => {
+                updateTab(activeTerminalId, { previewErrors: errors, previewConsoleLogs: consoleLogs, previewNetworkErrors: networkErrors });
+                setLiveConsoleLogs(consoleLogs);
+              }}
+              onNetworkRequest={(req) => {
+                setNetworkRequests(prev => [...prev.slice(-199), req]);
+              }}
+              onScreenshotCaptured={(path) => { setScreenshotPath(path); setScreenshotTimestamp(Date.now()); }}
             />
-            <div className="right-panel preview-panel" style={{ width: previewWidth }}>
-              <ErrorBoundary panel="Preview">
-                <Preview
-                  localUrl={previewLocalUrl}
-                  localUrls={previewLocalUrls}
-                  productionUrl={previewProdUrl}
-                  cwd={cwd}
-                  onSendToTerminal={sendTerminalCommand}
-                  deployments={deployments}
-                  claudeRunning={isClaudeRunning}
-                  initialErrors={previewInitialErrors}
-                  initialConsoleLogs={previewInitialConsoleLogs}
-                  initialNetworkErrors={previewInitialNetworkErrors}
-                  onConsoleUpdate={(errors, consoleLogs, networkErrors) => {
-                    updateTab(activeTerminalId, { previewErrors: errors, previewConsoleLogs: consoleLogs, previewNetworkErrors: networkErrors });
-                    setLiveConsoleLogs(consoleLogs);
-                  }}
-                  onNetworkRequest={(req) => {
-                    setNetworkRequests(prev => [...prev.slice(-199), req]);
-                  }}
-                  onScreenshotCaptured={(path) => { setScreenshotPath(path); setScreenshotTimestamp(Date.now()); }}
-                />
-              </ErrorBoundary>
-            </div>
-          </>
-        )}
+          </ErrorBoundary>
+        </div>
       </div>
 
       <StatusBar
