@@ -362,8 +362,8 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, au
         if (rollingBufferRef.current.length > maxBuf) {
           rollingBufferRef.current = rollingBufferRef.current.slice(-maxBuf);
         }
-        // Feed chat parser with stripped lines
-        chatParserRef.current.processLines(newLines);
+        // Feed chat parser with raw stripped text (parser buffers internally)
+        chatParserRef.current.feedRawText(strippedData);
       }
 
       if (idleTimerRef.current) clearTimeout(idleTimerRef.current);

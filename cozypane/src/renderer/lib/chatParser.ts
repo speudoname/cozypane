@@ -3,8 +3,8 @@ export type ToolType = 'read' | 'edit' | 'write' | 'bash' | 'grep' | 'glob' | 't
 
 export interface ToolStep {
   tool: ToolType;
-  detail: string; // file path or command
-  output: string; // raw output (for expand)
+  detail: string;
+  output: string;
 }
 
 export interface ChatMessage {
@@ -12,39 +12,63 @@ export interface ChatMessage {
   type: ChatMessageType;
   content: string;
   timestamp: number;
-  steps?: ToolStep[]; // only for type === 'steps'
+  steps?: ToolStep[];
   isStreaming?: boolean;
 }
 
-// Patterns that indicate noise — filtered entirely
-const NOISE_PATTERNS = [
+const TOOL_LABELS: Record<ToolType, string> = {
+  read: 'Read',
+  edit: 'Edited',
+  write: 'Created',
+  bash: 'Ran',
+  grep: 'Searched',
+  glob: 'Found files',
+  thinking: 'Thinking',
+  agent: 'Agent',
+  other: 'Action',
+};
+
+// Patterns for Claude Code TUI chrome — these are NOT content
+const CHROME_PATTERNS = [
   /^[\u280B\u2819\u2839\u2838\u283C\u2834\u2826\u2827\u2807\u280F]/,  // braille spinners
-  /^\u2500{3,}$/,                    // horizontal rules
-  /^\.{3,}$/,                        // dots
-  /^\s*\d+\s*[|│]\s*$/,             // empty table rows
-  /^╭|^╰|^│\s*$/,                   // box drawing borders
-  /^\s*$/,                           // blank
-  /^>\s*$/,                          // empty blockquote
-  /^\u276F\s*$/,                     // Claude prompt
-  /[\w~\/.][$%#]\s*$/,              // shell prompt
-  /^⎿\s*$/,                         // Claude continuation marker alone
-  /^\s*⎿\s*$/,
-  /^Updated\s+\d+\s+file/,          // tool result summaries (Edit result)
-  /^Created\s+.+successfully/,       // Write result
-  /^\d+ result/,                     // search result counts
-  /^Tokens:/,                        // token counts
-  /^Cost:/,                          // cost display
-  /^Duration:/,                      // duration display
-  /^Session:/,                       // session info
-  /^Model:/,                         // model info
-  /^Context:/,                       // context info
-  /^Input tokens/,                   // token metrics
+  /^[✢✳✶✻✽⏺◐◑◒◓]/,                    // claude thinking spinners
+  /^\u2500{2,}/,                          // horizontal rules ───
+  /^[╭╰╮╯│├┤┬┴┼]/,                       // box drawing
+  /^\u276F\s*$/,                          // bare Claude prompt ❯
+  /^[\u23F5\u23F9\u23EF]/,               // play/stop/pause symbols
+  /^\s*bypass permissions/i,              // permission mode indicator
+  /^\s*shift\+tab to cycle/i,
+  /^\s*\(main\)\s*\|/,                   // git branch | model status line
+  /Opus\s*4|Sonnet\s*4|Haiku\s*4/,       // model name in status
+  /^\s*\d+M context/,                    // context indicator
+  /^\s*default\s*$/,                     // "default" mode label
+  /^\s*medium\s*$/,                      // effort level
+  /^\/effort/,                           // slash commands in status
+  /^\s*MCP server/,                      // MCP status
+  /You've used \d+%/,                    // usage limit
+  /resets?\s+\w+\s+\d+/,                // reset date
+  /^\[[\d;?]*[a-zA-Z]/,                 // raw ANSI escapes that leaked
+  /^\[>\d+[a-zA-Z]/,                    // more ANSI
+  /^Tokens:/,
+  /^Cost:/,
+  /^Duration:/,
+  /^Session:/,
+  /^Model:/,
+  /^Context:/,
+  /^Input tokens/,
   /^Output tokens/,
-  /^\s*\([\d.]+ tokens/,            // inline token counts
+  /^\s*\([\d.]+ tokens/,
+  /^\s*Updated\s+\d+\s+file/,           // tool result summaries
+  /^\s*Created\s+.+successfully/,
+  /^\d+ results?\s*$/,                   // search result counts
+  /^\s*⏵⏵/,                             // double play indicators
+  /^▐▛|^▝▜|^▘▘/,                        // Claude logo block chars
+  /^ClaudeCode\s*v/,                     // version string
+  /^\s*·\s*$/,                           // lone dot separator
 ];
 
-// Tool detection patterns
-const TOOL_PATTERNS: Array<{ re: RegExp; type: ToolType; group: number }> = [
+// Tool detection patterns (applied to complete lines)
+const TOOL_DETECTORS: Array<{ re: RegExp; type: ToolType; group: number }> = [
   { re: /^Read\((.+)\)/, type: 'read', group: 1 },
   { re: /^Edit\((.+)\)/, type: 'edit', group: 1 },
   { re: /^Write\((.+)\)/, type: 'write', group: 1 },
@@ -55,29 +79,39 @@ const TOOL_PATTERNS: Array<{ re: RegExp; type: ToolType; group: number }> = [
   { re: /^Agent\(/, type: 'agent', group: 0 },
   { re: /^TaskCreate/, type: 'other', group: 0 },
   { re: /^TaskUpdate/, type: 'other', group: 0 },
-  { re: /^TodoWrite/, type: 'other', group: 0 },
 ];
 
-const TOOL_LABELS: Record<ToolType, string> = {
-  read: 'Read',
-  edit: 'Edit',
-  write: 'Write',
-  bash: 'Ran',
-  grep: 'Searched',
-  glob: 'Found files',
-  thinking: 'Thinking',
-  agent: 'Agent',
-  other: 'Action',
-};
+// Thinking/working indicators
+const THINKING_PATTERNS = [
+  /Burrowing/i,
+  /Thinking/i,
+  /Transfiguring/i,
+  /Considering/i,
+  /Reflecting/i,
+  /Analyzing/i,
+  /Processing/i,
+  /Generating/i,
+  /Composing/i,
+  /Searching/i,
+  /Planning/i,
+  /Reviewing/i,
+  /Investigating/i,
+];
 
-function summarizeSteps(steps: ToolStep[]): string {
+function shortenPath(p: string): string {
+  const clean = p.replace(/['"]/g, '').trim();
+  const parts = clean.split('/');
+  if (parts.length <= 2) return parts.join('/');
+  return '.../' + parts.slice(-2).join('/');
+}
+
+export function summarizeSteps(steps: ToolStep[]): string {
   if (steps.length === 0) return '';
   if (steps.length === 1) {
     const s = steps[0];
     const label = TOOL_LABELS[s.tool] || 'Action';
     return s.detail ? `${label} ${shortenPath(s.detail)}` : label;
   }
-  // Group by tool type and count
   const groups: Record<string, { count: number; details: string[] }> = {};
   for (const s of steps) {
     const label = TOOL_LABELS[s.tool] || 'Action';
@@ -92,25 +126,21 @@ function summarizeSteps(steps: ToolStep[]): string {
   return `${steps.length} steps: ${parts.join(', ')}`;
 }
 
-function shortenPath(p: string): string {
-  // Show just filename or last 2 segments
-  const parts = p.replace(/['"]/g, '').split('/');
-  if (parts.length <= 2) return parts.join('/');
-  return '.../' + parts.slice(-2).join('/');
-}
-
-export { summarizeSteps };
-
 export class ChatParser {
   private messages: ChatMessage[] = [];
-  private currentMessage: ChatMessage | null = null;
+  private currentAssistant: ChatMessage | null = null;
   private currentSteps: ToolStep[] = [];
-  private currentToolOutput: string[] = [];
   private currentTool: { type: ToolType; detail: string } | null = null;
+  private currentToolOutput: string[] = [];
+  private pendingStepsId: number | null = null;
   private nextId = 1;
   private listeners: Set<() => void> = new Set();
-  private state: 'idle' | 'assistant' | 'tool' = 'idle';
-  private pendingStepsId: number | null = null;
+  private state: 'idle' | 'assistant' | 'tool' | 'thinking' = 'idle';
+
+  // Stream buffering: accumulate raw stripped text, process on flush
+  private streamBuffer = '';
+  private flushTimer: ReturnType<typeof setTimeout> | null = null;
+  private readonly FLUSH_DELAY = 600; // ms to wait before processing
 
   subscribe(fn: () => void) {
     this.listeners.add(fn);
@@ -126,8 +156,9 @@ export class ChatParser {
   }
 
   addUserMessage(text: string) {
+    this.flush(); // process any pending buffer
     this.flushSteps();
-    this.finishCurrent();
+    this.finishAssistant();
     this.messages.push({
       id: this.nextId++,
       type: 'user',
@@ -138,7 +169,27 @@ export class ChatParser {
     this.notify();
   }
 
-  processLines(lines: string[]) {
+  // Called with raw stripped text chunks (may be partial lines)
+  feedRawText(text: string) {
+    this.streamBuffer += text;
+    // Reset flush timer on each new chunk
+    if (this.flushTimer) clearTimeout(this.flushTimer);
+    this.flushTimer = setTimeout(() => this.flush(), this.FLUSH_DELAY);
+  }
+
+  // Process buffered text
+  private flush() {
+    if (this.flushTimer) {
+      clearTimeout(this.flushTimer);
+      this.flushTimer = null;
+    }
+    if (!this.streamBuffer) return;
+
+    const text = this.streamBuffer;
+    this.streamBuffer = '';
+
+    // Split into lines, filter empty
+    const lines = text.split('\n').map(l => l.trim()).filter(l => l.length > 0);
     for (const line of lines) {
       this.processLine(line);
     }
@@ -146,63 +197,98 @@ export class ChatParser {
   }
 
   private processLine(line: string) {
-    const trimmed = line.trim();
-    if (!trimmed) return;
+    // Filter TUI chrome
+    if (this.isChrome(line)) return;
 
-    // Filter noise
-    if (this.isNoise(trimmed)) return;
+    // Detect thinking indicators
+    if (this.isThinking(line)) {
+      if (this.state !== 'thinking') {
+        this.saveCurrentTool();
+        this.state = 'thinking';
+        // Show a subtle thinking indicator
+        if (!this.currentAssistant || this.currentAssistant.type !== 'assistant' || !this.currentAssistant.isStreaming) {
+          this.finishAssistant();
+        }
+      }
+      return;
+    }
 
     // Detect tool use
-    const toolMatch = this.detectTool(trimmed);
+    const toolMatch = this.detectTool(line);
     if (toolMatch) {
-      // Save previous tool step if any
       this.saveCurrentTool();
-      // Finish any assistant message
-      this.finishCurrent();
+      this.finishAssistant();
       this.currentTool = toolMatch;
       this.currentToolOutput = [];
       this.state = 'tool';
       return;
     }
 
-    // Detect Claude prompt (idle) -- end of turn
-    if (/\u276F\s*$/.test(trimmed)) {
+    // Detect Claude prompt — end of turn
+    if (/\u276F\s*$/.test(line)) {
       this.saveCurrentTool();
       this.flushSteps();
-      this.finishCurrent();
+      this.finishAssistant();
       this.state = 'idle';
       return;
     }
 
-    // In tool state -- accumulate tool output (silently, for expand)
+    // In tool state — accumulate output
     if (this.state === 'tool') {
-      this.currentToolOutput.push(trimmed);
+      this.currentToolOutput.push(line);
       return;
     }
 
-    // Assistant prose -- only show meaningful text
-    if (this.state === 'assistant' || this.state === 'idle') {
-      // Flush any pending tool steps before assistant text
-      if (this.currentSteps.length > 0) {
-        this.saveCurrentTool();
-        this.flushSteps();
-      }
+    // Skip if still idle and looks like shell prompt
+    if (this.state === 'idle' && /[\w~\/.][$%#]\s*$/.test(line)) return;
 
-      if (!this.currentMessage || this.currentMessage.type !== 'assistant') {
-        this.finishCurrent();
-        this.currentMessage = {
-          id: this.nextId++,
-          type: 'assistant',
-          content: trimmed,
-          timestamp: Date.now(),
-          isStreaming: true,
-        };
-        this.messages.push(this.currentMessage);
-        this.state = 'assistant';
-      } else {
-        this.currentMessage.content += '\n' + trimmed;
-      }
+    // Content line — this is Claude's actual response
+    // Flush pending tools first
+    if (this.currentSteps.length > 0 || this.currentTool) {
+      this.saveCurrentTool();
+      this.flushSteps();
     }
+
+    // Accumulate into assistant message
+    if (this.state === 'thinking') this.state = 'assistant';
+    if (this.state !== 'assistant') this.state = 'assistant';
+
+    if (!this.currentAssistant || !this.currentAssistant.isStreaming) {
+      this.currentAssistant = {
+        id: this.nextId++,
+        type: 'assistant',
+        content: line,
+        timestamp: Date.now(),
+        isStreaming: true,
+      };
+      this.messages.push(this.currentAssistant);
+    } else {
+      this.currentAssistant.content += '\n' + line;
+    }
+  }
+
+  private isChrome(line: string): boolean {
+    for (const p of CHROME_PATTERNS) {
+      if (p.test(line)) return true;
+    }
+    // Short fragments (< 3 chars) that aren't meaningful
+    if (line.length < 3 && !/^[A-Za-z]/.test(line)) return true;
+    return false;
+  }
+
+  private isThinking(line: string): boolean {
+    for (const p of THINKING_PATTERNS) {
+      if (p.test(line)) return true;
+    }
+    return false;
+  }
+
+  private detectTool(line: string): { type: ToolType; detail: string } | null {
+    for (const { re, type, group } of TOOL_DETECTORS) {
+      const m = re.exec(line);
+      if (m) return { type, detail: group > 0 && m[group] ? m[group] : '' };
+    }
+    return null;
   }
 
   private saveCurrentTool() {
@@ -214,14 +300,12 @@ export class ChatParser {
       });
       this.currentTool = null;
       this.currentToolOutput = [];
-      // Update or create the steps message
       this.updateStepsMessage();
     }
   }
 
   private updateStepsMessage() {
     if (this.pendingStepsId !== null) {
-      // Update existing steps message
       const msg = this.messages.find(m => m.id === this.pendingStepsId);
       if (msg) {
         msg.steps = [...this.currentSteps];
@@ -229,7 +313,6 @@ export class ChatParser {
         msg.isStreaming = true;
       }
     } else {
-      // Create new steps message
       const msg: ChatMessage = {
         id: this.nextId++,
         type: 'steps',
@@ -256,36 +339,38 @@ export class ChatParser {
     this.pendingStepsId = null;
   }
 
-  private finishCurrent() {
-    if (this.currentMessage) {
-      this.currentMessage.isStreaming = false;
+  private finishAssistant() {
+    if (this.currentAssistant) {
+      this.currentAssistant.isStreaming = false;
+      // Clean up the content — remove leading/trailing blank lines
+      this.currentAssistant.content = this.currentAssistant.content
+        .split('\n')
+        .filter((l, i, arr) => {
+          // Remove blank lines at start and end
+          if (i === 0 && !l.trim()) return false;
+          if (i === arr.length - 1 && !l.trim()) return false;
+          return true;
+        })
+        .join('\n');
+      // If content is empty after cleanup, remove the message
+      if (!this.currentAssistant.content.trim()) {
+        this.messages = this.messages.filter(m => m.id !== this.currentAssistant!.id);
+      }
     }
-    this.currentMessage = null;
-  }
-
-  private detectTool(line: string): { type: ToolType; detail: string } | null {
-    for (const { re, type, group } of TOOL_PATTERNS) {
-      const m = re.exec(line);
-      if (m) return { type, detail: group > 0 && m[group] ? m[group] : '' };
-    }
-    return null;
-  }
-
-  private isNoise(line: string): boolean {
-    for (const p of NOISE_PATTERNS) {
-      if (p.test(line)) return true;
-    }
-    return false;
+    this.currentAssistant = null;
   }
 
   clear() {
+    if (this.flushTimer) clearTimeout(this.flushTimer);
     this.messages = [];
-    this.currentMessage = null;
+    this.currentAssistant = null;
     this.currentSteps = [];
-    this.currentToolOutput = [];
     this.currentTool = null;
-    this.state = 'idle';
+    this.currentToolOutput = [];
     this.pendingStepsId = null;
+    this.state = 'idle';
+    this.streamBuffer = '';
+    this.flushTimer = null;
     this.nextId = 1;
     this.notify();
   }
