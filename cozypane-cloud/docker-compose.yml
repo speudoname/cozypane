@@ -72,6 +72,7 @@ services:
       - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
       - DEPLOY_QUEUE_CONCURRENCY=${DEPLOY_QUEUE_CONCURRENCY:-4}
       - SENTRY_DSN=${SENTRY_DSN:-https://822e1904adbf05d9c4865a940356eec6@o4510985332391936.ingest.de.sentry.io/4511211127767120}
+      - SENTRY_AUTH_TOKEN=${SENTRY_AUTH_TOKEN}
       # Persistent directory for uploaded tarball extracts. Survives API
       # container recreates so in-flight builds can resume after `docker
       # compose up -d --build api` (the case that orphaned deployment 110).
