@@ -226,6 +226,18 @@ export async function getQueueStats() {
   return counts;
 }
 
+export async function getFailedJobs(limit = 50) {
+  const q = getDeployQueue();
+  const jobs = await q.getJobs('failed', 0, limit);
+  return jobs.map(j => ({
+    id: j.id,
+    data: { deploymentId: j.data?.deploymentId, appName: j.data?.appName, subdomain: j.data?.subdomain, userId: j.data?.userId },
+    failedReason: j.failedReason || 'Unknown',
+    timestamp: j.timestamp,
+    finishedOn: j.finishedOn,
+  }));
+}
+
 /**
  * Graceful shutdown. Called from `index.ts` on SIGTERM/SIGINT before
  * closing the Postgres pools. Waits for in-flight jobs to finish (or up

@@ -25,6 +25,7 @@ import { deployRoutes } from './routes/deploy.js';
 import { domainRoutes } from './routes/domains.js';
 import { adminRoutes } from './routes/admin.js';
 import { startDeployWorker, drainAndClose as drainDeployQueue } from './services/deployQueue.js';
+import { captureHealthSnapshot } from './services/healthSnapshots.js';
 import { cancelPendingHealthRechecks, setDeployerLogger } from './services/deployer.js';
 import { cleanupOrphanBuildDirs } from './services/buildCleanup.js';
 import { startPeriodicImagePrune, stopPeriodicImagePrune } from './services/imagePrune.js';
@@ -204,6 +205,9 @@ startDeployWorker(app.log);
 // Periodic Docker image + build-cache prune to keep the host disk bounded.
 startPeriodicImagePrune(app.log);
 
+// Capture health snapshots every 15 minutes for the admin dashboard time-series.
+const snapshotInterval = setInterval(() => captureHealthSnapshot(app.log), 15 * 60 * 1000);
+
 // Graceful shutdown
 const shutdown = async (signal: string) => {
   app.log.info(`Received ${signal}, shutting down...`);
@@ -220,6 +224,7 @@ const shutdown = async (signal: string) => {
   }
   cancelPendingHealthRechecks();
   stopPeriodicImagePrune();
+  clearInterval(snapshotInterval);
   await Sentry.close(2000);
   await Promise.allSettled([pool.end(), platformPool.end()]);
   process.exit(0);

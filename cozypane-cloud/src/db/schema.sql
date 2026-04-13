@@ -62,3 +62,17 @@ ALTER TABLE deployments ADD COLUMN IF NOT EXISTS deploy_phase VARCHAR(50);
 ALTER TABLE deployments ADD COLUMN IF NOT EXISTS error_detail TEXT;
 ALTER TABLE deployments ADD COLUMN IF NOT EXISTS detected_port INTEGER;
 ALTER TABLE deployments ADD COLUMN IF NOT EXISTS detected_database BOOLEAN DEFAULT FALSE;
+
+-- Health snapshots for admin dashboard time-series
+CREATE TABLE IF NOT EXISTS health_snapshots (
+  id SERIAL PRIMARY KEY,
+  captured_at TIMESTAMPTZ DEFAULT NOW(),
+  sentry_errors INTEGER DEFAULT 0,
+  queue_active INTEGER DEFAULT 0,
+  queue_failed INTEGER DEFAULT 0,
+  db_connections INTEGER DEFAULT 0,
+  deployments_running INTEGER DEFAULT 0,
+  deployments_failed INTEGER DEFAULT 0,
+  memory_used_mb INTEGER DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_health_snapshots_time ON health_snapshots(captured_at);

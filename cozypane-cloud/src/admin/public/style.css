@@ -175,3 +175,29 @@ a.url-link { color: #7c6fe0; text-decoration: none; font-size: 0.82rem; }
 .health-warn { color: #e6b800; }
 .health-bad { color: #e74c3c; }
 .health-timestamp { font-size: 0.78rem; color: #666; }
+
+/* Health sub-tabs */
+.health-tabs { display: flex; gap: 0.25rem; margin-bottom: 1.5rem; border-bottom: 1px solid #2a2b3e; padding-bottom: 0.5rem; }
+.health-tab { color: #888; text-decoration: none; padding: 0.4rem 0.8rem; border-radius: 6px 6px 0 0; font-size: 0.85rem; transition: all 0.15s; }
+.health-tab:hover { color: #e0e0e0; background: #1e1f32; }
+.health-tab.active { color: #7c6fe0; border-bottom: 2px solid #7c6fe0; }
+
+/* Usage bars (memory/disk/pool) */
+.usage-bar { height: 8px; background: #1e1f32; border-radius: 4px; overflow: hidden; margin: 0.3rem 0; }
+.usage-fill { height: 100%; border-radius: 4px; transition: width 0.3s; }
+
+/* Expandable failed job rows */
+.expand-detail td { background: #0a0b10; padding: 0.8rem !important; }
+
+/* Smoke test results */
+.smoke-results { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 0.75rem; margin-top: 0.75rem; }
+.smoke-card { background: #161822; border: 1px solid #2a2b3e; border-radius: 8px; padding: 0.8rem; }
+.smoke-card.ok { border-left: 3px solid #4caf50; }
+.smoke-card.failed { border-left: 3px solid #e74c3c; }
+
+/* Period filter buttons */
+.period-filters { display: flex; gap: 0.25rem; margin-bottom: 1rem; }
+.period-filters .btn.active { background: #7c6fe0; border-color: #7c6fe0; color: #fff; }
+
+/* Truncated text */
+.truncate { max-width: 300px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
