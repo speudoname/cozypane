@@ -5,6 +5,8 @@ import { WebLinksAddon } from '@xterm/addon-web-links';
 import { stripAnsi, TUI_ENTER, TUI_EXIT, decideFocus, detectClaudeExit, analyzeAction, detectDeployUrl, detectLocalUrls, classifyTerminalErrors } from '../lib/terminalAnalyzer';
 import { shellEscape } from '../lib/shellUtils';
 import CommandInput from './CommandInput';
+import ChatView from './ChatView';
+import { ChatParser } from '../lib/chatParser';
 import '@xterm/xterm/css/xterm.css';
 
 interface Props {
@@ -79,6 +81,8 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, au
   const [dynamicSlashCommands, setDynamicSlashCommands] = useState<{ cmd: string; desc: string }[]>([]);
   const [isChoicePrompt, setIsChoicePrompt] = useState(false);
   const [focusTick, setFocusTick] = useState(0);
+  const [chatMode, setChatMode] = useState(false);
+  const chatParserRef = useRef(new ChatParser());
 
   const switchFocus = useCallback((to: 'input' | 'terminal', manual = false) => {
     focusRef.current = to;
@@ -159,6 +163,8 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, au
     }
 
     window.cozyPane.terminal.write(id, command.replace(/\n/g, '\r') + '\r');
+    // Feed user message to chat parser
+    chatParserRef.current.addUserMessage(command);
     // Don't snap to bottom if user deliberately scrolled up — respect their position.
     // followOutput stays whatever it was; the ↓ button remains visible if scrolled up.
     manualUntilRef.current = 0;
@@ -356,6 +362,8 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, au
         if (rollingBufferRef.current.length > maxBuf) {
           rollingBufferRef.current = rollingBufferRef.current.slice(-maxBuf);
         }
+        // Feed chat parser with stripped lines
+        chatParserRef.current.processLines(newLines);
       }
 
       if (idleTimerRef.current) clearTimeout(idleTimerRef.current);
@@ -584,10 +592,22 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, au
 
   return (
     <div className="terminal-full">
+      {/* Chat mode toggle */}
+      {!tuiMode && (
+        <button
+          className={`chat-mode-toggle ${chatMode ? 'active' : ''}`}
+          onClick={() => setChatMode(prev => !prev)}
+          title={chatMode ? 'Switch to Terminal' : 'Switch to Chat'}
+        >
+          {chatMode ? '\u2328\uFE0F' : '\uD83D\uDCAC'}
+        </button>
+      )}
+
+      {/* Terminal view -- hidden but alive when chat mode is on */}
       <div className="terminal-output-wrapper" ref={wrapperRef}
+        style={{ display: (chatMode && !tuiMode) ? 'none' : undefined }}
         onDragOver={e => { e.preventDefault(); setTermDragOver(true); }}
         onDragLeave={(e) => {
-          // Only trigger leave if leaving the wrapper entirely
           if (!e.currentTarget.contains(e.relatedTarget as Node)) setTermDragOver(false);
         }}
         onDrop={handleFileDrop}
@@ -610,10 +630,18 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, au
         )}
         {scrolledUp && (
           <button className="scroll-to-bottom" onClick={scrollToBottom} title="Scroll to bottom">
-            ↓
+            {'\u2193'}
           </button>
         )}
       </div>
+
+      {/* Chat view -- shown when chat mode is on */}
+      {chatMode && !tuiMode && (
+        <div className="chat-view-wrapper">
+          <ChatView parser={chatParserRef.current} fontSize={fontSize} />
+        </div>
+      )}
+
       {!tuiMode && (
         <CommandInput
           onSubmit={handleCommandSubmit}
@@ -634,10 +662,10 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, au
           fontSize={fontSize}
         />
       )}
-      {!tuiMode && (
+      {!tuiMode && !chatMode && (
         <div className={`terminal-focus-indicator ${focus === 'terminal' ? 'raw-active' : ''}`}>
           {focus === 'terminal'
-            ? 'Raw mode — keys go to terminal. Click input bar for command mode.'
+            ? 'Raw mode \u2014 keys go to terminal. Click input bar for command mode.'
             : 'Command mode. Click terminal for raw keys (menus, choices).'}
         </div>
       )}
