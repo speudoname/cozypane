@@ -147,3 +147,31 @@ h3 { font-size: 1rem; margin-bottom: 0.75rem; color: #ccc; }
 a.user-link { color: #7c6fe0; text-decoration: none; }
 a.user-link:hover { text-decoration: underline; }
 a.url-link { color: #7c6fe0; text-decoration: none; font-size: 0.82rem; }
+
+/* Health tab */
+.health-status-row {
+  display: flex; gap: 1.5rem; margin-bottom: 1.5rem;
+  padding: 0.8rem 1rem; background: #161822;
+  border: 1px solid #2a2b3e; border-radius: 8px;
+}
+.health-indicator { display: flex; align-items: center; gap: 0.5rem; font-size: 0.88rem; }
+.health-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+.health-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1rem; }
+.health-card {
+  background: #161822; border: 1px solid #2a2b3e;
+  border-radius: 8px; padding: 1rem;
+}
+.health-card-title {
+  font-size: 0.8rem; color: #888; text-transform: uppercase;
+  letter-spacing: 0.05em; margin-bottom: 0.6rem; font-weight: 600;
+}
+.health-row {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 0.3rem 0; font-size: 0.85rem; border-bottom: 1px solid #1e1f3222;
+}
+.health-row:last-child { border-bottom: none; }
+.health-row span:first-child { color: #888; }
+.health-good { color: #4caf50; }
+.health-warn { color: #e6b800; }
+.health-bad { color: #e74c3c; }
+.health-timestamp { font-size: 0.78rem; color: #666; }

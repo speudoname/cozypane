@@ -78,6 +78,8 @@ function clearLegacyStorage() {
   try { localStorage.removeItem('admin_token'); } catch { /* ignore */ }
 }
 
+let healthInterval = null;
+
 // --- Rendering ---
 
 const $ = (id) => document.getElementById(id);
@@ -414,14 +416,104 @@ function debounce(fn, ms) {
   return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), ms); };
 }
 
+// --- Health ---
+
+async function renderHealth() {
+  setActive('health');
+  if (healthInterval) clearInterval(healthInterval);
+
+  async function fetchAndRender() {
+    try {
+      const h = await api('/admin/health');
+      html($('content'), `
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem">
+          <h3 style="margin:0">System Health</h3>
+          <div style="display:flex;align-items:center;gap:0.75rem">
+            <span class="health-timestamp">Updated ${new Date().toLocaleTimeString()}</span>
+            <button class="btn btn-sm" onclick="renderHealth()">Refresh</button>
+          </div>
+        </div>
+        <div class="health-status-row">
+          ${healthDot(h.server.status, 'API Server')}
+          ${healthDot(h.postgres.status, 'PostgreSQL')}
+          ${healthDot(h.redis.status, 'Redis')}
+          ${healthDot(h.docker.status, 'Docker')}
+        </div>
+        <div class="health-grid">
+          <div class="health-card">
+            <div class="health-card-title">API Server</div>
+            <div class="health-row"><span>Uptime</span><span>${formatUptime(h.server.uptime)}</span></div>
+            <div class="health-row"><span>Node.js</span><span>${h.server.nodeVersion}</span></div>
+            <div class="health-row"><span>Memory (RSS)</span><span>${h.server.memoryUsage.rss}</span></div>
+            <div class="health-row"><span>Heap Used</span><span>${h.server.memoryUsage.heapUsed}</span></div>
+          </div>
+          <div class="health-card">
+            <div class="health-card-title">PostgreSQL</div>
+            <div class="health-row"><span>Version</span><span>${h.postgres.version || '-'}</span></div>
+            <div class="health-row"><span>Tenant DBs</span><span>${h.postgres.databases ?? '-'}</span></div>
+            <div class="health-row"><span>Total Size</span><span>${h.postgres.totalSize || '-'}</span></div>
+            <div class="health-row"><span>Pool (idle/total)</span><span>${h.postgres.poolSize.idle}/${h.postgres.poolSize.total}</span></div>
+            <div class="health-row"><span>Pool Waiting</span><span>${h.postgres.poolSize.waiting}</span></div>
+          </div>
+          <div class="health-card">
+            <div class="health-card-title">Redis</div>
+            <div class="health-row"><span>Keys</span><span>${h.redis.keys ?? '-'}</span></div>
+            <div class="health-row"><span>Memory</span><span>${h.redis.memory || '-'}</span></div>
+          </div>
+          <div class="health-card">
+            <div class="health-card-title">Docker</div>
+            <div class="health-row"><span>Containers</span><span>${h.docker.containers.running} running / ${h.docker.containers.total} total</span></div>
+            <div class="health-row"><span>Stopped</span><span>${h.docker.containers.stopped}</span></div>
+            <div class="health-row"><span>Images</span><span>${h.docker.images}</span></div>
+          </div>
+          <div class="health-card">
+            <div class="health-card-title">Deployments</div>
+            <div class="health-row"><span>Running</span><span class="health-good">${h.deployments.running}</span></div>
+            <div class="health-row"><span>Building</span><span class="health-warn">${h.deployments.building}</span></div>
+            <div class="health-row"><span>Failed</span><span class="health-bad">${h.deployments.failed}</span></div>
+            <div class="health-row"><span>Recent Errors (24h)</span><span class="health-bad">${h.deployments.recentErrors}</span></div>
+          </div>
+          <div class="health-card">
+            <div class="health-card-title">Build Queue</div>
+            <div class="health-row"><span>Active</span><span>${h.queue.active}</span></div>
+            <div class="health-row"><span>Waiting</span><span>${h.queue.waiting}</span></div>
+            <div class="health-row"><span>Completed</span><span>${h.queue.completed}</span></div>
+            <div class="health-row"><span>Failed</span><span>${h.queue.failed}</span></div>
+          </div>
+        </div>
+      `);
+    } catch (e) {
+      html($('content'), `<div class="error">Failed to load health data: ${e.message}</div>`);
+    }
+  }
+
+  await fetchAndRender();
+  healthInterval = setInterval(fetchAndRender, 30000);
+}
+
+function healthDot(status, label) {
+  const color = status === 'running' ? '#4caf50' : status === 'unreachable' ? '#e74c3c' : '#e6b800';
+  return `<div class="health-indicator"><span class="health-dot" style="background:${color}"></span><span>${label}</span></div>`;
+}
+
+function formatUptime(seconds) {
+  const d = Math.floor(seconds / 86400);
+  const h = Math.floor((seconds % 86400) / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  return d > 0 ? d + 'd ' + h + 'h ' + m + 'm' : h > 0 ? h + 'h ' + m + 'm' : m + 'm';
+}
+
 // --- Router ---
 
 async function route() {
+  if (healthInterval) { clearInterval(healthInterval); healthInterval = null; }
   const hash = location.hash || '#/';
   const parts = hash.slice(2).split('/');
 
   try {
-    if (parts[0] === 'users' && parts[1]) {
+    if (parts[0] === 'health') {
+      await renderHealth();
+    } else if (parts[0] === 'users' && parts[1]) {
       await renderUserDetail(parts[1]);
     } else if (parts[0] === 'users') {
       await renderUsers();

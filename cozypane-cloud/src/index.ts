@@ -1,4 +1,13 @@
 import 'dotenv/config';
+import * as Sentry from '@sentry/node';
+
+Sentry.init({
+  dsn: process.env.SENTRY_DSN || 'https://822e1904adbf05d9c4865a940356eec6@o4510985332391936.ingest.de.sentry.io/4511211127767120',
+  environment: process.env.NODE_ENV || 'production',
+  tracesSampleRate: 0.3,
+  integrations: [Sentry.fastifyIntegration()],
+});
+
 import Fastify from 'fastify';
 import type { FastifyError } from 'fastify';
 import cors from '@fastify/cors';
@@ -132,6 +141,8 @@ await app.register(fastifyStatic, {
   decorateReply: false,
 });
 
+Sentry.setupFastifyErrorHandler(app);
+
 // Central error handler — runs for any thrown / rejected error in a route.
 // Keeps the response shape consistent (`{ error }`) and hides internal details
 // (Postgres error messages, stack traces, file paths) for 5xx errors. Routes
@@ -141,6 +152,7 @@ app.setErrorHandler((err: FastifyError, request, reply) => {
     ? err.statusCode
     : 500;
   if (statusCode >= 500) {
+    Sentry.captureException(err);
     request.log.error({ err, url: request.url }, 'request error');
     reply.code(500).send({ error: 'Internal server error' });
   } else {
@@ -208,6 +220,7 @@ const shutdown = async (signal: string) => {
   }
   cancelPendingHealthRechecks();
   stopPeriodicImagePrune();
+  await Sentry.close(2000);
   await Promise.allSettled([pool.end(), platformPool.end()]);
   process.exit(0);
 };
@@ -234,6 +247,7 @@ function rateLimitErrorLog(key: string, max: number, windowMs: number): boolean 
   return true;
 }
 process.on('unhandledRejection', (reason: any) => {
+  Sentry.captureException(reason instanceof Error ? reason : new Error(String(reason)));
   if (!rateLimitErrorLog('rejection', 10, 60_000)) return;
   app.log.error(
     { err: reason instanceof Error ? reason : new Error(String(reason)), stack: reason?.stack },
@@ -241,6 +255,7 @@ process.on('unhandledRejection', (reason: any) => {
   );
 });
 process.on('uncaughtException', (err) => {
+  Sentry.captureException(err);
   if (!rateLimitErrorLog('exception', 10, 60_000)) return;
   app.log.error(
     { err, stack: err?.stack, name: err?.name, code: (err as any)?.code },

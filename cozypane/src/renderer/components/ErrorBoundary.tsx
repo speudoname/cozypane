@@ -1,4 +1,5 @@
 import React from 'react';
+import * as Sentry from '@sentry/electron/renderer';
 
 interface Props {
   children: React.ReactNode;
@@ -19,6 +20,7 @@ export default class ErrorBoundary extends React.Component<Props, State> {
   }
 
   componentDidCatch(error: Error, info: React.ErrorInfo) {
+    Sentry.captureException(error, { contexts: { react: { componentStack: info.componentStack } } });
     console.error('[CozyPane] React error:', error, info.componentStack);
   }
 

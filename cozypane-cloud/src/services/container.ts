@@ -496,6 +496,21 @@ function redactInternals(text: string): string {
  * Demultiplex Docker log stream.
  * Each frame has an 8-byte header: [type(1), 0, 0, 0, size(4 big-endian)]
  */
+export async function getDockerHealth() {
+  try {
+    const containers = await docker.listContainers({ all: true });
+    const running = containers.filter(c => c.State === 'running').length;
+    const images = await docker.listImages();
+    return {
+      status: 'running' as const,
+      containers: { total: containers.length, running, stopped: containers.length - running },
+      images: images.length,
+    };
+  } catch {
+    return { status: 'unreachable' as const, containers: { total: 0, running: 0, stopped: 0 }, images: 0 };
+  }
+}
+
 function demuxLogs(buffer: Buffer): string {
   if (!Buffer.isBuffer(buffer)) {
     return String(buffer);

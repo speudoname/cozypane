@@ -220,6 +220,12 @@ export function startDeployWorker(log: FastifyBaseLogger): Worker<DeployJobData>
   return _worker;
 }
 
+export async function getQueueStats() {
+  const q = getDeployQueue();
+  const counts = await q.getJobCounts('active', 'waiting', 'completed', 'failed');
+  return counts;
+}
+
 /**
  * Graceful shutdown. Called from `index.ts` on SIGTERM/SIGINT before
  * closing the Postgres pools. Waits for in-flight jobs to finish (or up

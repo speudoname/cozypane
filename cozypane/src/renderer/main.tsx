@@ -1,9 +1,12 @@
+import * as Sentry from '@sentry/electron/renderer';
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import App from './App';
 import ErrorBoundary from './components/ErrorBoundary';
 import { ConfirmProvider } from './lib/confirmContext';
 import './styles/global.css';
+
+Sentry.init();
 
 // Apply persisted theme on load
 try {

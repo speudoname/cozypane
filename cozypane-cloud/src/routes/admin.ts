@@ -1,9 +1,12 @@
 import type { FastifyInstance } from 'fastify';
 import { adminAuth } from '../middleware/adminAuth.js';
-import { stopContainer, restartContainer, getContainerLogs } from '../services/container.js';
+import { stopContainer, restartContainer, getContainerLogs, getDockerHealth } from '../services/container.js';
 import { cleanupDeployment } from '../services/cleanup.js';
 import { checkUserRateLimit } from '../middleware/rateLimit.js';
 import { DOMAIN, appUrl, serializeDeploymentSummary, serializeDeploymentDetail } from '../services/serializers.js';
+import { getInfrastructureStatus } from '../services/database.js';
+import { getQueueStats } from '../services/deployQueue.js';
+import { pool } from '../db/index.js';
 import { idParamSchema } from '../services/schemas.js';
 import { getUserCount, listUsersWithCounts, getUserById, updateAdminFlag, deleteUser } from '../db/users.js';
 import {
@@ -237,6 +240,61 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
     }
 
     return { ok: true, ...(warnings.length > 0 ? { warnings } : {}) };
+  });
+
+  // --- Health ---
+
+  app.get('/admin/health', async (req, reply) => {
+    const [infraStatus, dockerHealth, queueStats, deploymentStats] = await Promise.all([
+      getInfrastructureStatus(),
+      getDockerHealth(),
+      getQueueStats(),
+      pool.query(`
+        SELECT status, COUNT(*)::int as count FROM deployments GROUP BY status
+        UNION ALL
+        SELECT 'recentErrors', COUNT(*)::int FROM deployments
+        WHERE status IN ('failed', 'error') AND updated_at > NOW() - INTERVAL '24 hours'
+      `),
+    ]);
+
+    const mem = process.memoryUsage();
+    const byStatus: Record<string, number> = {};
+    for (const row of deploymentStats.rows) byStatus[row.status] = row.count;
+
+    return {
+      server: {
+        status: 'running',
+        uptime: Math.floor(process.uptime()),
+        nodeVersion: process.version,
+        memoryUsage: {
+          rss: `${Math.round(mem.rss / 1024 / 1024)} MB`,
+          heapUsed: `${Math.round(mem.heapUsed / 1024 / 1024)} MB`,
+          heapTotal: `${Math.round(mem.heapTotal / 1024 / 1024)} MB`,
+        },
+      },
+      postgres: {
+        status: infraStatus.postgres ? 'running' : 'unreachable',
+        version: infraStatus.postgres?.version,
+        databases: infraStatus.postgres?.databases,
+        totalSize: infraStatus.postgres?.totalSize,
+        poolSize: { total: pool.totalCount, idle: pool.idleCount, waiting: pool.waitingCount },
+      },
+      redis: {
+        status: infraStatus.redis ? 'running' : 'unreachable',
+        keys: infraStatus.redis?.keys,
+        memory: infraStatus.redis?.memory,
+      },
+      docker: dockerHealth,
+      deployments: {
+        total: Object.entries(byStatus).filter(([k]) => k !== 'recentErrors').reduce((s, [, v]) => s + v, 0),
+        running: byStatus.running || 0,
+        building: byStatus.building || 0,
+        failed: byStatus.failed || 0,
+        stopped: byStatus.stopped || 0,
+        recentErrors: byStatus.recentErrors || 0,
+      },
+      queue: queueStats,
+    };
   });
 
   app.get<{ Params: { id: string }; Querystring: { tail?: string } }>(

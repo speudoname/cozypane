@@ -1,3 +1,4 @@
+import * as Sentry from '@sentry/electron/main';
 import { app, BrowserWindow, dialog, ipcMain, clipboard, net, protocol } from 'electron';
 import path from 'path';
 import fs from 'fs';
@@ -16,6 +17,13 @@ import { buildMenu } from './menu';
 import { ensureCozypaneMcpConfig, wipeMcpConfig } from './mcp-config';
 import { registerPrimaryWindow, getPrimaryWindow, broadcastAll } from './windows';
 
+Sentry.init({
+  dsn: 'https://1bebfbc7016910d1b36a0a3b6fc24ec6@o4510985332391936.ingest.de.sentry.io/4511211127636048',
+  release: 'cozypane@' + app.getVersion(),
+  environment: app.isPackaged ? 'production' : 'development',
+  enabled: app.isPackaged,
+});
+
 // Register cozypane-media:// scheme for serving local media files to the
 // renderer without base64-encoding them over IPC. Must be called before app.ready.
 protocol.registerSchemesAsPrivileged([
@@ -24,6 +32,7 @@ protocol.registerSchemesAsPrivileged([
 
 // Global error handlers
 process.on('uncaughtException', (err) => {
+  Sentry.captureException(err);
   console.error('[CozyPane] Uncaught exception:', err);
   dialog.showErrorBox('CozyPane Error', `An unexpected error occurred:\n${err.message}`);
   killAllPtys();
@@ -31,6 +40,7 @@ process.on('uncaughtException', (err) => {
   app.exit(1);
 });
 process.on('unhandledRejection', (reason) => {
+  Sentry.captureException(reason instanceof Error ? reason : new Error(String(reason)));
   console.error('[CozyPane] Unhandled rejection:', reason);
 });
 

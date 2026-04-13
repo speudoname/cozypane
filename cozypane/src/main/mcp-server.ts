@@ -4,6 +4,14 @@
 // Communicates with Claude Code via stdio (MCP protocol).
 // Auth token is read from COZYPANE_DEPLOY_TOKEN env var (injected by CozyPane PTY).
 
+import * as Sentry from '@sentry/node';
+
+Sentry.init({
+  dsn: 'https://1bebfbc7016910d1b36a0a3b6fc24ec6@o4510985332391936.ingest.de.sentry.io/4511211127636048',
+  environment: 'mcp-server',
+  enabled: process.env.NODE_ENV !== 'development',
+});
+
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
@@ -719,6 +727,7 @@ async function main() {
 }
 
 main().catch((err) => {
+  Sentry.captureException(err);
   console.error('MCP server failed to start:', err);
   process.exit(1);
 });
