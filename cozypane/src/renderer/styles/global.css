@@ -3035,47 +3035,84 @@ html, body, #root {
   50% { opacity: 0.3; }
 }
 
-/* Tool Messages */
-.chat-tool {
+/* Steps Group (collapsed tool calls) */
+.chat-steps {
   width: 100%;
   background: var(--bg-secondary, #161822);
   border: 1px solid var(--border, #2a2b3e);
   border-radius: 8px;
   overflow: hidden;
-  cursor: pointer;
 }
-.chat-tool-header {
+.chat-steps-summary {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 6px 10px;
+  padding: 8px 12px;
+  cursor: pointer;
   font-size: 0.85em;
   color: var(--text-muted, #888);
+  transition: background 0.1s;
 }
-.chat-tool-icon { font-size: 1em; }
-.chat-tool-label { font-weight: 500; }
-.chat-tool-detail {
+.chat-steps-summary:hover {
+  background: var(--bg-active, #1e1f32);
+}
+.chat-steps-icon { font-size: 1em; }
+.chat-steps-text { flex: 1; }
+.chat-steps-toggle {
+  margin-left: auto;
+  font-size: 0.75em;
+  opacity: 0.6;
+}
+.chat-steps-list {
+  border-top: 1px solid var(--border, #2a2b3e);
+  padding: 4px 0;
+}
+
+/* Individual Step */
+.chat-step-item {
+  border-bottom: 1px solid var(--border, #1e1f32);
+}
+.chat-step-item:last-child { border-bottom: none; }
+.chat-step-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  font-size: 0.82em;
+  color: var(--text-muted, #888);
+}
+.chat-step-header.expandable {
+  cursor: pointer;
+}
+.chat-step-header.expandable:hover {
+  background: var(--bg-active, #1e1f32);
+}
+.chat-step-icon { font-size: 0.9em; width: 18px; text-align: center; }
+.chat-step-verb { font-weight: 500; color: var(--text-secondary, #aaa); }
+.chat-step-detail {
   color: var(--accent, #7c6fe0);
-  font-family: 'SF Mono', monospace;
+  font-family: 'SF Mono', 'DejaVu Sans Mono', monospace;
   font-size: 0.9em;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   flex: 1;
 }
-.chat-tool-toggle {
+.chat-step-toggle {
   margin-left: auto;
-  font-size: 0.8em;
+  font-size: 0.75em;
+  opacity: 0.5;
 }
-.chat-tool-output {
+.chat-step-output {
   margin: 0;
-  padding: 8px 10px;
+  padding: 8px 12px;
   background: var(--bg-primary, #0f1117);
   color: var(--text-primary, #e4e4f0);
-  font-family: 'SF Mono', monospace;
-  font-size: 0.8em;
+  font-family: 'SF Mono', 'DejaVu Sans Mono', monospace;
+  font-size: 0.78em;
   max-height: 200px;
   overflow-y: auto;
   white-space: pre-wrap;
   border-top: 1px solid var(--border, #2a2b3e);
+  line-height: 1.4;
 }
