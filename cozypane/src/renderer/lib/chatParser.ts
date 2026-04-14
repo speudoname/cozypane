@@ -94,6 +94,7 @@ export class ChatParser {
   // Stream accumulation
   private rawBuffer = '';
   private flushTimer: ReturnType<typeof setTimeout> | null = null;
+  private maxWaitTimer: ReturnType<typeof setTimeout> | null = null;
   private state: 'idle' | 'accumulating' = 'idle';
   private currentThinkingId: number | null = null;
 
@@ -121,6 +122,10 @@ export class ChatParser {
       content: text,
       timestamp: Date.now(),
     });
+
+    // Safety: force-process after 30s even if data keeps streaming
+    if (this.maxWaitTimer) clearTimeout(this.maxWaitTimer);
+    this.maxWaitTimer = setTimeout(() => this.checkComplete(), 30000);
 
     // Add thinking indicator
     this.currentThinkingId = this.nextId++;
@@ -155,17 +160,10 @@ export class ChatParser {
   }
 
   private async checkComplete() {
-    // Check if the raw buffer ends with a Claude prompt (response is done)
-    const lastChunk = this.rawBuffer.slice(-200);
-    const hasPrompt = /\u276F\s*$/.test(lastChunk.trim()) ||
-                      /[\w~\/.][$%#]\s*$/.test(lastChunk.trim());
+    // Silence detected (1.5s) or max-wait (30s) — process whatever we have.
+    if (this.maxWaitTimer) { clearTimeout(this.maxWaitTimer); this.maxWaitTimer = null; }
+    if (!this.rawBuffer || this.rawBuffer.trim().length < 5) return;
 
-    if (!hasPrompt && this.rawBuffer.length < 50000) {
-      // Not done yet — keep accumulating
-      return;
-    }
-
-    // Response complete — process it
     const rawText = this.rawBuffer;
     this.rawBuffer = '';
     this.state = 'idle';
@@ -190,15 +188,17 @@ export class ChatParser {
       });
     }
 
-    // Try LLM formatting
+    // Try LLM formatting via Haiku
     let formattedText: string | null = null;
     try {
       const result = await window.cozyPane.chat.formatResponse(rawText);
-      if (result.text && result.text !== '(no response yet)') {
+      if (result.error) {
+        console.warn('[ChatParser] LLM format error:', result.error);
+      } else if (result.text && result.text !== '(no response yet)') {
         formattedText = result.text;
       }
-    } catch {
-      // LLM unavailable — fall back to raw extraction
+    } catch (err) {
+      console.warn('[ChatParser] LLM call failed:', err);
     }
 
     if (!formattedText) {
@@ -269,11 +269,13 @@ export class ChatParser {
 
   clear() {
     if (this.flushTimer) clearTimeout(this.flushTimer);
+    if (this.maxWaitTimer) clearTimeout(this.maxWaitTimer);
     this.messages = [];
     this.rawBuffer = '';
     this.state = 'idle';
     this.currentThinkingId = null;
     this.flushTimer = null;
+    this.maxWaitTimer = null;
     this.nextId = 1;
     this.notify();
   }
