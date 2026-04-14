@@ -379,6 +379,22 @@ app.whenReady().then(() => {
   });
 
   buildMenu();
+  // Relax CSP for the Preview webview partition — the webview loads the
+  // user's own dev server which makes its own API calls, loads external
+  // images, etc. The renderer's strict CSP (connect-src 'self') would
+  // block all of that. Override CSP headers for this partition only.
+  const { session } = require('electron');
+  const previewSession = session.fromPartition('persist:preview');
+  previewSession.webRequest.onHeadersReceived((details: any, callback: any) => {
+    const headers = { ...details.responseHeaders };
+    // Remove any CSP headers so the webview content runs unrestricted
+    delete headers['content-security-policy'];
+    delete headers['Content-Security-Policy'];
+    delete headers['content-security-policy-report-only'];
+    delete headers['Content-Security-Policy-Report-Only'];
+    callback({ responseHeaders: headers });
+  });
+
   createWindow();
   setupAutoUpdater();
   startPeriodicCheck();

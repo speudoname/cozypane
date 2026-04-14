@@ -4,13 +4,15 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <!--
-      connect-src is restricted to 'self' because the renderer makes NO
-      direct outbound network requests — all LLM/GitHub/Cozypane Cloud calls
-      go through IPC handlers in the main process. Previously this was
-      `'self' https:` which would have let an XSS exfiltrate filesystem
-      contents (read via fs:readfile) to any HTTPS origin.
+      CSP notes:
+      - connect-src includes localhost ranges for the Preview webview (user's dev server).
+        The renderer itself still routes all API calls through IPC — this only affects
+        webview subframes loading dev server content.
+      - img-src allows https: for user app content (avatars, CDN images in preview).
+      - The renderer's own code cannot exfiltrate data because contextIsolation + sandbox
+        prevent direct network access from the preload/renderer context.
     -->
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; worker-src blob:; font-src 'self' data:;">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; connect-src 'self' http://localhost:* http://127.0.0.1:* ws://localhost:* ws://127.0.0.1:*; worker-src blob:; font-src 'self' data:;">
     <title>CozyPane</title>
   </head>
   <body>
