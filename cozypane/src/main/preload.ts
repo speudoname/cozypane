@@ -129,6 +129,9 @@ contextBridge.exposeInMainWorld('cozyPane', {
     ipcRenderer.on(channel, listener);
     return () => ipcRenderer.removeListener(channel, listener);
   },
+  chat: {
+    formatResponse: (rawOutput: string) => ipcRenderer.invoke('chat:format', rawOutput),
+  },
   mcp: {
     getConfigPath: () => ipcRenderer.invoke('mcp:getConfigPath'),
   },

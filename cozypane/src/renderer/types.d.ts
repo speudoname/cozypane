@@ -267,6 +267,9 @@ declare global {
       onError: (callback: (info: { message: string }) => void) => () => void;
     };
     onMenuAction: (channel: string, callback: (...args: any[]) => void) => () => void;
+    chat: {
+      formatResponse: (rawOutput: string) => Promise<{ text?: string; error?: string }>;
+    };
     mcp: {
       getConfigPath: () => Promise<{ path?: string; error?: string }>;
     };
