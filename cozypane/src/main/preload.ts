@@ -94,6 +94,7 @@ contextBridge.exposeInMainWorld('cozyPane', {
   },
   updates: {
     check: () => ipcRenderer.invoke('updates:check'),
+    checkApp: () => ipcRenderer.invoke('updates:checkApp'),
     getLast: () => ipcRenderer.invoke('updates:getLast'),
     getCommand: (opts: { brew: boolean; claude: boolean }) => ipcRenderer.invoke('updates:getCommand', opts),
     onAvailable: (callback: (info: any) => void) => {

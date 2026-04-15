@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 
 interface Props {
   cwd: string;
@@ -22,6 +22,38 @@ function getActionDisplay(action: AiAction) {
 
 export default function StatusBar({ cwd, layoutMode, onToggleLayout, panelsOpen, onTogglePanels, aiAction, gitBranch }: Props) {
   const { label, dotClass } = getActionDisplay(aiAction);
+  const [checkState, setCheckState] = useState<'idle' | 'checking' | 'up-to-date' | 'update-available' | 'error'>('idle');
+  const [checkMsg, setCheckMsg] = useState('');
+
+  const runCheck = async () => {
+    setCheckState('checking');
+    setCheckMsg('');
+    try {
+      const res = await window.cozyPane.updates.checkApp();
+      if (res.error) {
+        setCheckState('error');
+        setCheckMsg(res.error);
+      } else if (res.upToDate) {
+        setCheckState('up-to-date');
+        setCheckMsg(`Up to date (v${res.current})`);
+      } else {
+        setCheckState('update-available');
+        setCheckMsg(`Update ${res.latest} downloading...`);
+      }
+    } catch (err: any) {
+      setCheckState('error');
+      setCheckMsg(err?.message || 'Check failed');
+    }
+    // Clear status after 4s
+    setTimeout(() => { setCheckState('idle'); setCheckMsg(''); }, 4000);
+  };
+
+  const checkLabel =
+    checkState === 'checking' ? 'Checking...' :
+    checkState === 'up-to-date' ? 'Up to date' :
+    checkState === 'update-available' ? 'Update found' :
+    checkState === 'error' ? 'Check failed' :
+    'Check Updates';
 
   return (
     <div className="status-bar">
@@ -47,6 +79,14 @@ export default function StatusBar({ cwd, layoutMode, onToggleLayout, panelsOpen,
           {layoutMode === 'two-col' ? 'Split View' : 'Stacked View'}
         </button>
       )}
+      <button
+        className="btn status-btn"
+        onClick={runCheck}
+        disabled={checkState === 'checking'}
+        title={checkMsg || 'Check for app updates now'}
+      >
+        {checkLabel}
+      </button>
       <div className="status-item">
         <span>CozyPane v{__APP_VERSION__}</span>
       </div>

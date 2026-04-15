@@ -260,6 +260,7 @@ declare global {
     };
     updates: {
       check: () => Promise<UpdateInfo>;
+      checkApp: () => Promise<{ upToDate?: boolean; current?: string; latest?: string; error?: string }>;
       getLast: () => Promise<UpdateInfo | null>;
       getCommand: (opts: { brew: boolean; claude: boolean }) => Promise<string>;
       onAvailable: (callback: (info: UpdateInfo) => void) => () => void;

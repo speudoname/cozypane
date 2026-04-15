@@ -295,6 +295,33 @@ function setupAutoUpdater() {
     broadcastAll('updater:status', { status: 'available', version: info.version });
   });
 
+  autoUpdater.on('update-not-available', (info) => {
+    broadcastAll('updater:status', { status: 'up-to-date', version: info.version });
+  });
+
+  autoUpdater.on('checking-for-update', () => {
+    broadcastAll('updater:status', { status: 'checking' });
+  });
+
+  autoUpdater.on('download-progress', (p) => {
+    broadcastAll('updater:status', { status: 'downloading', percent: Math.round(p.percent) });
+  });
+
+  // Manual app-update check from renderer
+  ipcMain.handle('updates:checkApp', async () => {
+    try {
+      const res = await autoUpdater.checkForUpdates();
+      const current = app.getVersion();
+      const latest = res?.updateInfo?.version;
+      if (!latest || latest === current) {
+        return { upToDate: true, current };
+      }
+      return { upToDate: false, current, latest };
+    } catch (err: any) {
+      return { error: err?.message || 'Check failed' };
+    }
+  });
+
   autoUpdater.on('update-downloaded', (info) => {
     console.log('[CozyPane] Update downloaded:', info.version);
     broadcastAll('updater:status', { status: 'downloaded', version: info.version });
