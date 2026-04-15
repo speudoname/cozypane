@@ -1,244 +1,222 @@
-import React, { useEffect, useRef, useState } from 'react';
-import type { ChatMessage, ChatParser, ToolStep } from '../lib/chatParser';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { User, Bot, Loader2, CircleAlert, Info, MessageSquare } from 'lucide-react';
+import type { ChatParser } from '../lib/chatParser';
+import type { ChatEvent, Status, ToolType, ToolMeta, InteractivePrompt } from '../lib/chatEvents';
+import { renderMarkdown } from '../lib/chatMarkdown';
+import ChatStatusBar from './ChatStatusBar';
+import ChatStepCard from './ChatStepCard';
+import ChatInteractivePrompt from './ChatInteractivePrompt';
+import ChatPlanProposal from './ChatPlanProposal';
 
 interface Props {
   parser: ChatParser;
   fontSize?: number;
+  onShiftTab?: () => void;
+  onPromptResponse?: (text: string) => void;
 }
 
-const TOOL_ICONS: Record<string, string> = {
-  read: '\uD83D\uDCD6',
-  edit: '\u270F\uFE0F',
-  write: '\uD83D\uDCDD',
-  bash: '\u26A1',
-  grep: '\uD83D\uDD0D',
-  glob: '\uD83D\uDCC2',
-  agent: '\uD83E\uDD16',
-  other: '\uD83D\uDD27',
-};
+// Timeline items the ChatView renders.
+type Item =
+  | { kind: 'user'; id: string; text: string; turnId: number }
+  | { kind: 'prose'; id: string; turnId: number; text: string }
+  | { kind: 'step'; id: string; toolId: string; tool: ToolType; detail: string; output?: string; meta?: ToolMeta; error?: boolean; streaming?: boolean; turnId: number }
+  | { kind: 'plan'; id: string; plan: string }
+  | { kind: 'error'; id: string; message: string; severity: 'warn' | 'error' }
+  | { kind: 'system'; id: string; text: string };
 
-const TOOL_VERBS: Record<string, string> = {
-  read: 'Read',
-  edit: 'Edited',
-  write: 'Created',
-  bash: 'Ran',
-  grep: 'Searched',
-  glob: 'Found files in',
-  agent: 'Spawned agent',
-  other: 'Action',
-};
+export default function ChatView({ parser, fontSize = 13, onShiftTab, onPromptResponse }: Props) {
+  const [items, setItems] = useState<Item[]>([]);
+  const [status, setStatus] = useState<Status>(() => parser.getLastStatus());
+  const [activePrompt, setActivePrompt] = useState<InteractivePrompt | null>(null);
+  const [thinking, setThinking] = useState<string | null>(null);
 
-function shortenPath(p: string): string {
-  const clean = p.replace(/['"]/g, '').trim();
-  const parts = clean.split('/');
-  if (parts.length <= 2) return parts.join('/');
-  return '.../' + parts.slice(-2).join('/');
-}
-
-// Simple markdown renderer — handles code blocks, inline code, bold, italic, lists
-function renderMarkdown(text: string): React.ReactNode[] {
-  const lines = text.split('\n');
-  const elements: React.ReactNode[] = [];
-  let i = 0;
-  let key = 0;
-
-  while (i < lines.length) {
-    const line = lines[i];
-
-    // Code block
-    if (line.trim().startsWith('```')) {
-      const lang = line.trim().slice(3).trim();
-      const codeLines: string[] = [];
-      i++;
-      while (i < lines.length && !lines[i].trim().startsWith('```')) {
-        codeLines.push(lines[i]);
-        i++;
-      }
-      i++; // skip closing ```
-      elements.push(
-        <pre key={key++} className="chat-code-block">
-          {lang && <div className="chat-code-lang">{lang}</div>}
-          <code>{codeLines.join('\n')}</code>
-        </pre>
-      );
-      continue;
-    }
-
-    // Heading
-    const headingMatch = line.match(/^(#{1,3})\s+(.+)/);
-    if (headingMatch) {
-      const level = headingMatch[1].length;
-      const Tag = `h${level + 1}` as keyof JSX.IntrinsicElements;
-      elements.push(<Tag key={key++} className="chat-heading">{renderInline(headingMatch[2])}</Tag>);
-      i++;
-      continue;
-    }
-
-    // Bullet list
-    if (/^\s*[-*]\s+/.test(line)) {
-      const items: string[] = [];
-      while (i < lines.length && /^\s*[-*]\s+/.test(lines[i])) {
-        items.push(lines[i].replace(/^\s*[-*]\s+/, ''));
-        i++;
-      }
-      elements.push(
-        <ul key={key++} className="chat-list">
-          {items.map((item, j) => <li key={j}>{renderInline(item)}</li>)}
-        </ul>
-      );
-      continue;
-    }
-
-    // Numbered list
-    if (/^\s*\d+[.)]\s+/.test(line)) {
-      const items: string[] = [];
-      while (i < lines.length && /^\s*\d+[.)]\s+/.test(lines[i])) {
-        items.push(lines[i].replace(/^\s*\d+[.)]\s+/, ''));
-        i++;
-      }
-      elements.push(
-        <ol key={key++} className="chat-list">
-          {items.map((item, j) => <li key={j}>{renderInline(item)}</li>)}
-        </ol>
-      );
-      continue;
-    }
-
-    // Empty line = paragraph break
-    if (!line.trim()) {
-      i++;
-      continue;
-    }
-
-    // Regular paragraph
-    elements.push(<p key={key++} className="chat-paragraph">{renderInline(line)}</p>);
-    i++;
-  }
-
-  return elements;
-}
-
-// Render inline markdown: bold, italic, inline code
-function renderInline(text: string): React.ReactNode[] {
-  const parts: React.ReactNode[] = [];
-  let remaining = text;
-  let key = 0;
-
-  while (remaining.length > 0) {
-    // Inline code
-    const codeMatch = remaining.match(/^(.*?)`([^`]+)`/);
-    if (codeMatch) {
-      if (codeMatch[1]) parts.push(<span key={key++}>{codeMatch[1]}</span>);
-      parts.push(<code key={key++} className="chat-inline-code">{codeMatch[2]}</code>);
-      remaining = remaining.slice(codeMatch[0].length);
-      continue;
-    }
-    // Bold
-    const boldMatch = remaining.match(/^(.*?)\*\*(.+?)\*\*/);
-    if (boldMatch) {
-      if (boldMatch[1]) parts.push(<span key={key++}>{boldMatch[1]}</span>);
-      parts.push(<strong key={key++}>{boldMatch[2]}</strong>);
-      remaining = remaining.slice(boldMatch[0].length);
-      continue;
-    }
-    // No more patterns — push rest as text
-    parts.push(<span key={key++}>{remaining}</span>);
-    break;
-  }
-
-  return parts;
-}
-
-export default function ChatView({ parser, fontSize = 13 }: Props) {
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [expandedGroups, setExpandedGroups] = useState<Set<number>>(new Set());
+  const itemsRef = useRef<Item[]>([]);
+  itemsRef.current = items;
   const bottomRef = useRef<HTMLDivElement>(null);
-  const containerRef = useRef<HTMLDivElement>(null);
+  const idCounter = useRef(0);
+  const mkId = () => `i-${++idCounter.current}`;
 
   useEffect(() => {
-    const unsub = parser.subscribe(() => {
-      setMessages([...parser.getMessages()]);
-    });
-    setMessages([...parser.getMessages()]);
+    const handle = (e: ChatEvent) => {
+      switch (e.kind) {
+        case 'user-input':
+          setItems(prev => [...prev, { kind: 'user', id: mkId(), text: e.text, turnId: e.turnId }]);
+          setActivePrompt(null);
+          break;
+        case 'prose-chunk':
+          setItems(prev => {
+            const last = prev[prev.length - 1];
+            if (last && last.kind === 'prose' && last.turnId === e.turnId) {
+              const next = prev.slice(0, -1);
+              next.push({ ...last, text: last.text + e.text });
+              return next;
+            }
+            return [...prev, { kind: 'prose', id: mkId(), turnId: e.turnId, text: e.text }];
+          });
+          setThinking(null);
+          break;
+        case 'prose-end':
+          // No-op — the bubble stays as-is; marker is implicit.
+          break;
+        case 'tool-start':
+          setItems(prev => [
+            ...prev,
+            { kind: 'step', id: mkId(), toolId: e.id, tool: e.tool, detail: e.detail, streaming: true, turnId: e.turnId },
+          ]);
+          setThinking(null);
+          break;
+        case 'tool-result':
+          setItems(prev => {
+            const next = [...prev];
+            for (let i = next.length - 1; i >= 0; i--) {
+              const it = next[i];
+              if (it.kind === 'step' && it.toolId === e.id) {
+                next[i] = { ...it, output: e.output, meta: e.meta, error: e.error, streaming: false };
+                break;
+              }
+            }
+            return next;
+          });
+          break;
+        case 'thinking-start':
+          setThinking(e.label || 'Thinking…');
+          break;
+        case 'thinking-end':
+          setThinking(null);
+          break;
+        case 'status':
+          setStatus(e.status);
+          break;
+        case 'interactive-prompt':
+          setActivePrompt(e.prompt);
+          break;
+        case 'plan-proposal':
+          setItems(prev => [...prev, { kind: 'plan', id: mkId(), plan: e.plan }]);
+          break;
+        case 'error':
+          setItems(prev => [...prev, { kind: 'error', id: mkId(), message: e.message, severity: e.severity }]);
+          break;
+        case 'system-message':
+          setItems(prev => [...prev, { kind: 'system', id: mkId(), text: e.text }]);
+          break;
+        case 'turn-complete':
+          setThinking(null);
+          break;
+      }
+    };
+    const unsub = parser.subscribe(handle);
     return unsub;
   }, [parser]);
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+  }, [items, thinking, activePrompt]);
 
-  const toggleGroup = (msgId: number) => {
-    setExpandedGroups(prev => {
-      const next = new Set(prev);
-      if (next.has(msgId)) next.delete(msgId);
-      else next.add(msgId);
-      return next;
-    });
-  };
+  const hasContent = items.length > 0 || thinking || activePrompt;
 
   return (
-    <div className="chat-view" ref={containerRef} style={{ fontSize }}>
-      {messages.length === 0 && (
-        <div className="chat-empty">
-          <div className="chat-empty-icon">{'\uD83D\uDCAC'}</div>
-          <div>Chat mode active. Your conversation will appear here.</div>
-          <div style={{ fontSize: '0.8em', marginTop: 4, opacity: 0.6 }}>
-            Responses are formatted by AI for a clean reading experience.
+    <div className="chat-view-v5" style={{ fontSize }}>
+      <ChatStatusBar status={status} onShiftTab={onShiftTab} />
+
+      <div className="chat-view">
+        {!hasContent && (
+          <div className="chat-empty">
+            <MessageSquare size={28} />
+            <div>Chat mode active. Your conversation will appear here.</div>
+            <div style={{ fontSize: '0.8em', marginTop: 4, opacity: 0.6 }}>
+              Events stream in real time — tools, prose, prompts.
+            </div>
           </div>
-        </div>
+        )}
+
+        {items.map(item => (
+          <ChatItem key={item.id} item={item} />
+        ))}
+
+        {thinking && (
+          <div className="chat-thinking chat-thinking-live">
+            <Loader2 size={14} className="spin" />
+            <span className="chat-thinking-text">{thinking}</span>
+          </div>
+        )}
+
+        <div ref={bottomRef} />
+      </div>
+
+      {activePrompt && onPromptResponse && (
+        <ChatInteractivePrompt
+          prompt={activePrompt}
+          onRespond={text => { onPromptResponse(text); setActivePrompt(null); }}
+        />
       )}
-      {messages.map(msg => (
-        <div key={msg.id} className={`chat-msg chat-msg-${msg.type}`}>
-          {msg.type === 'user' && (
-            <div className="chat-bubble chat-bubble-user">
-              <div className="chat-bubble-content">{msg.content}</div>
-            </div>
-          )}
-
-          {msg.type === 'thinking' && (
-            <div className="chat-thinking">
-              <span className="chat-thinking-dot" />
-              <span className="chat-thinking-dot" />
-              <span className="chat-thinking-dot" />
-              <span className="chat-thinking-text">{msg.content}</span>
-            </div>
-          )}
-
-          {msg.type === 'assistant' && (
-            <div className="chat-bubble chat-bubble-assistant">
-              <div className="chat-bubble-content chat-markdown">
-                {renderMarkdown(msg.content)}
-              </div>
-            </div>
-          )}
-
-          {msg.type === 'steps' && msg.steps && (
-            <div className="chat-steps">
-              <div className="chat-steps-summary" onClick={() => toggleGroup(msg.id)}>
-                <span className="chat-steps-icon">{'\u2699\uFE0F'}</span>
-                <span className="chat-steps-text">{msg.content}</span>
-                <span className="chat-steps-toggle">
-                  {expandedGroups.has(msg.id) ? '\u25BE' : '\u25B8'}
-                </span>
-              </div>
-              {expandedGroups.has(msg.id) && (
-                <div className="chat-steps-list">
-                  {msg.steps.map((step, idx) => (
-                    <div key={idx} className="chat-step-item">
-                      <div className="chat-step-header">
-                        <span className="chat-step-icon">{TOOL_ICONS[step.tool] || TOOL_ICONS.other}</span>
-                        <span className="chat-step-verb">{TOOL_VERBS[step.tool] || 'Action'}</span>
-                        {step.detail && <span className="chat-step-detail">{shortenPath(step.detail)}</span>}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-      ))}
-      <div ref={bottomRef} />
     </div>
   );
+}
+
+function ChatItem({ item }: { item: Item }) {
+  if (item.kind === 'user') {
+    return (
+      <div className="chat-msg chat-msg-user">
+        <div className="chat-bubble chat-bubble-user">
+          <div className="chat-bubble-avatar"><User size={14} /></div>
+          <div className="chat-bubble-content">{item.text}</div>
+        </div>
+      </div>
+    );
+  }
+  if (item.kind === 'prose') {
+    return (
+      <div className="chat-msg chat-msg-assistant">
+        <div className="chat-bubble chat-bubble-assistant">
+          <div className="chat-bubble-avatar"><Bot size={14} /></div>
+          <div className="chat-bubble-content chat-markdown">
+            {renderMarkdown(item.text)}
+          </div>
+        </div>
+      </div>
+    );
+  }
+  if (item.kind === 'step') {
+    return (
+      <div className="chat-msg chat-msg-step">
+        <ChatStepCard
+          tool={item.tool}
+          detail={item.detail}
+          output={item.output}
+          meta={item.meta}
+          error={item.error}
+          streaming={item.streaming}
+        />
+      </div>
+    );
+  }
+  if (item.kind === 'plan') {
+    return (
+      <div className="chat-msg chat-msg-plan">
+        <ChatPlanProposal
+          plan={item.plan}
+          onApprove={() => {}}
+          onRevise={() => {}}
+          onCancel={() => {}}
+        />
+      </div>
+    );
+  }
+  if (item.kind === 'error') {
+    return (
+      <div className={`chat-msg chat-msg-error chat-error-${item.severity}`}>
+        <CircleAlert size={14} />
+        <span>{item.message}</span>
+      </div>
+    );
+  }
+  if (item.kind === 'system') {
+    return (
+      <div className="chat-msg chat-msg-system">
+        <Info size={12} />
+        <span>{item.text}</span>
+      </div>
+    );
+  }
+  return null;
 }

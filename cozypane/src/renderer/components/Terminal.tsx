@@ -638,7 +638,18 @@ export default function Terminal({ terminalId, cwd, isVisible, fontSize = 13, au
       {/* Chat view -- shown when chat mode is on */}
       {chatMode && !tuiMode && (
         <div className="chat-view-wrapper">
-          <ChatView parser={chatParserRef.current} fontSize={fontSize} />
+          <ChatView
+            parser={chatParserRef.current}
+            fontSize={fontSize}
+            onShiftTab={() => {
+              const id = terminalIdRef.current;
+              if (id) window.cozyPane.terminal.write(id, '\x1b[Z');
+            }}
+            onPromptResponse={(text) => {
+              const id = terminalIdRef.current;
+              if (id) window.cozyPane.terminal.write(id, text);
+            }}
+          />
         </div>
       )}
 
